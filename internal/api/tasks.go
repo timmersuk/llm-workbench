@@ -4,12 +4,12 @@ import "net/http"
 
 func handleListTasks(lister TaskLister) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tasks, err := lister.List()
+		result, err := lister.List()
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, tasks)
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 

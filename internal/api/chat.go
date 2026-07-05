@@ -23,3 +23,14 @@ func handleChatCompletions(completer ChatCompleter) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, resp)
 	}
 }
+
+func handleListModels(completer ChatCompleter) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		models, err := completer.ListModels(r.Context())
+		if err != nil {
+			http.Error(w, "listing models failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string][]string{"models": models})
+	}
+}

@@ -12,13 +12,13 @@ import (
 
 type mockTaskLister struct{ mock.Mock }
 
-func (m *mockTaskLister) List() ([]task.Task, error) {
+func (m *mockTaskLister) List() (task.ListResult, error) {
 	args := m.Called()
-	var tasks []task.Task
+	var result task.ListResult
 	if v := args.Get(0); v != nil {
-		tasks = v.([]task.Task)
+		result = v.(task.ListResult)
 	}
-	return tasks, args.Error(1)
+	return result, args.Error(1)
 }
 
 func (m *mockTaskLister) Get(id string) (task.Task, error) {
@@ -32,13 +32,13 @@ func (m *mockTaskLister) Get(id string) (task.Task, error) {
 
 type mockProjectLister struct{ mock.Mock }
 
-func (m *mockProjectLister) List() ([]project.Project, error) {
+func (m *mockProjectLister) List() (project.ListResult, error) {
 	args := m.Called()
-	var projects []project.Project
+	var result project.ListResult
 	if v := args.Get(0); v != nil {
-		projects = v.([]project.Project)
+		result = v.(project.ListResult)
 	}
-	return projects, args.Error(1)
+	return result, args.Error(1)
 }
 
 func (m *mockProjectLister) Get(id string) (project.Project, error) {
@@ -59,4 +59,18 @@ func (m *mockChatCompleter) CreateChatCompletion(ctx context.Context, req chat.C
 		resp = v.(chat.CompletionResponse)
 	}
 	return resp, args.Error(1)
+}
+
+func (m *mockChatCompleter) CheckHealth(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *mockChatCompleter) ListModels(ctx context.Context) ([]string, error) {
+	args := m.Called(ctx)
+	var models []string
+	if v := args.Get(0); v != nil {
+		models = v.([]string)
+	}
+	return models, args.Error(1)
 }

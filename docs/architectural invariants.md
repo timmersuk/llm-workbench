@@ -18,9 +18,11 @@ The workflow engine never knows something it cannot show the user.
 
 Long-lived knowledge is distinct from task-specific planning.
 
-## Executors are replaceable
+## Providers are replaceable
 
-The workflow engine coordinates work but is independent of the implementation technology.
+The workflow engine depends on stable interfaces, not specific
+implementations. Executors, knowledge stores, and LLM APIs are all
+providers behind narrow interfaces — see `docs/provider abstraction.md`.
 
 ## Failures are first-class
 

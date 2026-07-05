@@ -16,16 +16,17 @@ import (
 
 func TestHandleListTasks_OK(t *testing.T) {
 	lister := new(mockTaskLister)
-	lister.On("List").Return([]task.Task{{ID: "TASK-0001"}}, nil)
+	lister.On("List").Return(task.ListResult{Tasks: []task.Task{{ID: "TASK-0001"}}}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
 	w := httptest.NewRecorder()
 	handleListTasks(lister)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	var got []task.Task
+	var got task.ListResult
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, "TASK-0001", got[0].ID)
+	require.Len(t, got.Tasks, 1)
+	assert.Equal(t, "TASK-0001", got.Tasks[0].ID)
 	lister.AssertExpectations(t)
 }
 

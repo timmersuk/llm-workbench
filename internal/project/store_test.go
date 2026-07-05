@@ -3,6 +3,7 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,23 +31,29 @@ created_at: 2026-07-05T00:00:00Z
 updated_at: 2026-07-05T00:00:00Z
 `
 
+func projectYAMLWithID(id string) string {
+	return strings.Replace(validProjectYAML, "demo-project", id, 1)
+}
+
 func TestFileStore_List(t *testing.T) {
 	root := t.TempDir()
 	writeProjectFixture(t, root, "demo-project", validProjectYAML)
 	writeProjectFixture(t, root, "auth-service", validProjectYAML)
 
 	store := NewFileStore(root)
-	projects, err := store.List()
+	result, err := store.List()
 	require.NoError(t, err)
-	require.Len(t, projects, 2)
+	require.Len(t, result.Projects, 2)
+	assert.Empty(t, result.Errors)
 }
 
 func TestFileStore_List_Empty(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
-	projects, err := store.List()
+	result, err := store.List()
 	require.NoError(t, err)
-	assert.Empty(t, projects)
+	assert.Empty(t, result.Projects)
+	assert.Empty(t, result.Errors)
 }
 
 func TestFileStore_List_MalformedYAML(t *testing.T) {
@@ -54,9 +61,28 @@ func TestFileStore_List_MalformedYAML(t *testing.T) {
 	writeProjectFixture(t, root, "demo-project", "id: [this is not valid yaml")
 
 	store := NewFileStore(root)
-	_, err := store.List()
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "parsing")
+	result, err := store.List()
+	require.NoError(t, err)
+	assert.Empty(t, result.Projects)
+	require.Len(t, result.Errors, 1)
+	assert.Equal(t, "demo-project", result.Errors[0].ID)
+	assert.Contains(t, result.Errors[0].Error, "parsing")
+}
+
+func TestFileStore_List_SkipsMalformedButKeepsValidProjects(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFixture(t, root, "auth-service", projectYAMLWithID("auth-service"))
+	writeProjectFixture(t, root, "demo-project", "id: [this is not valid yaml")
+
+	store := NewFileStore(root)
+	result, err := store.List()
+	require.NoError(t, err)
+
+	require.Len(t, result.Projects, 1)
+	assert.Equal(t, "auth-service", result.Projects[0].ID)
+
+	require.Len(t, result.Errors, 1)
+	assert.Equal(t, "demo-project", result.Errors[0].ID)
 }
 
 func TestFileStore_Get(t *testing.T) {

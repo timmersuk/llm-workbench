@@ -1,0 +1,33 @@
+id: TASK-0002
+title: Introduce frontend unit test tooling
+project: llm-workbench
+
+status: draft
+
+stage: planning
+
+created_at: 2026-07-05T00:00:00Z
+updated_at: 2026-07-05T00:00:00Z
+
+objective: >-
+  Introduce a unit-test framework for the frontend (Vitest + React Testing
+  Library) and cover the existing data-fetching layer and panel components,
+  so frontend logic has the same safety net the Go backend already has.
+
+constraints:
+  - "Vitest + React Testing Library only (Vite-native, no second test runner)."
+  - "Mock fetch at the api.ts boundary rather than a live backend — that's TASK-0003's job, not this one."
+  - "Wire a test script into make test so it runs by default, not as a silent opt-in."
+
+assumptions:
+  - The panel components (TasksPanel, ProjectsPanel, ChatPanel) stay small enough that render tests don't need a heavier tool than React Testing Library.
+
+success_criteria:
+  - frontend/src/api.ts functions have unit tests covering both success and error-status paths.
+  - Each panel component has at least one render test covering its loading/error/empty/populated states.
+  - make test runs both the Go and frontend suites and fails the build if either fails.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+  repo: []

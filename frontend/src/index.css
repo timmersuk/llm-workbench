@@ -41,8 +41,27 @@ header {
 }
 
 header h1 {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: 28px;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.build-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 nav {
@@ -96,6 +115,26 @@ th {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.chat-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.chat-model-row label {
+  color: var(--text-muted);
+}
+
+.chat-model-row select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .chat-history {

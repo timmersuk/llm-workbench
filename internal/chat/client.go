@@ -71,3 +71,52 @@ func (c *Client) CreateChatCompletion(ctx context.Context, req CompletionRequest
 	}
 	return out, nil
 }
+
+// CheckHealth requests the models list from the provider and returns nil when
+// the endpoint responds successfully.
+func (c *Client) CheckHealth(ctx context.Context) error {
+	_, err := c.ListModels(ctx)
+	return err
+}
+
+// ListModels requests the available models from {BaseURL}/models and returns
+// their IDs.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building models request: %w", err)
+	}
+	if c.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("calling models endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading models response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("models endpoint returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	if len(body) == 0 {
+		return []string{}, nil
+	}
+
+	var out ModelsResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decoding models response: %w", err)
+	}
+
+	ids := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		ids = append(ids, m.ID)
+	}
+	return ids, nil
+}

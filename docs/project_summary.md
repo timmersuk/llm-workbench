@@ -262,9 +262,12 @@ All decisions, transitions, and inputs must be visible.
 
 ---
 
-### 9.3 Executors Are Replaceable
+### 9.3 Providers Are Replaceable
 
-The system does not depend on any specific LLM or tool provider.
+The system depends on stable interfaces, not specific implementations.
+Executors (§7) are the most fully-realized instance today; knowledge
+stores and LLM/chat APIs follow the same pattern. See
+`docs/provider abstraction.md`.
 
 ---
 

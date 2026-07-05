@@ -1,0 +1,7 @@
+{
+  "go.toolsEnvVars": {
+    "LLM_BASE_URL": "${env:LLM_BASE_URL}",
+    "LLM_API_KEY": "${env:LLM_API_KEY}",
+    "LLM_MODEL": "${env:LLM_MODEL}"
+  }
+}

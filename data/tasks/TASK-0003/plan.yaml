@@ -1,0 +1,16 @@
+approach: >-
+  Stand up minimal CI, then add a Playwright suite that drives the built
+  single binary against seeded fixtures and a stubbed LLM endpoint.
+
+steps:
+  - "Add a GitHub Actions workflow that runs make test (Go + frontend) on push/PR — this repo currently has none."
+  - "Add Playwright as a devDependency at the repo level (not nested in frontend/), since it exercises the built binary rather than the frontend alone."
+  - "In CI, run make all to produce the real embedded-frontend binary, boot it against a temp WORKSPACE_ROOT seeded with fixture task/project YAML, and point Playwright at it."
+  - "Stub the OpenAI-compatible LLM_BASE_URL with a local fixture server so chat e2e tests are deterministic and don't depend on a real model."
+  - "Add a make test-e2e target, kept separate from make test so the fast unit/integration suite isn't blocked by browser install time."
+
+risks:
+  - "No CI exists yet in this repo — this task's true prerequisite is 'stand up CI', which is bigger than it sounds and could be split into its own task if it stalls the e2e work."
+
+estimated_complexity: high
+recommended_executor: claude-code

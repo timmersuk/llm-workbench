@@ -1,0 +1,7 @@
+decision: approved
+notes: >
+  Milestone 1 success criteria verified against docs/milestones/done/milestone1.md:
+  Go backend, Vite frontend, single embedded binary, configuration, logging,
+  OpenAI-compatible chat endpoint abstraction, on-disk task/project
+  repositories, and basic API are all implemented. go build/vet/test all
+  pass. Out-of-scope items (workflow, routing, policy) correctly absent.
