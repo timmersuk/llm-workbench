@@ -35,7 +35,9 @@ doesn't have to be re-derived or re-litigated later.
   (`data/`, see Configuration above) with `tasks/`, `projects/`, and
   eventually `knowledge/` nested under it — the workspace layout described
   in `CLAUDE.md` / `project_summary.md` — this section is about how the Go
-  code reads that layout, not the domain model itself.
+  code reads that layout, not the domain model itself. `knowledge/`'s
+  on-disk format (when that store is built) is an OKF bundle, not
+  `<root>/<ID>/<kind>.yaml` — see `docs/knowledge schema v0.md`.
 * Structs carry matching `yaml:` and `json:` tags so the same type
   round-trips straight to the API — don't introduce a separate DTO layer
   for this.
