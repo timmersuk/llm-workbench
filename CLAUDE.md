@@ -15,9 +15,14 @@ The LLM Workbench is a system designed for managing software engineering work th
     *   `execution.yaml`: One per execution attempt, detailing executor, input, output, metrics, and status.
     *   `review.yaml` (optional): Human or system-generated review.
 *   **Project**: A stable grouping and context scope for tasks. Projects define shared domain context, associated code repositories, reusable constraints, and linked knowledge sources. They are NOT workflow objects themselves. Project definitions are expected to be found in the `data/projects/` directory.
-*   **Knowledge**: Durable, reusable information such as coding standards, architecture decisions, system design notes, and domain knowledge. Knowledge is separate from tasks and projects but can be referenced by both. The `data/knowledge/` directory is intended for these files.
+*   **Knowledge**: Durable, reusable information such as coding standards, architecture decisions, system design notes, and domain knowledge. Knowledge is separate from tasks and projects but can be referenced by both. The `data/knowledge/` directory is intended for these files, stored as an [Open Knowledge Format (OKF)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle — markdown concept documents with YAML frontmatter, maintained as a compounding "LLM wiki" rather than re-derived from raw sources each time — see `docs/knowledge schema v0.md`.
 *   **Execution**: A single run of an external or human/LLM worker, treated as an opaque transformation (`input → executor → output + metrics`).
 *   **Workflow Engine**: Coordinates task state transitions, stage enforcement, policy decisions, executor selection, and failure handling. It is fully deterministic and inspectable.
+
+_Provider is not a separate domain object but a pattern applied across the
+above — Execution's executor, Knowledge's future store, and Chat's LLM API
+are each swappable behind a narrow interface declared by the consumer (see
+`docs/provider abstraction.md`)._
 
 ### Project Structure:
 
@@ -50,7 +55,7 @@ Tasks progress through explicit stages: `Requirements → Architecture → Plann
 *   **Tasks are first-class**: Chat and interactions are centered around tasks.
 *   **No hidden state**: All system information, decisions, and transitions are inspectable.
 *   **Separation of Concerns**: Clear boundaries between Knowledge, Project, Task, Execution, and Workflow.
-*   **Executors are replaceable**: The system is independent of specific LLM or tool providers.
+*   **Providers are replaceable**: Executors, knowledge stores, and LLM APIs are all pluggable providers behind stable interfaces — see `docs/provider abstraction.md`.
 *   **Failures are first-class**: Structured outcomes with defined recovery paths.
 *   **Prefer open standards**: Utilize existing protocols and libraries where applicable.
 *   **Store durable semantics**: Persist decisions, artifacts, and metrics.

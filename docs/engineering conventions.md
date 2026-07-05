@@ -35,7 +35,9 @@ doesn't have to be re-derived or re-litigated later.
   (`data/`, see Configuration above) with `tasks/`, `projects/`, and
   eventually `knowledge/` nested under it — the workspace layout described
   in `CLAUDE.md` / `project_summary.md` — this section is about how the Go
-  code reads that layout, not the domain model itself.
+  code reads that layout, not the domain model itself. `knowledge/`'s
+  on-disk format (when that store is built) is an OKF bundle, not
+  `<root>/<ID>/<kind>.yaml` — see `docs/knowledge schema v0.md`.
 * Structs carry matching `yaml:` and `json:` tags so the same type
   round-trips straight to the API — don't introduce a separate DTO layer
   for this.
@@ -126,6 +128,10 @@ doesn't have to be re-derived or re-litigated later.
   with a doc comment naming the concrete production type it's satisfied by
   (e.g. "Satisfied by `*task.FileStore`"). Constructors return concrete
   structs; callers accept the narrow interface, not the concrete type.
+  This is the general "providers are replaceable" mechanism
+  (`docs/architectural invariants.md`, `docs/provider abstraction.md`) —
+  any future provider-shaped dependency (e.g. a knowledge store) should
+  follow the same shape.
 
 ## Package/file layout
 
@@ -158,7 +164,8 @@ doesn't have to be re-derived or re-litigated later.
 * `internal/chat/client.go` speaks the OpenAI-compatible chat completions
   shape (`POST {base}/chat/completions`, `GET {base}/models` for health)
   regardless of which backend provider is configured — this keeps the
-  provider interchangeable per the "executors are replaceable" invariant.
+  provider interchangeable per the "providers are replaceable" invariant
+  (`docs/architectural invariants.md`).
   New provider integrations should conform to this same request/response
   shape rather than introducing a provider-specific one.
 
