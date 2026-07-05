@@ -1,0 +1,35 @@
+id: TASK-0003
+title: Add a coupled frontend+backend end-to-end test
+project: llm-workbench
+
+status: draft
+
+stage: planning
+
+created_at: 2026-07-05T00:00:00Z
+updated_at: 2026-07-05T00:00:00Z
+
+objective: >-
+  Add an end-to-end test that builds the real single embedded binary and
+  drives it through a real browser, catching integration bugs that neither
+  the Go integration tests (TestIntegration_* in internal/api) nor frontend
+  unit tests (TASK-0002) can see.
+
+constraints:
+  - "Needs basic CI to exist first — this repo currently has no CI pipeline at all. Treat that as this task's real prerequisite, not a hidden blocker to discover mid-task."
+  - "Playwright over Cypress — better TypeScript support, single binary install, can drive the actual make build artifact directly."
+  - "Stub the LLM endpoint (not a real model) so chat e2e stays deterministic."
+  - "Keep it in a separate make test-e2e target so browser install time doesn't slow down the normal make test loop."
+
+assumptions:
+  - GitHub Actions is the likely CI target given this is a GitHub-hosted repo, but this is not yet decided (see open_questions in context.yaml).
+
+success_criteria:
+  - CI builds the real binary (make all) and boots it against a temp WORKSPACE_ROOT seeded with fixture tasks/projects.
+  - At least one e2e test loads the dashboard in a real browser and asserts task/project lists render from the live backend.
+  - The chat panel is exercised against a stubbed OpenAI-compatible endpoint, not a real LLM.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+  repo: []

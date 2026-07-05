@@ -71,3 +71,28 @@ func (c *Client) CreateChatCompletion(ctx context.Context, req CompletionRequest
 	}
 	return out, nil
 }
+
+// CheckHealth requests the models list from the provider and returns nil when
+// the endpoint responds successfully.
+func (c *Client) CheckHealth(ctx context.Context) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/models", nil)
+	if err != nil {
+		return fmt.Errorf("building healthcheck request: %w", err)
+	}
+	if c.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("calling models endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("models endpoint returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}

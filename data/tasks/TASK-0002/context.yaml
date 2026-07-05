@@ -1,0 +1,74 @@
+summary: >-
+  The Go backend has unit tests, router-level tests, and (as of TASK's
+  sibling work) real integration tests, but the frontend has zero test
+  tooling at all — no framework, no test files, no test script. This task
+  closes that gap at the unit level: cover the thin fetch wrapper and the
+  three panel components with fast, deterministic tests that don't require
+  a live backend.
+
+background: >-
+  Surfaced while auditing testing-stage gaps for the whole project
+  (2026-07-05): the real http.ServeMux is now exercised end-to-end against
+  real stores (internal/api/integration_test.go), but the frontend was
+  never in scope for that pass. Deliberately scoped separately from
+  TASK-0003 (the coupled frontend+backend e2e test) — this task is
+  frontend-only and backend-agnostic, using mocked fetch rather than a
+  live server, so it doesn't need CI infrastructure to land.
+
+files:
+  - path: frontend/package.json
+    role: add devDependencies (vitest, @testing-library/react, jest-dom, jsdom) and a `test` script
+  - path: frontend/vite.config.ts
+    role: likely gains a `test` block (or a sibling vitest.config.ts) configuring the jsdom environment
+  - path: frontend/src/api.ts
+    role: unit-test target — getJSON<T>, listTasks, listProjects, getHealthStatus, sendChatMessage
+  - path: frontend/src/TasksPanel.tsx
+    role: render-test target
+  - path: frontend/src/ProjectsPanel.tsx
+    role: render-test target
+  - path: frontend/src/ChatPanel.tsx
+    role: render-test target
+  - path: Makefile
+    role: add a frontend-test target and fold it into the existing `test` target so `make test` covers both suites
+  - path: docs/engineering conventions.md
+    role: update the Frontend conventions section ("no test framework configured yet") once this lands
+
+detail: |
+  Why Vitest + React Testing Library specifically: the project is already
+  Vite-based (frontend/vite.config.ts), so Vitest is a same-toolchain fit
+  with no separate bundler/transform config to maintain, unlike Jest. RTL
+  is the natural pairing for testing React components by their rendered
+  output rather than internals, which matches this codebase's simple,
+  hooks-only state management (docs/engineering conventions.md's Frontend
+  section: `useState`/`useEffect` per component, no state library).
+
+  Test shape for frontend/src/api.ts: each exported function (getJSON,
+  listTasks, listProjects, getHealthStatus, sendChatMessage) should get at
+  least two cases — a 2xx path asserting the parsed return value, and a
+  non-2xx path asserting the thrown Error's message. Mock global `fetch`
+  directly (e.g. `vi.stubGlobal('fetch', ...)` or a per-test
+  `globalThis.fetch = vi.fn()...`) rather than a library like msw, to keep
+  the dependency footprint small for what is currently four thin wrapper
+  functions.
+
+  Test shape for the panels: each of TasksPanel/ProjectsPanel/ChatPanel
+  follows the same `data` + `error: string | null` state shape (documented
+  in docs/engineering conventions.md's Frontend conventions section) —
+  fetch in useEffect, `.then(setData).catch(err => setError(err.message))`.
+  So each panel's tests should assert against that existing convention
+  rather than inventing a new one: a loading state before the fetch
+  resolves, the populated state once it does, an empty-list state, and the
+  error state when the mocked fetch rejects.
+
+  Sequencing note: this doesn't block or get blocked by TASK-0003. It's
+  purely frontend-side and doesn't touch CI, so it can land independently
+  and sooner.
+
+verification:
+  - "pnpm test (or whatever the chosen script name is) passes locally inside frontend/."
+  - "make test at the repo root runs both the Go and frontend suites and fails if either fails."
+  - "Each of api.ts's four exported functions has both a success and an error-path test."
+  - "Each panel component has render assertions for at least loading, error, and populated states."
+
+open_questions:
+  - "Whether Vitest's jsdom environment plays cleanly with verbatimModuleSyntax and the current TS config — flagged as a risk in plan.yaml, worth a five-minute spike before writing all the tests."

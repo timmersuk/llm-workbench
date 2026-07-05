@@ -4,12 +4,12 @@ import "net/http"
 
 func handleListProjects(lister ProjectLister) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		projects, err := lister.List()
+		result, err := lister.List()
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, projects)
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 

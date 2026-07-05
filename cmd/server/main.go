@@ -7,7 +7,9 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -25,7 +27,7 @@ var BuildID = "dev"
 
 func main() {
 	httpAddr := utils.GetEnvDefault("HTTP_ADDR", ":8080")
-	workspaceRoot := utils.GetEnvDefault("WORKSPACE_ROOT", ".")
+	workspaceRoot := utils.GetEnvDefault("WORKSPACE_ROOT", "data")
 	logLevel := utils.GetEnvDefault("LOG_LEVEL", "info")
 	logFormat := utils.GetEnvDefault("LOG_FORMAT", "json")
 	llmBaseURL := utils.GetEnvDefault("LLM_BASE_URL", "http://localhost:11434/v1")
@@ -34,9 +36,8 @@ func main() {
 	llmTimeout := utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second)
 
 	configureLogging(logLevel, logFormat)
-	api.Version = BuildID
 
-	taskStore := task.NewFileStore(filepath.Join(workspaceRoot, "tasks"))
+	taskStore := task.NewFileStore(resolveTaskStoreRoot(workspaceRoot))
 	projectStore := project.NewFileStore(filepath.Join(workspaceRoot, "projects"))
 	chatClient := chat.NewClient(llmBaseURL, llmAPIKey, llmTimeout)
 
@@ -45,7 +46,7 @@ func main() {
 		logrus.Fatalf("mounting embedded frontend: %v", err)
 	}
 
-	router := api.NewRouter(taskStore, projectStore, defaultModelCompleter{chatClient, llmModel}, frontendFS)
+	router := api.NewRouter(taskStore, projectStore, defaultModelCompleter{chatClient, llmModel}, frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":          httpAddr,
@@ -58,6 +59,22 @@ func main() {
 	if err := http.ListenAndServe(httpAddr, router); err != nil {
 		logrus.Fatalf("server exited: %v", err)
 	}
+}
+
+func resolveTaskStoreRoot(workspaceRoot string) string {
+	candidates := []string{workspaceRoot, filepath.Join(workspaceRoot, "tasks")}
+	for _, candidate := range candidates {
+		entries, err := os.ReadDir(candidate)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), "TASK-") {
+				return candidate
+			}
+		}
+	}
+	return filepath.Join(workspaceRoot, "tasks")
 }
 
 func configureLogging(level, format string) {
@@ -87,4 +104,8 @@ func (c defaultModelCompleter) CreateChatCompletion(ctx context.Context, req cha
 		req.Model = c.model
 	}
 	return c.client.CreateChatCompletion(ctx, req)
+}
+
+func (c defaultModelCompleter) CheckHealth(ctx context.Context) error {
+	return c.client.CheckHealth(ctx)
 }

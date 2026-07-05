@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "frontend: vite dev",
+      "type": "shell",
+      "command": "corepack",
+      "args": ["pnpm", "--dir", "frontend", "run", "dev", "--host", "127.0.0.1", "--port", "5173"],
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

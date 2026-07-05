@@ -29,6 +29,24 @@ export interface Project {
   updated_at: string
 }
 
+// LoadError describes a single task/project directory that failed to load
+// during a list call, mirroring task.LoadError / project.LoadError in Go —
+// one malformed entry is reported here rather than failing the whole call.
+export interface LoadError {
+  id: string
+  error: string
+}
+
+export interface TaskListResult {
+  tasks: Task[] | null
+  errors: LoadError[] | null
+}
+
+export interface ProjectListResult {
+  projects: Project[] | null
+  errors: LoadError[] | null
+}
+
 export interface ChatMessage {
   role: string
   content: string

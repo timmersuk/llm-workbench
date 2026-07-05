@@ -16,16 +16,17 @@ import (
 
 func TestHandleListProjects_OK(t *testing.T) {
 	lister := new(mockProjectLister)
-	lister.On("List").Return([]project.Project{{ID: "demo-project"}}, nil)
+	lister.On("List").Return(project.ListResult{Projects: []project.Project{{ID: "demo-project"}}}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
 	w := httptest.NewRecorder()
 	handleListProjects(lister)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	var got []project.Project
+	var got project.ListResult
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, "demo-project", got[0].ID)
+	require.Len(t, got.Projects, 1)
+	assert.Equal(t, "demo-project", got.Projects[0].ID)
 }
 
 func TestHandleListProjects_Error(t *testing.T) {

@@ -1,11 +1,13 @@
 // Package project provides the Project type and a read-only file-backed store
-// over the projects/ directory.
+// over a projects/ directory (rooted at WORKSPACE_ROOT, which defaults to
+// data/).
 package project
 
 import "time"
 
 // Project is a stable grouping and context scope for tasks, stored as
-// projects/<id>/project.yaml.
+// <project root>/<id>/project.yaml (e.g. data/projects/<id>/project.yaml
+// with the default WORKSPACE_ROOT).
 type Project struct {
 	ID          string `yaml:"id" json:"id"`
 	Name        string `yaml:"name" json:"name"`

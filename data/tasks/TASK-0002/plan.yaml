@@ -1,0 +1,16 @@
+approach: >-
+  Add Vitest + React Testing Library as frontend devDependencies, colocate
+  *.test.tsx next to source, and wire a test script into make test.
+
+steps:
+  - "Add vitest, @testing-library/react, @testing-library/jest-dom, and jsdom as devDependencies; add a minimal Vitest config using the jsdom environment."
+  - "Add a test script to frontend/package.json (vitest run), and fold a frontend-test Makefile target into the existing test target."
+  - "Write unit tests for frontend/src/api.ts, mocking global fetch for each exported function's success and error-status paths."
+  - "Write render tests for TasksPanel, ProjectsPanel, and ChatPanel covering loading, error, empty, and populated states."
+  - "Update the Frontend conventions section of docs/engineering conventions.md once a concrete testing pattern is settled."
+
+risks:
+  - "Vitest/jsdom interaction with the project's TypeScript config (verbatimModuleSyntax) or React 19 is unverified — worth a small spike before committing to the approach."
+
+estimated_complexity: medium
+recommended_executor: claude-code

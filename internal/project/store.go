@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -15,14 +16,30 @@ import (
 // path separators/"..".
 var ErrInvalidID = errors.New("invalid project id")
 
+// LoadError describes a single project directory that failed to load during
+// List, so one malformed project doesn't take the rest of the list down
+// with it.
+type LoadError struct {
+	ID    string `yaml:"id" json:"id"`
+	Error string `yaml:"error" json:"error"`
+}
+
+// ListResult holds the projects that loaded successfully plus any per-
+// project errors encountered along the way.
+type ListResult struct {
+	Projects []Project   `yaml:"projects" json:"projects"`
+	Errors   []LoadError `yaml:"errors" json:"errors"`
+}
+
 // Store lists and retrieves projects.
 type Store interface {
-	List() ([]Project, error)
+	List() (ListResult, error)
 	Get(id string) (Project, error)
 }
 
-// FileStore is a read-only Store backed by a directory of
-// projects/<id>/project.yaml files.
+// FileStore is a read-only Store backed by a directory of <id>/project.yaml
+// files (e.g. data/projects/<id>/project.yaml with the default
+// WORKSPACE_ROOT).
 type FileStore struct {
 	Root string
 }
@@ -33,15 +50,18 @@ func NewFileStore(root string) *FileStore {
 	return &FileStore{Root: root}
 }
 
-// List returns every project under Root, sorted by id. Non-directory entries
-// are skipped.
-func (s *FileStore) List() ([]Project, error) {
+// List returns every project under Root, sorted by id. Non-directory
+// entries are silently skipped. Directory entries that fail to read or
+// parse are skipped too, logged, and reported in the result's Errors rather
+// than failing the whole call — one malformed project.yaml shouldn't take
+// down every other project.
+func (s *FileStore) List() (ListResult, error) {
 	entries, err := os.ReadDir(s.Root)
 	if err != nil {
-		return nil, fmt.Errorf("reading project root %s: %w", s.Root, err)
+		return ListResult{}, fmt.Errorf("reading project root %s: %w", s.Root, err)
 	}
 
-	var projects []Project
+	var result ListResult
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -49,13 +69,16 @@ func (s *FileStore) List() ([]Project, error) {
 
 		p, err := s.readProject(entry.Name())
 		if err != nil {
-			return nil, err
+			logrus.WithError(err).WithField("id", entry.Name()).Warn("skipping project that failed to load")
+			result.Errors = append(result.Errors, LoadError{ID: entry.Name(), Error: err.Error()})
+			continue
 		}
-		projects = append(projects, p)
+		result.Projects = append(result.Projects, p)
 	}
 
-	sort.Slice(projects, func(i, j int) bool { return projects[i].ID < projects[j].ID })
-	return projects, nil
+	sort.Slice(result.Projects, func(i, j int) bool { return result.Projects[i].ID < result.Projects[j].ID })
+	sort.Slice(result.Errors, func(i, j int) bool { return result.Errors[i].ID < result.Errors[j].ID })
+	return result, nil
 }
 
 // Get returns the project with the given id. It rejects ids containing path

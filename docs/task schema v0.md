@@ -8,12 +8,13 @@ It represents a unit of work that moves through a structured workflow lifecycle.
 
 ## 1. File Structure
 
-Each task is a directory:
+Each task is a directory under the workspace's task root (`WORKSPACE_ROOT`
+defaults to `data/`, so this repo's own tasks live at `data/tasks/`):
 
 ```
-tasks/TASK-0001/
+data/tasks/TASK-0001/
     task.yaml
-    context.yaml (optional, derived)
+    context.yaml (optional, derived — see below)
     plan.yaml (optional, generated)
     execution.yaml (one per execution attempt)
     review.yaml (optional, human or system generated)
@@ -51,6 +52,25 @@ references:
 ---
 
 ## 3. Optional Derived Artifacts
+
+### context.yaml
+
+Derived context: the narrative detail behind a task that doesn't fit
+`task.yaml`'s terse fields or `plan.yaml`'s short structured lists — e.g.
+the depth a planning conversation would normally produce (rationale, file
+references, alternatives considered, verification steps).
+
+```yaml
+summary: ""
+background: ""
+files: []
+detail: |
+  ""
+verification: []
+open_questions: []
+```
+
+---
 
 ### plan.yaml
 

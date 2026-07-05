@@ -48,11 +48,12 @@ func TestFileStore_List(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "not-a-task-dir"), 0o755))
 
 	store := NewFileStore(root)
-	tasks, err := store.List()
+	result, err := store.List()
 	require.NoError(t, err)
-	require.Len(t, tasks, 2)
-	assert.Equal(t, "TASK-0001", tasks[0].ID)
-	assert.Equal(t, "TASK-0002", tasks[1].ID)
+	require.Len(t, result.Tasks, 2)
+	assert.Empty(t, result.Errors)
+	assert.Equal(t, "TASK-0001", result.Tasks[0].ID)
+	assert.Equal(t, "TASK-0002", result.Tasks[1].ID)
 }
 
 func TestFileStore_List_MalformedYAML(t *testing.T) {
@@ -60,9 +61,31 @@ func TestFileStore_List_MalformedYAML(t *testing.T) {
 	writeTaskFixture(t, root, "TASK-0001", "id: [this is not valid yaml")
 
 	store := NewFileStore(root)
-	_, err := store.List()
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "parsing")
+	result, err := store.List()
+	require.NoError(t, err)
+	assert.Empty(t, result.Tasks)
+	require.Len(t, result.Errors, 1)
+	assert.Equal(t, "TASK-0001", result.Errors[0].ID)
+	assert.Contains(t, result.Errors[0].Error, "parsing")
+}
+
+func TestFileStore_List_SkipsMalformedButKeepsValidTasks(t *testing.T) {
+	root := t.TempDir()
+	writeTaskFixture(t, root, "TASK-0001", taskYAMLWithID("TASK-0001"))
+	writeTaskFixture(t, root, "TASK-0002", "id: [this is not valid yaml")
+	writeTaskFixture(t, root, "TASK-0003", taskYAMLWithID("TASK-0003"))
+
+	store := NewFileStore(root)
+	result, err := store.List()
+	require.NoError(t, err)
+
+	require.Len(t, result.Tasks, 2)
+	assert.Equal(t, "TASK-0001", result.Tasks[0].ID)
+	assert.Equal(t, "TASK-0003", result.Tasks[1].ID)
+
+	require.Len(t, result.Errors, 1)
+	assert.Equal(t, "TASK-0002", result.Errors[0].ID)
+	assert.Contains(t, result.Errors[0].Error, "parsing")
 }
 
 func TestFileStore_Get(t *testing.T) {

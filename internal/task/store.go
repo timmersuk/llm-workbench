@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,14 +18,29 @@ var idPattern = regexp.MustCompile(`^TASK-\d+$`)
 // TASK-<digits> pattern.
 var ErrInvalidID = errors.New("invalid task id")
 
+// LoadError describes a single task directory that failed to load during
+// List, so one malformed task doesn't take the rest of the list down with
+// it.
+type LoadError struct {
+	ID    string `yaml:"id" json:"id"`
+	Error string `yaml:"error" json:"error"`
+}
+
+// ListResult holds the tasks that loaded successfully plus any per-task
+// errors encountered along the way.
+type ListResult struct {
+	Tasks  []Task      `yaml:"tasks" json:"tasks"`
+	Errors []LoadError `yaml:"errors" json:"errors"`
+}
+
 // Store lists and retrieves tasks.
 type Store interface {
-	List() ([]Task, error)
+	List() (ListResult, error)
 	Get(id string) (Task, error)
 }
 
-// FileStore is a read-only Store backed by a directory of tasks/<id>/task.yaml
-// files.
+// FileStore is a read-only Store backed by a directory of <id>/task.yaml
+// files (e.g. data/tasks/<id>/task.yaml with the default WORKSPACE_ROOT).
 type FileStore struct {
 	Root string
 }
@@ -36,14 +52,17 @@ func NewFileStore(root string) *FileStore {
 }
 
 // List returns every task under Root, sorted by id. Entries that are not
-// directories, or whose name doesn't match TASK-<digits>, are skipped.
-func (s *FileStore) List() ([]Task, error) {
+// directories, or whose name doesn't match TASK-<digits>, are silently
+// skipped. Entries that do match but fail to read or parse are skipped too,
+// logged, and reported in the result's Errors rather than failing the whole
+// call — one malformed task.yaml shouldn't take down every other task.
+func (s *FileStore) List() (ListResult, error) {
 	entries, err := os.ReadDir(s.Root)
 	if err != nil {
-		return nil, fmt.Errorf("reading task root %s: %w", s.Root, err)
+		return ListResult{}, fmt.Errorf("reading task root %s: %w", s.Root, err)
 	}
 
-	var tasks []Task
+	var result ListResult
 	for _, entry := range entries {
 		if !entry.IsDir() || !idPattern.MatchString(entry.Name()) {
 			continue
@@ -51,13 +70,16 @@ func (s *FileStore) List() ([]Task, error) {
 
 		t, err := s.readTask(entry.Name())
 		if err != nil {
-			return nil, err
+			logrus.WithError(err).WithField("id", entry.Name()).Warn("skipping task that failed to load")
+			result.Errors = append(result.Errors, LoadError{ID: entry.Name(), Error: err.Error()})
+			continue
 		}
-		tasks = append(tasks, t)
+		result.Tasks = append(result.Tasks, t)
 	}
 
-	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
-	return tasks, nil
+	sort.Slice(result.Tasks, func(i, j int) bool { return result.Tasks[i].ID < result.Tasks[j].ID })
+	sort.Slice(result.Errors, func(i, j int) bool { return result.Errors[i].ID < result.Errors[j].ID })
+	return result, nil
 }
 
 // Get returns the task with the given id. It returns an error if id doesn't
