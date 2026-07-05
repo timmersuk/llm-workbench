@@ -30,3 +30,14 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Build output
+bin/
+
+# Frontend
+frontend/node_modules/
+
+# Embedded frontend build (checked-in placeholder keeps `go build`/`go test`
+# working before `make frontend` has run)
+internal/web/dist/*
+!internal/web/dist/.gitkeep
