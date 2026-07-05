@@ -19,6 +19,11 @@ The LLM Workbench is a system designed for managing software engineering work th
 *   **Execution**: A single run of an external or human/LLM worker, treated as an opaque transformation (`input → executor → output + metrics`).
 *   **Workflow Engine**: Coordinates task state transitions, stage enforcement, policy decisions, executor selection, and failure handling. It is fully deterministic and inspectable.
 
+_Provider is not a separate domain object but a pattern applied across the
+above — Execution's executor, Knowledge's future store, and Chat's LLM API
+are each swappable behind a narrow interface declared by the consumer (see
+`docs/provider abstraction.md`)._
+
 ### Project Structure:
 
 A typical workspace within LLM Workbench is structured as follows, rooted at
@@ -50,7 +55,7 @@ Tasks progress through explicit stages: `Requirements → Architecture → Plann
 *   **Tasks are first-class**: Chat and interactions are centered around tasks.
 *   **No hidden state**: All system information, decisions, and transitions are inspectable.
 *   **Separation of Concerns**: Clear boundaries between Knowledge, Project, Task, Execution, and Workflow.
-*   **Executors are replaceable**: The system is independent of specific LLM or tool providers.
+*   **Providers are replaceable**: Executors, knowledge stores, and LLM APIs are all pluggable providers behind stable interfaces — see `docs/provider abstraction.md`.
 *   **Failures are first-class**: Structured outcomes with defined recovery paths.
 *   **Prefer open standards**: Utilize existing protocols and libraries where applicable.
 *   **Store durable semantics**: Persist decisions, artifacts, and metrics.

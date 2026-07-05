@@ -158,6 +158,11 @@ so that the store, when built, has a spec to parse against rather than
 inventing one ad hoc — the same reason `task schema v0.md` predates the
 task store's full feature set.
 
+When built, this store should be exposed to the rest of the system as a
+narrow provider-shaped interface (mirroring `TaskLister`/`ProjectLister`
+in `internal/api/router.go:17,24`) rather than a concrete type consumed
+directly — see `docs/provider abstraction.md`.
+
 ---
 
 ## 7. One-line definition
