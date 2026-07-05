@@ -2,9 +2,9 @@ id: TASK-0001
 title: Build the milestone 1 skeleton
 project: demo-project
 
-status: in_progress
+status: complete
 
-stage: implementation
+stage: complete
 
 created_at: 2026-07-05T00:00:00Z
 updated_at: 2026-07-05T00:00:00Z
