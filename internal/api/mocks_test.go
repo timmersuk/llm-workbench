@@ -65,3 +65,12 @@ func (m *mockChatCompleter) CheckHealth(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)
 }
+
+func (m *mockChatCompleter) ListModels(ctx context.Context) ([]string, error) {
+	args := m.Called(ctx)
+	var models []string
+	if v := args.Get(0); v != nil {
+		models = v.([]string)
+	}
+	return models, args.Error(1)
+}

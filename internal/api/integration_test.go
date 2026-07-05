@@ -90,7 +90,10 @@ func fakeUpstream(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/models":
-			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(chat.ModelsResponse{
+				Data: []chat.ModelInfo{{ID: "test-model"}, {ID: "other-model"}},
+			})
 		case "/chat/completions":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(chat.CompletionResponse{
@@ -216,6 +219,23 @@ func TestIntegration_ChatCompletionsRoundTripsThroughRealClient(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Len(t, got.Choices, 1)
 	assert.Equal(t, "hello back", got.Choices[0].Message.Content)
+}
+
+func TestIntegration_ListModelsRoundTripsThroughRealClient(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	resp, err := http.Get(baseURL + "/api/v1/chat/models")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got struct {
+		Models []string `json:"models"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	assert.Equal(t, []string{"test-model", "other-model"}, got.Models)
 }
 
 func TestIntegration_HealthcheckReflectsRealChatClient(t *testing.T) {

@@ -1,4 +1,4 @@
-import type { ChatCompletionResponse, ChatMessage, ProjectListResult, TaskListResult } from './types'
+import type { ChatCompletionResponse, ChatMessage, ModelsListResult, ProjectListResult, TaskListResult } from './types'
 
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -31,11 +31,15 @@ export async function getHealthStatus(): Promise<HealthStatus> {
   return res.json() as Promise<HealthStatus>
 }
 
-export async function sendChatMessage(messages: ChatMessage[]): Promise<ChatCompletionResponse> {
+export function listModels(): Promise<ModelsListResult> {
+  return getJSON<ModelsListResult>('/api/v1/chat/models')
+}
+
+export async function sendChatMessage(messages: ChatMessage[], model: string): Promise<ChatCompletionResponse> {
   const res = await fetch('/api/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ model, messages }),
   })
   if (!res.ok) {
     throw new Error(`chat completion request failed with status ${res.status}`)

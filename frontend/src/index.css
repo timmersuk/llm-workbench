@@ -117,6 +117,26 @@ th {
   gap: 16px;
 }
 
+.chat-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.chat-model-row label {
+  color: var(--text-muted);
+}
+
+.chat-model-row select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
 .chat-history {
   display: flex;
   flex-direction: column;

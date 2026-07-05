@@ -109,3 +109,7 @@ func (c defaultModelCompleter) CreateChatCompletion(ctx context.Context, req cha
 func (c defaultModelCompleter) CheckHealth(ctx context.Context) error {
 	return c.client.CheckHealth(ctx)
 }
+
+func (c defaultModelCompleter) ListModels(ctx context.Context) ([]string, error) {
+	return c.client.ListModels(ctx)
+}

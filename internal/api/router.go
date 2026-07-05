@@ -30,6 +30,7 @@ type ProjectLister interface {
 type ChatCompleter interface {
 	CreateChatCompletion(ctx context.Context, req chat.CompletionRequest) (chat.CompletionResponse, error)
 	CheckHealth(ctx context.Context) error
+	ListModels(ctx context.Context) ([]string, error)
 }
 
 // NewRouter builds the full HTTP handler: the JSON API plus the embedded
@@ -48,6 +49,7 @@ func NewRouter(tasks TaskLister, projects ProjectLister, chatCompleter ChatCompl
 	mux.HandleFunc("GET /api/v1/projects/{id}", handleGetProject(projects))
 
 	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(chatCompleter))
+	mux.HandleFunc("GET /api/v1/chat/models", handleListModels(chatCompleter))
 
 	mux.Handle("GET /", newFrontendHandler(frontendFS))
 

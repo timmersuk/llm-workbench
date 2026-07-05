@@ -91,6 +91,46 @@ func TestClient_CreateChatCompletion_MalformedJSON(t *testing.T) {
 	assert.ErrorContains(t, err, "decoding")
 }
 
+func TestClient_ListModels_OK(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/models", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(ModelsResponse{
+			Data: []ModelInfo{{ID: "llama3"}, {ID: "mistral"}},
+		}))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "", 5*time.Second)
+	models, err := client.ListModels(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"llama3", "mistral"}, models)
+}
+
+func TestClient_ListModels_NonOKStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("upstream exploded"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "", 5*time.Second)
+	_, err := client.ListModels(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "500")
+}
+
+func TestClient_CheckHealth_UsesListModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/models", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "", 5*time.Second)
+	require.NoError(t, client.CheckHealth(context.Background()))
+}
+
 func TestClient_CreateChatCompletion_ContextCancelled(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)

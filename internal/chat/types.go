@@ -29,3 +29,14 @@ type Choice struct {
 	Message      Message `json:"message"`
 	FinishReason string  `json:"finish_reason"`
 }
+
+// ModelsResponse is the OpenAI-compatible response body for GET
+// {base}/models.
+type ModelsResponse struct {
+	Data []ModelInfo `json:"data"`
+}
+
+// ModelInfo describes a single model the provider makes available.
+type ModelInfo struct {
+	ID string `json:"id"`
+}

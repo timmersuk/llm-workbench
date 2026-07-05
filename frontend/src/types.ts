@@ -52,6 +52,10 @@ export interface ChatMessage {
   content: string
 }
 
+export interface ModelsListResult {
+  models: string[]
+}
+
 export interface ChatCompletionResponse {
   id: string
   model: string
