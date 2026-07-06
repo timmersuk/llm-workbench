@@ -5,12 +5,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// ErrStreamIdleTimeout indicates a streaming chat completion was aborted
+// because no data arrived from upstream for the configured timeout
+// duration — as opposed to the caller's context being cancelled, or the
+// stream simply running long while still emitting chunks (which never
+// times out; see StreamChatCompletion).
+var ErrStreamIdleTimeout = errors.New("chat completion stream received no data before idle timeout")
 
 // ChatClient creates chat completions (blocking and streaming), lists
 // available models, and reports provider health. Satisfied by the
@@ -32,16 +41,23 @@ type openAIClient struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+	timeout    time.Duration
 }
 
 // NewOpenAIClient returns a ChatClient speaking the OpenAI-compatible chat
 // completions dialect against baseURL (e.g. "http://localhost:11434/v1").
 // apiKey may be empty for servers that don't require authentication.
+//
+// timeout bounds the total duration of a non-streaming CreateChatCompletion
+// call, and the maximum idle gap between chunks of a StreamChatCompletion
+// call (a streaming call that keeps receiving data never times out no
+// matter how long it runs overall).
 func NewOpenAIClient(baseURL, apiKey string, timeout time.Duration) ChatClient {
 	return &openAIClient{
 		baseURL:    baseURL,
 		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{},
+		timeout:    timeout,
 	}
 }
 
@@ -50,6 +66,10 @@ func NewOpenAIClient(baseURL, apiKey string, timeout time.Duration) ChatClient {
 // zero value, since this method never streams.
 func (c *openAIClient) CreateChatCompletion(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	req.Stream = false
+	req.Messages = withTimeBudgetHint(req.Messages, c.timeout)
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -84,6 +104,22 @@ func (c *openAIClient) CreateChatCompletion(ctx context.Context, req CompletionR
 	return out, nil
 }
 
+// withTimeBudgetHint returns messages with a system message describing
+// budget appended to (or, if none exists, prepended as) the leading system
+// message, so a reasoning-capable model has a chance to pace itself instead
+// of reliably blowing a deadline mid-reasoning. It never introduces a
+// second, competing system message.
+func withTimeBudgetHint(messages []Message, budget time.Duration) []Message {
+	hint := fmt.Sprintf("You have approximately %s to respond. Keep any internal reasoning brief and prioritize returning a complete answer within that time.", budget)
+	if len(messages) > 0 && messages[0].Role == "system" {
+		out := make([]Message, len(messages))
+		copy(out, messages)
+		out[0].Content = out[0].Content + "\n\n" + hint
+		return out
+	}
+	return append([]Message{{Role: "system", Content: hint}}, messages...)
+}
+
 // StreamChatCompletion posts req to {baseURL}/chat/completions with
 // streaming forced on, and invokes onDelta once per incremental piece of
 // content or reasoning content as it arrives over the upstream
@@ -98,6 +134,16 @@ func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionR
 	if err != nil {
 		return fmt.Errorf("encoding chat completion request: %w", err)
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var idleFired atomic.Bool
+	timer := time.AfterFunc(c.timeout, func() {
+		idleFired.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -128,6 +174,7 @@ func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionR
 	toolCallsFlushed := false
 
 	for scanner.Scan() {
+		timer.Reset(c.timeout)
 		line := strings.TrimSpace(scanner.Text())
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
@@ -171,6 +218,9 @@ func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionR
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		if idleFired.Load() {
+			return fmt.Errorf("%w: no data for %s", ErrStreamIdleTimeout, c.timeout)
+		}
 		return fmt.Errorf("reading chat completion stream: %w", err)
 	}
 	return nil
