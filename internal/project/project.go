@@ -1,6 +1,5 @@
-// Package project provides the Project type and a read-only file-backed store
-// over a projects/ directory (rooted at WORKSPACE_ROOT, which defaults to
-// data/).
+// Package project provides the Project type and a file-backed store over a
+// projects/ directory (rooted at WORKSPACE_ROOT, which defaults to data/).
 package project
 
 import "time"
@@ -19,4 +18,26 @@ type Project struct {
 
 	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
 	UpdatedAt time.Time `yaml:"updated_at" json:"updated_at"`
+}
+
+// CreateInput is the client-supplied shape for creating a project. It has no
+// id field: project ids are always server-derived from Name by slugifying
+// it, never client-specified (unlike task ids, which the client chooses).
+type CreateInput struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Repositories []string `json:"repositories"`
+	Knowledge    []string `json:"knowledge"`
+	Constraints  []string `json:"constraints"`
+}
+
+// UpdateInput is the client-supplied shape for editing a project. Like
+// CreateInput, it has no id field — a project's id is immutable once
+// created and always comes from the URL path, never the request body.
+type UpdateInput struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Repositories []string `json:"repositories"`
+	Knowledge    []string `json:"knowledge"`
+	Constraints  []string `json:"constraints"`
 }

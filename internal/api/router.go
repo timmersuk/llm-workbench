@@ -13,18 +13,30 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
-// TaskLister lists and retrieves tasks. Satisfied by *task.FileStore.
-type TaskLister interface {
-	List() (task.ListResult, error)
-	Get(id string) (task.Task, error)
-}
-
-// ProjectLister lists and retrieves projects. Satisfied by
-// *project.FileStore.
-type ProjectLister interface {
+// ProjectStore lists, retrieves, creates, and updates projects, and
+// resolves a project's task-store root. Satisfied by *project.FileStore.
+type ProjectStore interface {
 	List() (project.ListResult, error)
 	Get(id string) (project.Project, error)
+	Create(in project.CreateInput) (project.Project, error)
+	Update(id string, in project.UpdateInput) (project.Project, error)
+	TasksRoot(id string) (string, error)
 }
+
+// TaskStore lists, retrieves, creates, and updates tasks within a single
+// project's task root. Satisfied by *task.FileStore.
+type TaskStore interface {
+	List() (task.ListResult, error)
+	Get(id string) (task.Task, error)
+	Create(t task.Task) (task.Task, error)
+	Update(id string, t task.Task) (task.Task, error)
+}
+
+// TaskStoreFactory builds a TaskStore rooted at the given directory. Task
+// routes are always scoped to one project, so handlers resolve the root
+// per-request via ProjectStore.TasksRoot and construct a store through this
+// factory rather than holding a single package-level task store.
+type TaskStoreFactory func(root string) TaskStore
 
 // ChatCompleter creates chat completions. Satisfied by *chat.Client.
 type ChatCompleter interface {
@@ -36,17 +48,21 @@ type ChatCompleter interface {
 // NewRouter builds the full HTTP handler: the JSON API plus the embedded
 // frontend (serving frontendFS, with an index.html SPA fallback for unknown
 // paths).
-func NewRouter(tasks TaskLister, projects ProjectLister, chatCompleter ChatCompleter, frontendFS fs.FS, buildId string) http.Handler {
+func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, chatCompleter ChatCompleter, frontendFS fs.FS, buildId string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthcheck", handleHealthcheck(chatCompleter, buildId))
 	mux.HandleFunc("GET /api/v1/version", handleVersion(buildId))
 
-	mux.HandleFunc("GET /api/v1/tasks", handleListTasks(tasks))
-	mux.HandleFunc("GET /api/v1/tasks/{id}", handleGetTask(tasks))
-
 	mux.HandleFunc("GET /api/v1/projects", handleListProjects(projects))
+	mux.HandleFunc("POST /api/v1/projects", handleCreateProject(projects))
 	mux.HandleFunc("GET /api/v1/projects/{id}", handleGetProject(projects))
+	mux.HandleFunc("PUT /api/v1/projects/{id}", handleUpdateProject(projects))
+
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", handleListProjectTasks(projects, taskStores))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", handleCreateProjectTask(projects, taskStores))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}", handleGetProjectTask(projects, taskStores))
+	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}", handleUpdateProjectTask(projects, taskStores))
 
 	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(chatCompleter))
 	mux.HandleFunc("GET /api/v1/chat/models", handleListModels(chatCompleter))

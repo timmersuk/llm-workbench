@@ -28,25 +28,48 @@ doesn't have to be re-derived or re-litigated later.
 
 ## Storage & file layout
 
-* Task/project persistence is a read-only `FileStore{Root string}`
-  (`internal/task/store.go`, `internal/project/store.go`) constructed via
-  `NewFileStore(root)`, laid out on disk as `<root>/<ID>/<kind>.yaml` (e.g.
-  `data/tasks/TASK-0001/task.yaml`). The root defaults to `WORKSPACE_ROOT`
-  (`data/`, see Configuration above) with `tasks/`, `projects/`, and
-  eventually `knowledge/` nested under it — the workspace layout described
-  in `CLAUDE.md` / `project_summary.md` — this section is about how the Go
-  code reads that layout, not the domain model itself. `knowledge/`'s
-  on-disk format (when that store is built) is an OKF bundle, not
-  `<root>/<ID>/<kind>.yaml` — see `docs/knowledge schema v0.md`.
+* Project persistence is a `FileStore{Root string}` (`internal/project/store.go`)
+  constructed via `NewFileStore(root)`, laid out on disk as
+  `<root>/<projectId>/project.yaml`. Task persistence
+  (`internal/task/store.go`) is the same `FileStore{Root}` shape, but
+  `internal/task` has zero knowledge of `internal/project` — a task store is
+  always constructed rooted at a single project's tasks directory,
+  resolved dynamically per request via `project.FileStore.TasksRoot(projectID)`
+  (`filepath.Join(s.Root, projectID, "tasks")`). The root defaults to
+  `WORKSPACE_ROOT` (`data/`, see Configuration above) — the workspace layout
+  described in `CLAUDE.md` / `project_summary.md` (`data/projects/<id>/project.yaml`,
+  `data/projects/<id>/tasks/<taskId>/task.yaml`) — this section is about how
+  the Go code reads/writes that layout, not the domain model itself.
+  `knowledge/`'s on-disk format (when that store is built) is an OKF
+  bundle, not `<root>/<ID>/<kind>.yaml` — see `docs/knowledge schema v0.md`.
+* Both `FileStore`s support `Create`/`Update` as well as `List`/`Get` —
+  persistence is not read-only.
 * Structs carry matching `yaml:` and `json:` tags so the same type
   round-trips straight to the API — don't introduce a separate DTO layer
-  for this.
-* IDs are validated with a package-level `regexp.MustCompile` pattern (e.g.
-  `^TASK-\d+$`) and a sentinel `ErrInvalidID`, checked in `Get` *before* the
-  ID is joined into a filesystem path — this doubles as the path-traversal
-  guard. Any new ID-keyed store must follow the same
-  validate-before-join order. `List()` silently skips directory entries
-  that don't match the pattern, and returns results sorted by ID.
+  for this. Create/Update request bodies that genuinely differ in shape
+  from the stored type (e.g. omitting server-assigned fields like `id` or
+  timestamps) get their own type instead (`project.CreateInput`/`UpdateInput`)
+  — still no separate DTO *layer*, just a distinct type where the wire
+  shape actually differs.
+* IDs are validated with a shared slug-style guard (empty, or containing
+  `/`, `\`, or `..` → reject) and a sentinel `ErrInvalidID`, checked
+  *before* the ID is joined into a filesystem path — this doubles as the
+  path-traversal guard. Any new ID-keyed store must follow the same
+  validate-before-join order. Task ids used to be constrained to
+  `^TASK-\d+$`; that pattern is gone — ids are now client-specified at
+  creation time (see below) and can be any valid slug. `List()` reports
+  directories that don't parse as an entity as a `LoadError` rather than
+  silently skipping them (see "Partial list results" below).
+* Task ids are unique only *within* their owning project (the same id may
+  exist under two different projects, since each has its own nested `tasks/`
+  root); project ids are unique globally. Neither is auto-disambiguated on
+  collision: `task.FileStore.Create` returns `ErrAlreadyExists` if the
+  client-specified id's directory already exists, and
+  `project.FileStore.Create` returns its own `ErrAlreadyExists` if the
+  slug derived from `Name` already exists — both map to `409 Conflict`
+  via `writeMutationError` (`internal/api/json.go`), this repo's first use
+  of that status. Project ids are still server-derived (slugified `Name`),
+  unlike task ids.
 * Execution records (`execution.yaml`, not yet implemented) must be
   append-only per `docs/task schema v0.md` §5.2 — when that store is built,
   follow the same validate-before-join pattern above and never overwrite an
