@@ -1,4 +1,4 @@
-id: TASK-0004
+id: docker-and-ci
 title: Add Dockerfile and GitHub Actions CI
 project: llm-workbench
 
@@ -23,14 +23,14 @@ constraints:
   - "Dockerfile copies a prebuilt bin/${TARGETPLATFORM}/workbench (multi-arch via Makefile cross-compilation), not a multi-stage in-image Go build — matches logthing's pattern."
 
 assumptions:
-  - GitHub Actions is the correct CI target — resolves the open question left in TASK-0003's context.yaml.
+  - GitHub Actions is the correct CI target — resolves the open question left in the e2e-tests task's context.yaml.
   - A container registry (Docker Hub, matching logthing, or GHCR) will be used for the docker job's publish step — not yet decided.
 
 success_criteria:
   - Dockerfile builds a working image that runs the workbench binary.
   - .github/workflows/ci.yml's test job builds the frontend and runs go test ./... on every push/PR.
   - .github/workflows/ci.yml's docker job builds a multi-arch image, mirroring logthing's job shape.
-  - TASK-0003's CI prerequisite is satisfied instead of being an open question.
+  - The e2e-tests task's CI prerequisite is satisfied instead of being an open question.
 
 references:
   knowledge:

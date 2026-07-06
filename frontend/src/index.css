@@ -150,6 +150,24 @@ th {
   background: var(--bg-alt);
 }
 
+.thinking-panel {
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.thinking-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.thinking-content {
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  white-space: pre-wrap;
+}
+
 .chat-input {
   display: flex;
   gap: 8px;

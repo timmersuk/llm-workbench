@@ -1,6 +1,6 @@
 package api
 
-// Integration tests wire real collaborators (FileStore, chat.Client) into
+// Integration tests wire real collaborators (FileStore, chat.ChatClient) into
 // the real router and drive it over a real net.Listener with a real
 // http.Client — unlike the rest of this package's tests, which exercise
 // handlers/the mux with mocks and httptest.NewRecorder. This is the layer
@@ -9,12 +9,15 @@ package api
 // tests can't.
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,11 +60,11 @@ updated_at: 2026-07-05T00:00:00Z
 
 // newIntegrationServer boots a real router backed by a real project
 // FileStore (seeded with one fixture project owning one fixture task) and a
-// real *chat.Client pointed at a fake upstream, then serves it over a real
+// real chat.ChatClient pointed at a fake upstream, then serves it over a real
 // net.Listener. Callers get back a ready-to-use base URL and a
-// cleanup-registered *chat.Client so upstream behavior (e.g. closing the
+// cleanup-registered chat.ChatClient so upstream behavior (e.g. closing the
 // fake server) can be adjusted per test.
-func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL string, chatClient *chat.Client) {
+func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL string, chatClient chat.ChatClient) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -75,7 +78,7 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
-	chatClient = chat.NewClient(upstream.URL, "test-key", 5*time.Second)
+	chatClient = chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 
 	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
@@ -85,7 +88,9 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 }
 
 // fakeUpstream serves both the OpenAI-compatible /chat/completions endpoint
-// and the /models endpoint chat.Client.CheckHealth probes.
+// (always as a Server-Sent-Events stream, since chat.ChatClient always
+// requests stream: true) and the /models endpoint chat.ChatClient.CheckHealth
+// probes.
 func fakeUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -96,16 +101,16 @@ func fakeUpstream(t *testing.T) *httptest.Server {
 				Data: []chat.ModelInfo{{ID: "test-model"}, {ID: "other-model"}},
 			})
 		case "/chat/completions":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(chat.CompletionResponse{
-				ID:    "chatcmpl-1",
-				Model: "test-model",
-				Choices: []chat.Choice{{
-					Index:        0,
-					Message:      chat.Message{Role: "assistant", Content: "hello back"},
-					FinishReason: "stop",
-				}},
-			})
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			for _, word := range []string{"hello ", "back"} {
+				chunk, _ := json.Marshal(map[string]any{
+					"choices": []map[string]any{{"index": 0, "delta": map[string]string{"content": word}}},
+				})
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
 		default:
 			http.NotFound(w, r)
 		}
@@ -178,7 +183,7 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
-	chatClient := chat.NewClient(upstream.URL, "test-key", 5*time.Second)
+	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 
 	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
@@ -237,7 +242,7 @@ func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing
 
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
-	chatClient := chat.NewClient(upstream.URL, "test-key", 5*time.Second)
+	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
@@ -378,11 +383,22 @@ func TestIntegration_ChatCompletionsRoundTripsThroughRealClient(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
-	var got chat.CompletionResponse
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	require.Len(t, got.Choices, 1)
-	assert.Equal(t, "hello back", got.Choices[0].Message.Content)
+	var content strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var ev chatStreamEvent
+		require.NoError(t, json.Unmarshal([]byte(data), &ev))
+		require.Empty(t, ev.Error)
+		content.WriteString(ev.Content)
+	}
+	require.NoError(t, scanner.Err())
+	assert.Equal(t, "hello back", content.String())
 }
 
 func TestIntegration_ListModelsRoundTripsThroughRealClient(t *testing.T) {

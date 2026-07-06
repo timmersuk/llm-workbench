@@ -4,7 +4,6 @@
 package api
 
 import (
-	"context"
 	"io/fs"
 	"net/http"
 
@@ -38,17 +37,12 @@ type TaskStore interface {
 // factory rather than holding a single package-level task store.
 type TaskStoreFactory func(root string) TaskStore
 
-// ChatCompleter creates chat completions. Satisfied by *chat.Client.
-type ChatCompleter interface {
-	CreateChatCompletion(ctx context.Context, req chat.CompletionRequest) (chat.CompletionResponse, error)
-	CheckHealth(ctx context.Context) error
-	ListModels(ctx context.Context) ([]string, error)
-}
-
 // NewRouter builds the full HTTP handler: the JSON API plus the embedded
 // frontend (serving frontendFS, with an index.html SPA fallback for unknown
-// paths).
-func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, chatCompleter ChatCompleter, frontendFS fs.FS, buildId string) http.Handler {
+// paths). chatCompleter is chat.ChatClient — declared and documented in
+// internal/chat as a deliberate exception to interfaces normally living in
+// the consuming package (see docs/adr/0001-opaque-chat-provider-implementation.md).
+func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, chatCompleter chat.ChatClient, frontendFS fs.FS, buildId string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthcheck", handleHealthcheck(chatCompleter, buildId))
@@ -72,7 +66,7 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, chatCompleter
 	return mux
 }
 
-func handleHealthcheck(chatCompleter ChatCompleter, buildId string) http.HandlerFunc {
+func handleHealthcheck(chatCompleter chat.ChatClient, buildId string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if chatCompleter != nil {
 			if err := chatCompleter.CheckHealth(r.Context()); err != nil {

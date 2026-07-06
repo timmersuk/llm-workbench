@@ -99,12 +99,12 @@ export interface ModelsListResult {
   models: string[]
 }
 
-export interface ChatCompletionResponse {
-  id: string
-  model: string
-  choices: {
-    index: number
-    message: ChatMessage
-    finish_reason: string
-  }[]
+// ChatStreamEvent mirrors internal/api/chat.go's chatStreamEvent — one
+// incremental piece of a streamed chat completion. Content and
+// ReasoningContent are never both set on the same event; Error is only set
+// on the final event of a stream that failed partway through.
+export interface ChatStreamEvent {
+  content?: string
+  reasoning_content?: string
+  error?: string
 }

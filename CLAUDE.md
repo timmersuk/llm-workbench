@@ -8,7 +8,7 @@ The LLM Workbench is a system designed for managing software engineering work th
 
 ### Core Abstractions:
 
-*   **Task**: The primary unit of work. Tasks are versioned intent objects, belonging to exactly one project permanently. Each task is a directory nested under its owning project (e.g., `data/projects/demo-project/tasks/TASK-0001/`) containing:
+*   **Task**: The primary unit of work. Tasks are versioned intent objects, belonging to exactly one project permanently. Each task is a directory nested under its owning project (e.g., `data/projects/auth-service/tasks/fix-login-bug/`) containing:
     *   `task.yaml`: Core definition (id, title, project, status, stage, objective, constraints, etc.).
     *   `context.yaml` (optional): Derived context — see `docs/task schema v0.md` for its shape.
     *   `plan.yaml` (optional): Generated structured plan.
@@ -36,7 +36,7 @@ data/                          (WORKSPACE_ROOT)
 │   ├── auth-service/
 │   │   ├── project.yaml
 │   │   └── tasks/
-│   │       ├── TASK-0001/
+│   │       ├── fix-login-bug/
 │   │       │   └── task.yaml
 │   │       └── ...
 │   └── ...

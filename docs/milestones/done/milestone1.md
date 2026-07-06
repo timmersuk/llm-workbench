@@ -1,6 +1,6 @@
 # Milestone 1 — Skeleton
 
-**Status: Done** — closed out 2026-07-05, tracked as TASK-0001.
+**Status: Done** — closed out 2026-07-05, tracked as `build-skeleton`.
 
 Produce a runnable application with no intelligence.
 

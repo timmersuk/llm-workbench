@@ -146,8 +146,8 @@ Workspace
 ├── Projects
 │   ├── auth-service
 │   │   └── Tasks
-│   │       ├── TASK-0001/
-│   │       ├── TASK-0002/
+│   │       ├── fix-login-bug/
+│   │       ├── add-mfa-support/
 │   │       └── ...
 │   ├── billing-system
 │   │   └── Tasks

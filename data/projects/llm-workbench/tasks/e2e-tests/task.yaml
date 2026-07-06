@@ -1,4 +1,4 @@
-id: TASK-0003
+id: e2e-tests
 title: Add a coupled frontend+backend end-to-end test
 project: llm-workbench
 
@@ -12,8 +12,8 @@ updated_at: 2026-07-05T00:00:00Z
 objective: >-
   Add an end-to-end test that builds the real single embedded binary and
   drives it through a real browser, catching integration bugs that neither
-  the Go integration tests (TestIntegration_* in internal/api) nor frontend
-  unit tests (TASK-0002) can see.
+  the Go integration tests (TestIntegration_* in internal/api) nor the
+  frontend-unit-tests task can see.
 
 constraints:
   - "Needs basic CI to exist first — this repo currently has no CI pipeline at all. Treat that as this task's real prerequisite, not a hidden blocker to discover mid-task."

@@ -1,6 +1,6 @@
 summary: >-
-  This repo has no CI and no Docker packaging at all. TASK-0003 flagged CI
-  as a blocking prerequisite it doesn't want to own itself, and left open
+  This repo has no CI and no Docker packaging at all. The e2e-tests task
+  flagged CI as a blocking prerequisite it doesn't want to own itself, and left open
   whether GitHub Actions is the right target and whether it should be its
   own task. This task answers both — yes and yes — and expands scope to
   cover Docker packaging too, since the sibling repo used as a template
@@ -12,7 +12,7 @@ background: >-
   .github/ directory exists anywhere, and none of docs/milestones/
   milestone{1-5}.md mention CI — it's a prose scope list per milestone, not
   a task registry, so CI was never scoped into any milestone plan.
-  TASK-0003's context.yaml independently flagged the same gap ("no CI
+  The e2e-tests task's context.yaml independently flagged the same gap ("no CI
   pipeline in this repo at all") as a prerequisite for its e2e work. The
   user pointed at D:\projects\logthing (same author, same Go+Vite+pnpm
   single-binary architecture — its Makefile target names build-go-local/

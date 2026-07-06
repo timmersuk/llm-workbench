@@ -1,6 +1,6 @@
 summary: >-
   Neither the new Go integration tests (internal/api/integration_test.go)
-  nor the planned frontend unit tests (TASK-0002) can catch a bug where the
+  nor the planned frontend-unit-tests task can catch a bug where the
   built frontend and the live API disagree — e.g. a field the frontend
   expects that the backend renamed, or an SPA route the embedded server's
   fallback doesn't actually serve correctly once real routing/build output
@@ -8,7 +8,7 @@ summary: >-
   single-binary artifact through a real browser.
 
 background: >-
-  Surfaced in the same testing-stage-gap audit as TASK-0002 (2026-07-05).
+  Surfaced in the same testing-stage-gap audit as frontend-unit-tests (2026-07-05).
   Deliberately the last of the three testing gaps to close: it's the most
   expensive (new tooling, browser automation) and depends on infrastructure
   (CI) that doesn't exist yet, whereas the Go integration test and the

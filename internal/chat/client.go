@@ -1,56 +1,68 @@
 package chat
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// Completer creates chat completions.
-type Completer interface {
+// ChatClient creates chat completions (blocking and streaming), lists
+// available models, and reports provider health. Satisfied by the
+// unexported openAIClient returned by NewOpenAIClient — callers only ever
+// see this interface, never the concrete implementation, so the provider
+// stays swappable in practice and not just in principle (see
+// docs/adr/0001-opaque-chat-provider-implementation.md).
+type ChatClient interface {
 	CreateChatCompletion(ctx context.Context, req CompletionRequest) (CompletionResponse, error)
+	StreamChatCompletion(ctx context.Context, req CompletionRequest, onDelta func(Delta) error) error
+	ListModels(ctx context.Context) ([]string, error)
+	CheckHealth(ctx context.Context) error
 }
 
-// Client talks to an OpenAI-compatible chat completions endpoint.
-type Client struct {
-	BaseURL    string
-	APIKey     string
-	HTTPClient *http.Client
+// openAIClient talks to an OpenAI-compatible chat completions endpoint. It
+// is unexported so nothing outside this package can depend on the concrete
+// type instead of ChatClient.
+type openAIClient struct {
+	baseURL    string
+	apiKey     string
+	httpClient *http.Client
 }
 
-// NewClient returns a Client pointed at baseURL (e.g.
-// "http://localhost:11434/v1"). apiKey may be empty for servers that don't
-// require authentication.
-func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
-	return &Client{
-		BaseURL:    baseURL,
-		APIKey:     apiKey,
-		HTTPClient: &http.Client{Timeout: timeout},
+// NewOpenAIClient returns a ChatClient speaking the OpenAI-compatible chat
+// completions dialect against baseURL (e.g. "http://localhost:11434/v1").
+// apiKey may be empty for servers that don't require authentication.
+func NewOpenAIClient(baseURL, apiKey string, timeout time.Duration) ChatClient {
+	return &openAIClient{
+		baseURL:    baseURL,
+		apiKey:     apiKey,
+		httpClient: &http.Client{Timeout: timeout},
 	}
 }
 
-// CreateChatCompletion posts req to {BaseURL}/chat/completions and decodes the
-// response.
-func (c *Client) CreateChatCompletion(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
+// CreateChatCompletion posts req to {baseURL}/chat/completions and decodes the
+// full response. req.Stream is always sent as false, regardless of its
+// zero value, since this method never streams.
+func (c *openAIClient) CreateChatCompletion(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
+	req.Stream = false
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("encoding chat completion request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("building chat completion request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
+	c.setHeaders(httpReq)
 
-	resp, err := c.HTTPClient.Do(httpReq)
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("calling chat completions endpoint: %w", err)
 	}
@@ -72,25 +84,98 @@ func (c *Client) CreateChatCompletion(ctx context.Context, req CompletionRequest
 	return out, nil
 }
 
+// StreamChatCompletion posts req to {baseURL}/chat/completions with
+// streaming forced on, and invokes onDelta once per incremental piece of
+// content or reasoning content as it arrives over the upstream
+// Server-Sent-Events stream. It returns once the stream ends (upstream
+// sends "data: [DONE]" or closes the connection) or onDelta returns an
+// error, in which case that error is returned immediately without reading
+// further.
+func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionRequest, onDelta func(Delta) error) error {
+	req.Stream = true
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("encoding chat completion request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building chat completion request: %w", err)
+	}
+	c.setHeaders(httpReq)
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("calling chat completions endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("chat completions endpoint returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	// Upstream lines (a full completion's accumulated reasoning +
+	// content) can comfortably exceed bufio.Scanner's default 64KiB
+	// token limit; grow it well past anything a single SSE line should
+	// realistically need.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		if data == "[DONE]" {
+			return nil
+		}
+
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return fmt.Errorf("decoding chat completion stream chunk: %w", err)
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		delta := Delta{
+			Content:          chunk.Choices[0].Delta.Content,
+			ReasoningContent: chunk.Choices[0].Delta.ReasoningContent,
+		}
+		if delta.Content == "" && delta.ReasoningContent == "" {
+			continue
+		}
+		if err := onDelta(delta); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("reading chat completion stream: %w", err)
+	}
+	return nil
+}
+
 // CheckHealth requests the models list from the provider and returns nil when
 // the endpoint responds successfully.
-func (c *Client) CheckHealth(ctx context.Context) error {
+func (c *openAIClient) CheckHealth(ctx context.Context) error {
 	_, err := c.ListModels(ctx)
 	return err
 }
 
-// ListModels requests the available models from {BaseURL}/models and returns
+// ListModels requests the available models from {baseURL}/models and returns
 // their IDs.
-func (c *Client) ListModels(ctx context.Context) ([]string, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/models", nil)
+func (c *openAIClient) ListModels(ctx context.Context) ([]string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("building models request: %w", err)
 	}
-	if c.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
+	c.setHeaders(httpReq)
 
-	resp, err := c.HTTPClient.Do(httpReq)
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("calling models endpoint: %w", err)
 	}
@@ -119,4 +204,11 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		ids = append(ids, m.ID)
 	}
 	return ids, nil
+}
+
+func (c *openAIClient) setHeaders(req *http.Request) {
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 }
