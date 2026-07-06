@@ -33,5 +33,5 @@ success_criteria:
 references:
   knowledge:
     - docs/engineering conventions.md
-    - docs/milestones/milestone2.md
+    - docs/milestones/done/milestone2.md
   repo: []

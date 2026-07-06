@@ -1,5 +1,7 @@
 # Milestone 2 — Tasks
 
+**Status: Done** — closed out 2026-07-06, implemented in PR #4.
+
 Now add:
 
 * create task (client-specified id, within a project)
