@@ -16,7 +16,7 @@ Each task is a directory under its owning project's `tasks/` directory
 `data/projects/<projectId>/tasks/`):
 
 ```
-data/projects/llm-workbench/tasks/TASK-0001/
+data/projects/llm-workbench/tasks/fix-login-bug/
     task.yaml
     context.yaml (optional, derived — see below)
     plan.yaml (optional, generated)
@@ -33,7 +33,7 @@ be reused by tasks in different projects.
 ## 2. Core Task Definition (task.yaml)
 
 ```yaml
-id: TASK-0001
+id: fix-login-bug
 title: ""
 project: auth-service
 
@@ -98,7 +98,7 @@ One per execution attempt.
 
 ```yaml
 execution_id: exec-001
-task_id: TASK-0001
+task_id: fix-login-bug
 
 executor:
   type: claude-code | codex | local | human

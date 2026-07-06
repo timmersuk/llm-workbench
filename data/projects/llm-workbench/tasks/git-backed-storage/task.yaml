@@ -1,4 +1,4 @@
-id: TASK-0005
+id: git-backed-storage
 title: Migrate task/project storage to a real git-backed repository
 project: llm-workbench
 

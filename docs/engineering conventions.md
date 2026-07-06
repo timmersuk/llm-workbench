@@ -186,11 +186,12 @@ doesn't have to be re-derived or re-litigated later.
 
 * `internal/chat/client.go` speaks the OpenAI-compatible chat completions
   shape (`POST {base}/chat/completions`, `GET {base}/models` for health)
-  regardless of which backend provider is configured — this keeps the
-  provider interchangeable per the "providers are replaceable" invariant
-  (`docs/architectural invariants.md`).
-  New provider integrations should conform to this same request/response
-  shape rather than introducing a provider-specific one.
+  regardless of which backend provider is configured. New provider
+  integrations should conform to this same request/response shape rather
+  than introducing a provider-specific one. See
+  `docs/adr/0004-chat-client-openai-compatible-wire-format.md` for why
+  this shape was standardized on instead of a bespoke interface with
+  per-vendor adapters.
 
 ## Build & single-binary packaging
 

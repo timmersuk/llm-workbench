@@ -8,12 +8,13 @@ knowledge documents physically live — are implementation details, and
 implementation details should be swappable without touching the
 semantics above them. A **provider** is the name for that swappable
 boundary: any external system reached through a narrow, consumer-defined
-interface rather than depended on directly.
-
-This is not a new domain object alongside Task/Project/Knowledge/
-Execution — it's a pattern applied *to* those models where they reach
-out to something replaceable. See `docs/architectural invariants.md`
-("Providers are replaceable").
+interface rather than depended on directly — not a new domain object
+alongside Task/Project/Knowledge/Execution, but a pattern applied *to*
+those models where they reach out to something replaceable. See
+`docs/architectural invariants.md` ("Providers are replaceable") and
+`docs/adr/0003-provider-abstraction-pattern.md` for why this was named
+and generalized across domains rather than left as an executor-specific
+concern.
 
 ---
 

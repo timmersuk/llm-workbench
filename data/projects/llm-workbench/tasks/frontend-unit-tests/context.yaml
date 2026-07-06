@@ -11,7 +11,7 @@ background: >-
   (2026-07-05): the real http.ServeMux is now exercised end-to-end against
   real stores (internal/api/integration_test.go), but the frontend was
   never in scope for that pass. Deliberately scoped separately from
-  TASK-0003 (the coupled frontend+backend e2e test) — this task is
+  e2e-tests (the coupled frontend+backend e2e test) — this task is
   frontend-only and backend-agnostic, using mocked fetch rather than a
   live server, so it doesn't need CI infrastructure to land.
 
@@ -60,7 +60,7 @@ detail: |
   resolves, the populated state once it does, an empty-list state, and the
   error state when the mocked fetch rejects.
 
-  Sequencing note: this doesn't block or get blocked by TASK-0003. It's
+  Sequencing note: this doesn't block or get blocked by e2e-tests. It's
   purely frontend-side and doesn't touch CI, so it can land independently
   and sooner.
 

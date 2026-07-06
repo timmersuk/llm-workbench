@@ -110,6 +110,21 @@ func (m *mockChatCompleter) CreateChatCompletion(ctx context.Context, req chat.C
 	return resp, args.Error(1)
 }
 
+// StreamChatCompletion's test double is configured with .Return(deltas,
+// err): deltas ([]chat.Delta) are fed through onDelta in order (stopping
+// early if onDelta itself errors), then err is returned.
+func (m *mockChatCompleter) StreamChatCompletion(ctx context.Context, req chat.CompletionRequest, onDelta func(chat.Delta) error) error {
+	args := m.Called(ctx, req, onDelta)
+	if deltas, ok := args.Get(0).([]chat.Delta); ok {
+		for _, d := range deltas {
+			if err := onDelta(d); err != nil {
+				return err
+			}
+		}
+	}
+	return args.Error(1)
+}
+
 func (m *mockChatCompleter) CheckHealth(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)

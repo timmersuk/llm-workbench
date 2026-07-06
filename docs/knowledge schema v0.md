@@ -7,7 +7,8 @@ separate from intent", and `project_summary.md` §3.3). It is stored
 separately from Tasks and Projects but may be referenced by both.
 
 This schema adopts an existing open standard rather than inventing a
-bespoke one, per the "prefer open standards" invariant.
+bespoke one, per the "prefer open standards" invariant. See
+`docs/adr/0002-open-knowledge-format-for-knowledge-layer.md` for why.
 
 ---
 
@@ -16,16 +17,7 @@ bespoke one, per the "prefer open standards" invariant.
 The Knowledge layer stores documents using the
 [Open Knowledge Format (OKF) v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) —
 a vendor-neutral spec for representing knowledge as markdown files with
-YAML frontmatter, organized into a directory hierarchy ("bundle"). OKF
-was chosen over a bespoke format because it's:
-
-- Readable with no tooling (`cat` a file) and parseable by agents with
-  no bespoke SDK.
-- Git-native: diffable, blameable, reviewable as normal pull requests.
-- Portable: a bundle is just a directory; no API or service lock-in.
-- Minimally opinionated: one required field (`type`), everything else
-  optional or producer-defined — so it doesn't need to be re-specified
-  as the kinds of knowledge this project captures evolve.
+YAML frontmatter, organized into a directory hierarchy ("bundle").
 
 `data/knowledge/` (`WORKSPACE_ROOT/knowledge`) *is* the OKF bundle root
 for this workspace. Each Project's `knowledge: []` list and each Task's

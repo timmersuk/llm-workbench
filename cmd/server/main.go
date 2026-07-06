@@ -36,7 +36,7 @@ func main() {
 	configureLogging(logLevel, logFormat)
 
 	projectStore := project.NewFileStore(filepath.Join(workspaceRoot, "projects"))
-	chatClient := chat.NewClient(llmBaseURL, llmAPIKey, llmTimeout)
+	chatClient := chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout)
 
 	frontendFS, err := fs.Sub(web.Files, "dist")
 	if err != nil {
@@ -76,8 +76,10 @@ func configureLogging(level, format string) {
 
 // defaultModelCompleter fills in the configured default model for requests
 // that don't specify one, since M1 targets a single configured provider.
+// It holds chat.ChatClient (the interface), never the concrete
+// implementation, so it works regardless of which ChatClient is configured.
 type defaultModelCompleter struct {
-	client *chat.Client
+	client chat.ChatClient
 	model  string
 }
 
@@ -86,6 +88,13 @@ func (c defaultModelCompleter) CreateChatCompletion(ctx context.Context, req cha
 		req.Model = c.model
 	}
 	return c.client.CreateChatCompletion(ctx, req)
+}
+
+func (c defaultModelCompleter) StreamChatCompletion(ctx context.Context, req chat.CompletionRequest, onDelta func(chat.Delta) error) error {
+	if req.Model == "" {
+		req.Model = c.model
+	}
+	return c.client.StreamChatCompletion(ctx, req, onDelta)
 }
 
 func (c defaultModelCompleter) CheckHealth(ctx context.Context) error {

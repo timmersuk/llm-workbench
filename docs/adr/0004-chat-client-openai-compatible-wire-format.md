@@ -1,0 +1,5 @@
+# Chat client standardizes on the OpenAI-compatible wire format
+
+`internal/chat/client.go` speaks the OpenAI-compatible chat completions shape (`POST {base}/chat/completions`, `GET {base}/models` for health) regardless of which backend LLM provider is actually configured, rather than a bespoke internal request/response shape with per-vendor adapters. This was chosen because that shape is already the de facto interoperability standard across the self-hosted/local model ecosystem (Ollama, vLLM, LM Studio, and others all expose it), so conforming to it directly keeps the backend swappable — per the "providers are replaceable" invariant — without the workbench having to build and maintain its own adapter layer. New provider integrations are expected to conform to this same request/response shape rather than introducing a provider-specific one.
+
+Considered building a bespoke internal chat interface with a translation adapter per vendor (OpenAI, Anthropic, local runtimes) — rejected as unnecessary near-term cost: it would mean writing and maintaining N adapters up front for an interoperability problem the ecosystem has already mostly standardized around.

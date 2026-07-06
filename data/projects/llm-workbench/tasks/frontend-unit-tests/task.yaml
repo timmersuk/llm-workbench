@@ -1,4 +1,4 @@
-id: TASK-0002
+id: frontend-unit-tests
 title: Introduce frontend unit test tooling
 project: llm-workbench
 
@@ -16,7 +16,7 @@ objective: >-
 
 constraints:
   - "Vitest + React Testing Library only (Vite-native, no second test runner)."
-  - "Mock fetch at the api.ts boundary rather than a live backend — that's TASK-0003's job, not this one."
+  - "Mock fetch at the api.ts boundary rather than a live backend — that's the e2e-tests task's job, not this one."
   - "Wire a test script into make test so it runs by default, not as a silent opt-in."
 
 assumptions:

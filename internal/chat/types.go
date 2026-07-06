@@ -8,11 +8,14 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-// CompletionRequest is an OpenAI-compatible non-streaming chat completion
-// request body.
+// CompletionRequest is an OpenAI-compatible chat completion request body.
+// Stream is set internally by ChatClient's two completion methods
+// (CreateChatCompletion forces it false, StreamChatCompletion forces it
+// true) — callers don't need to set it themselves.
 type CompletionRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
+	Stream   bool      `json:"stream,omitempty"`
 }
 
 // CompletionResponse is an OpenAI-compatible non-streaming chat completion
@@ -28,6 +31,30 @@ type Choice struct {
 	Index        int     `json:"index"`
 	Message      Message `json:"message"`
 	FinishReason string  `json:"finish_reason"`
+}
+
+// Delta is one incremental piece of a streamed chat completion, emitted by
+// ChatClient.StreamChatCompletion. Content and ReasoningContent are never
+// both populated on the same Delta — reasoning arrives as its own complete
+// stream of Deltas before the final-answer Deltas start, matching how
+// reasoning-capable models (e.g. DeepSeek-R1-style, via llama.cpp/LM
+// Studio's reasoning_content extension) actually emit it.
+type Delta struct {
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content"`
+}
+
+// streamChunk is the wire shape of a single OpenAI-compatible
+// "chat.completion.chunk" Server-Sent Event, decoded internally by
+// StreamChatCompletion — only the fields this workbench reads.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
 }
 
 // ModelsResponse is the OpenAI-compatible response body for GET
