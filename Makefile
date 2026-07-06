@@ -18,8 +18,13 @@ build: build-go-local
 build-go-local:
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "-s -w -X main.BuildID=$(BUILD_ID)" -o $(BIN) ./cmd/server
 
+.PHONY: frontend-test
+frontend-test:
+	corepack enable
+	cd frontend && pnpm install --frozen-lockfile && pnpm run test
+
 .PHONY: test
-test:
+test: frontend-test
 	go test ./...
 
 .PHONY: clean

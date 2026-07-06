@@ -1,74 +1,81 @@
 summary: >-
-  The Go backend has unit tests, router-level tests, and (as of TASK's
-  sibling work) real integration tests, but the frontend has zero test
-  tooling at all — no framework, no test files, no test script. This task
-  closes that gap at the unit level: cover the thin fetch wrapper and the
-  three panel components with fast, deterministic tests that don't require
-  a live backend.
+  The Go backend has unit tests, router-level tests, and real integration
+  tests, but until this task landed the frontend had zero test tooling —
+  no framework, no test files, no test script. This closes that gap at the
+  unit level: Vitest + React Testing Library, covering api.ts's full
+  18-function surface (including the SSE streaming helpers) and every
+  component, with fast, deterministic tests that don't require a live
+  backend.
 
 background: >-
-  Surfaced while auditing testing-stage gaps for the whole project
-  (2026-07-05): the real http.ServeMux is now exercised end-to-end against
-  real stores (internal/api/integration_test.go), but the frontend was
-  never in scope for that pass. Deliberately scoped separately from
-  e2e-tests (the coupled frontend+backend e2e test) — this task is
-  frontend-only and backend-agnostic, using mocked fetch rather than a
-  live server, so it doesn't need CI infrastructure to land.
+  First surfaced while auditing testing-stage gaps for the whole project
+  (2026-07-05), then picked back up (2026-07-06) after the GrillMe/Planning
+  Mode milestone had already landed and made the original scope stale:
+  TasksPanel no longer existed (folded into ProjectDetailPanel), api.ts had
+  grown from 4 functions to 18, and a new streaming Draft/Finalize/Revise
+  mechanism (StageConversationPanel, GrillMePanel, PlanningModePanel) had
+  no coverage at all. Deliberately scoped separately from e2e-tests (the
+  coupled frontend+backend e2e test) — this task is frontend-only and
+  backend-agnostic, using mocked fetch/./api rather than a live server, so
+  it doesn't need CI infrastructure to land.
 
 files:
   - path: frontend/package.json
-    role: add devDependencies (vitest, @testing-library/react, jest-dom, jsdom) and a `test` script
-  - path: frontend/vite.config.ts
-    role: likely gains a `test` block (or a sibling vitest.config.ts) configuring the jsdom environment
+    role: added devDependencies (vitest, @testing-library/react, @testing-library/jest-dom, @testing-library/user-event, jsdom) and a `test` script (`vitest run`)
+  - path: frontend/vitest.config.ts
+    role: new sibling config (not a `test` block in vite.config.ts — that file is part of tsconfig.node.json's tsc -b pass, which also drives the production build); mergeConfig's vite.config.ts so tests share the same @vitejs/plugin-react JSX transform
+  - path: frontend/src/setupTests.ts
+    role: new — jest-dom matchers, RTL cleanup, and an explicit beforeEach(vi.clearAllMocks) (needed because vi.restoreAllMocks() alone doesn't reliably reset vi.mock()-based auto-mock call history between tests in the same file — found the hard way via inflated toHaveBeenCalledTimes assertions)
   - path: frontend/src/api.ts
-    role: unit-test target — getJSON<T>, listTasks, listProjects, getHealthStatus, sendChatMessage
-  - path: frontend/src/TasksPanel.tsx
-    role: render-test target
-  - path: frontend/src/ProjectsPanel.tsx
-    role: render-test target
-  - path: frontend/src/ChatPanel.tsx
-    role: render-test target
+    role: unit-test target (frontend/src/api.test.ts) — all 18 exported functions, plus the private streamSSE helper exercised indirectly via streamChatCompletion
+  - path: frontend/src/GrillMePanel.tsx
+    role: the one thorough exercise of StageConversationPanel's generic streaming/Draft/Finalize mechanism (frontend/src/GrillMePanel.test.tsx) — mounted directly rather than instantiating the generic component
+  - path: frontend/src/StageConversationPanel.tsx
+    role: fixed a real bug found by GrillMePanel.test.tsx — a shallow `{...emptyDraft, ...parsed}` merge of a partial tool-call Draft replaced the whole nested `context` object, leaving e.g. `context.files` undefined and crashing RequirementsDraftForm's `.join()`; replaced with a one-level-deep merge (mergeDraftDefaults)
+  - path: frontend/src/ProjectForm.tsx
+    role: fixed a real accessibility bug found by ProjectForm.test.tsx — the edit-mode ID field's `<label>` had no `htmlFor`, not associated with its `<input>`
+  - path: frontend/src/{TaskKanbanBoard,RequirementsDraftForm,PlanDraftForm,TaskForm,PlanningModePanel,TaskDetailPanel,ProjectDetailPanel,ProjectsPanel,ChatPanel,App,listFields}.{test.ts,test.tsx}
+    role: render/behavior tests for every remaining component and the pure listFields helpers
   - path: Makefile
-    role: add a frontend-test target and fold it into the existing `test` target so `make test` covers both suites
+    role: added a `frontend-test` target (own `pnpm install --frozen-lockfile` + `pnpm run test`) and made it a prerequisite of `test`, so `make test` fails if either suite fails
   - path: docs/engineering conventions.md
-    role: update the Frontend conventions section ("no test framework configured yet") once this lands
+    role: replaced "No test framework is configured yet" with a Testing bullet describing the Vitest/RTL setup and the fetch-vs-./api mocking layering rule
 
 detail: |
-  Why Vitest + React Testing Library specifically: the project is already
-  Vite-based (frontend/vite.config.ts), so Vitest is a same-toolchain fit
-  with no separate bundler/transform config to maintain, unlike Jest. RTL
-  is the natural pairing for testing React components by their rendered
-  output rather than internals, which matches this codebase's simple,
-  hooks-only state management (docs/engineering conventions.md's Frontend
-  section: `useState`/`useEffect` per component, no state library).
+  Vitest + React Testing Library, not Jest: same-toolchain fit with the
+  existing Vite setup, no separate bundler/transform config.
 
-  Test shape for frontend/src/api.ts: each exported function (getJSON,
-  listTasks, listProjects, getHealthStatus, sendChatMessage) should get at
-  least two cases — a 2xx path asserting the parsed return value, and a
-  non-2xx path asserting the thrown Error's message. Mock global `fetch`
-  directly (e.g. `vi.stubGlobal('fetch', ...)` or a per-test
-  `globalThis.fetch = vi.fn()...`) rather than a library like msw, to keep
-  the dependency footprint small for what is currently four thin wrapper
-  functions.
+  Layering rule that shaped every component test: api.test.ts mocks global
+  fetch directly (proving wire-format correctness — paths, methods,
+  encodeURIComponent escaping, error-message shapes); every component test
+  mocks the ./api module boundary instead (vi.mock('./api')), asserting
+  rendering/state logic only. Parent components that render a child on
+  selection (ProjectsPanel→ProjectDetailPanel, ProjectDetailPanel→
+  TaskDetailPanel, TaskDetailPanel→GrillMePanel/PlanningModePanel) also
+  mock that child module, so the deep streaming mechanism is only ever
+  exercised once, in GrillMePanel.test.tsx, not repeated in every ancestor.
 
-  Test shape for the panels: each of TasksPanel/ProjectsPanel/ChatPanel
-  follows the same `data` + `error: string | null` state shape (documented
-  in docs/engineering conventions.md's Frontend conventions section) —
-  fetch in useEffect, `.then(setData).catch(err => setError(err.message))`.
-  So each panel's tests should assert against that existing convention
-  rather than inventing a new one: a loading state before the fetch
-  resolves, the populated state once it does, an empty-list state, and the
-  error state when the mocked fetch rejects.
+  Streaming tests build a real Response over a real ReadableStream
+  (`new Response(new ReadableStream({ start(c) { c.enqueue(...); c.close() } }))`)
+  — Node's fetch/Response/ReadableStream are process-level globals
+  independent of jsdom, so no polyfill needed. Component-level streaming
+  tests (GrillMePanel, ChatPanel) instead mock postStageMessage/
+  streamChatCompletion's implementation to capture the onEvent callback and
+  return a manually-resolved promise, so individual streamed deltas can be
+  delivered and asserted one at a time inside `act(...)`.
 
-  Sequencing note: this doesn't block or get blocked by e2e-tests. It's
-  purely frontend-side and doesn't touch CI, so it can land independently
-  and sooner.
+  Two real bugs surfaced by writing these tests (both fixed as part of this
+  task, see `files` above): StageConversationPanel's shallow Draft-merge
+  crashing on a partial tool-call payload, and ProjectForm's unlabeled ID
+  input. A third latent issue (Conversation.messages being JSON `null` for
+  a stage nobody has chatted in yet) had already been found and fixed via
+  manual UI screenshotting just before this task was picked back up, and
+  is covered here as an explicit regression case in GrillMePanel.test.tsx.
 
 verification:
-  - "pnpm test (or whatever the chosen script name is) passes locally inside frontend/."
-  - "make test at the repo root runs both the Go and frontend suites and fails if either fails."
-  - "Each of api.ts's four exported functions has both a success and an error-path test."
-  - "Each panel component has render assertions for at least loading, error, and populated states."
+  - "pnpm run test passes locally inside frontend/ (97 tests across 14 files at time of writing)."
+  - "pnpm run build (tsc -b && vite build) still succeeds with test files present."
+  - "make test at the repo root runs both suites and fails if either fails — confirmed by deliberately breaking one Go test and one frontend test in turn and observing the failure propagate."
+  - "npm run lint (oxlint) stays clean over the new test files."
 
-open_questions:
-  - "Whether Vitest's jsdom environment plays cleanly with verbatimModuleSyntax and the current TS config — flagged as a risk in plan.yaml, worth a five-minute spike before writing all the tests."
+open_questions: []

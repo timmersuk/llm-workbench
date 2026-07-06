@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
@@ -79,8 +81,9 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient = chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
+	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 
-	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, chatClient, knowledgeReader, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -184,8 +187,9 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
+	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 
-	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, chatClient, knowledgeReader, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -243,7 +247,8 @@ func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
-	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
+	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
+	router := NewRouter(projectStore, taskStores, chatClient, knowledgeReader, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -441,4 +446,181 @@ func TestIntegration_HealthcheckReflectsRealChatClient(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	assert.Equal(t, "error", got["status"])
 	assert.NotEmpty(t, got["error"])
+}
+
+// fakeUpstreamProposingToolCall behaves like fakeUpstream but, for
+// /chat/completions requests whose body includes a non-empty "tools" array,
+// streams a single fragmented tool call (matching the real fragmentation
+// shape observed against a live LM Studio server: name/id on the first
+// fragment, arguments as a separate fragment, then finish_reason
+// "tool_calls") instead of plain content.
+func fakeUpstreamProposingToolCall(t *testing.T, toolName, argumentsJSON string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(chat.ModelsResponse{Data: []chat.ModelInfo{{ID: "test-model"}}})
+		case "/chat/completions":
+			var req chat.CompletionRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+
+			if len(req.Tools) == 0 {
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				return
+			}
+
+			writeFrag := func(id, name, args string) {
+				chunk, _ := json.Marshal(map[string]any{
+					"choices": []map[string]any{{
+						"index": 0,
+						"delta": map[string]any{
+							"tool_calls": []map[string]any{{
+								"index":    0,
+								"id":       id,
+								"function": map[string]string{"name": name, "arguments": args},
+							}},
+						},
+					}},
+				})
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				flusher.Flush()
+			}
+			writeFrag("call-1", toolName, "")
+			writeFrag("", "", argumentsJSON)
+			fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestIntegration_StageMessageStreamsProposedDraftAsToolCallEvent(t *testing.T) {
+	upstream := fakeUpstreamProposingToolCall(t, proposeContextToolName, `{"objective":"ship login"}`)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	body, err := json.Marshal(stageMessageRequest{Content: "let's get started", Model: "test-model"})
+	require.NoError(t, err)
+
+	resp, err := http.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var sawToolCall bool
+	for _, line := range strings.Split(string(respBody), "\n") {
+		data, ok := strings.CutPrefix(strings.TrimSpace(line), "data: ")
+		if !ok || data == "" {
+			continue
+		}
+		var ev chatStreamEvent
+		require.NoError(t, json.Unmarshal([]byte(data), &ev))
+		if ev.ToolCall != nil {
+			sawToolCall = true
+			assert.Equal(t, proposeContextToolName, ev.ToolCall.Name)
+			assert.Equal(t, `{"objective":"ship login"}`, ev.ToolCall.Arguments)
+		}
+	}
+	require.True(t, sawToolCall, "expected a tool_call SSE event in the response body")
+
+	// The conversation must have been persisted with the tool call attached.
+	convResp, err := http.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/conversation")
+	require.NoError(t, err)
+	defer convResp.Body.Close()
+	var conv task.Conversation
+	require.NoError(t, json.NewDecoder(convResp.Body).Decode(&conv))
+	require.Len(t, conv.Messages, 2)
+	assert.Equal(t, "let's get started", conv.Messages[0].Content)
+	require.NotNil(t, conv.Messages[1].ToolCall)
+	assert.Equal(t, proposeContextToolName, conv.Messages[1].ToolCall.Name)
+}
+
+// TestIntegration_FullLifecycle_FinalizeAndReviseBothWays drives a task
+// through the full GrillMe -> Planning Mode -> Revise loop against real
+// FileStores, matching the milestone's manual verification walkthrough:
+// Finalize requirements advances to planning and writes context.yaml,
+// Finalize plan advances to implementation and writes plan.yaml, then
+// Revise Plan and Revise Requirements each move stage back one step,
+// resuming (not resetting) each stage's persisted Conversation.
+func TestIntegration_FullLifecycle_FinalizeAndReviseBothWays(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	getStage := func() string {
+		resp, err := client.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-0001")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var got task.Task
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		return got.Stage
+	}
+	require.Equal(t, task.StageRequirements, getStage())
+
+	draft := task.RequirementsDraft{
+		Objective: "ship login",
+		Context:   task.Context{Summary: "adds a login page"},
+	}
+	draftBody, err := json.Marshal(draft)
+	require.NoError(t, err)
+	resp, err := client.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/requirements/finalize", "application/json", bytes.NewReader(draftBody))
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, task.StagePlanning, getStage())
+
+	ctxResp, err := client.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-0001/context")
+	require.NoError(t, err)
+	defer ctxResp.Body.Close()
+	require.Equal(t, http.StatusOK, ctxResp.StatusCode)
+	var gotCtx task.Context
+	require.NoError(t, json.NewDecoder(ctxResp.Body).Decode(&gotCtx))
+	assert.Equal(t, "adds a login page", gotCtx.Summary)
+
+	plan := task.Plan{Approach: "incremental", EstimatedComplexity: "low"}
+	planBody, err := json.Marshal(plan)
+	require.NoError(t, err)
+	resp, err = client.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/plan/finalize", "application/json", bytes.NewReader(planBody))
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, task.StageImplementation, getStage())
+
+	planResp, err := client.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-0001/plan")
+	require.NoError(t, err)
+	defer planResp.Body.Close()
+	require.Equal(t, http.StatusOK, planResp.StatusCode)
+	var gotPlan task.Plan
+	require.NoError(t, json.NewDecoder(planResp.Body).Decode(&gotPlan))
+	assert.Equal(t, "incremental", gotPlan.Approach)
+
+	// Revise Plan: implementation -> planning.
+	resp, err = client.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/plan/revise", "application/json", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, task.StagePlanning, getStage())
+
+	// Revise Requirements: planning -> requirements.
+	resp, err = client.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/requirements/revise", "application/json", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, task.StageRequirements, getStage())
+
+	// Finalize is now invalid from planning (we're back in requirements) and
+	// Revise Plan is invalid from requirements -- both must 409.
+	resp, err = client.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/plan/finalize", "application/json", bytes.NewReader(planBody))
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
 }

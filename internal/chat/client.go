@@ -124,6 +124,9 @@ func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionR
 	// realistically need.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+	toolCalls := newToolCallAccumulator()
+	toolCallsFlushed := false
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		data, ok := strings.CutPrefix(line, "data: ")
@@ -142,15 +145,29 @@ func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionR
 			continue
 		}
 
+		choice := chunk.Choices[0]
+		for _, tc := range choice.Delta.ToolCalls {
+			toolCalls.add(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments)
+		}
+
 		delta := Delta{
-			Content:          chunk.Choices[0].Delta.Content,
-			ReasoningContent: chunk.Choices[0].Delta.ReasoningContent,
+			Content:          choice.Delta.Content,
+			ReasoningContent: choice.Delta.ReasoningContent,
 		}
-		if delta.Content == "" && delta.ReasoningContent == "" {
-			continue
+		if delta.Content != "" || delta.ReasoningContent != "" {
+			if err := onDelta(delta); err != nil {
+				return err
+			}
 		}
-		if err := onDelta(delta); err != nil {
-			return err
+
+		if choice.FinishReason != nil && !toolCallsFlushed {
+			toolCallsFlushed = true
+			for _, tc := range toolCalls.flush() {
+				tc := tc
+				if err := onDelta(Delta{ToolCall: &tc}); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {

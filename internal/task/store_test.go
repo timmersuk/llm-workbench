@@ -164,6 +164,21 @@ func TestFileStore_Create_IgnoresClientSuppliedTimestamps(t *testing.T) {
 	assert.NotEqual(t, stale, created.UpdatedAt)
 }
 
+func TestFileStore_Create_DefaultsStageAndStatus(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	created, err := store.Create(Task{ID: "task-a", Title: "A", Stage: "complete", Status: "in_progress"})
+	require.NoError(t, err)
+	assert.Equal(t, StageRequirements, created.Stage)
+	assert.Equal(t, "draft", created.Status)
+
+	fetched, err := store.Get("task-a")
+	require.NoError(t, err)
+	assert.Equal(t, StageRequirements, fetched.Stage)
+	assert.Equal(t, "draft", fetched.Status)
+}
+
 func TestFileStore_Create_InvalidID(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)

@@ -1,0 +1,132 @@
+package task
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// ErrWrongStage is returned by Finalize*/Revise* when the task isn't
+// currently in the stage that action expects. Finalize only ever advances
+// stage forward one step and Revise only ever moves it back to the
+// specific prior stage it names — neither skips a stage nor is valid from
+// an unrelated one.
+var ErrWrongStage = errors.New("task is not in the expected stage for this action")
+
+// FinalizeRequirements is the human "Finalize" action (CONTEXT.md) for
+// GrillMe: it persists draft's task.yaml-subset fields and context.yaml,
+// and advances Stage from "requirements" to "planning". The task must
+// currently be in "requirements" stage. The Context is written first and
+// task.yaml last, so task.yaml's Stage stays the single source of truth
+// for how far Finalize actually got — if the Context write fails, nothing
+// observably changed; if it succeeds but the task.yaml write then fails,
+// Context is present but Stage hasn't advanced yet, a safely-retriable
+// state (Finalize can just be called again).
+func (s *FileStore) FinalizeRequirements(id string, draft RequirementsDraft) (Task, error) {
+	t, err := s.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StageRequirements {
+		return Task{}, fmt.Errorf("finalizing requirements for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+
+	draft.Context.Summary = strings.TrimSpace(draft.Context.Summary)
+	draft.Context.Background = strings.TrimSpace(draft.Context.Background)
+	draft.Context.Detail = strings.TrimSpace(draft.Context.Detail)
+	draft.Context.Files = trimmedList(draft.Context.Files)
+	draft.Context.Verification = trimmedList(draft.Context.Verification)
+	draft.Context.OpenQuestions = trimmedList(draft.Context.OpenQuestions)
+	if err := s.writeContext(id, draft.Context); err != nil {
+		return Task{}, err
+	}
+
+	t.Objective = strings.TrimSpace(draft.Objective)
+	t.Constraints = trimmedList(draft.Constraints)
+	t.Assumptions = trimmedList(draft.Assumptions)
+	t.SuccessCriteria = trimmedList(draft.SuccessCriteria)
+	t.Stage = StagePlanning
+	t.UpdatedAt = time.Now().UTC()
+
+	if err := s.writeTask(t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// FinalizePlan is the human "Finalize" action for Planning Mode: it
+// persists plan.yaml and advances Stage from "planning" to
+// "implementation". The task must currently be in "planning" stage.
+func (s *FileStore) FinalizePlan(id string, plan Plan) (Task, error) {
+	t, err := s.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StagePlanning {
+		return Task{}, fmt.Errorf("finalizing plan for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+
+	plan.Approach = strings.TrimSpace(plan.Approach)
+	plan.RecommendedExecutor = strings.TrimSpace(plan.RecommendedExecutor)
+	plan.Steps = trimmedList(plan.Steps)
+	plan.Risks = trimmedList(plan.Risks)
+	if err := s.writePlan(id, plan); err != nil {
+		return Task{}, err
+	}
+
+	t.Stage = StageImplementation
+	t.UpdatedAt = time.Now().UTC()
+
+	if err := s.writeTask(t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// ReviseToRequirements is the "Revise Requirements" action (CONTEXT.md's
+// "Revise"): moves Stage back from "planning" to "requirements", reopening
+// the requirements Conversation (GetConversation/AppendConversationMessages
+// already resume the same file — no separate action needed for that part).
+// Only valid from "planning".
+func (s *FileStore) ReviseToRequirements(id string) (Task, error) {
+	t, err := s.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StagePlanning {
+		return Task{}, fmt.Errorf("revising requirements for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+
+	t.Stage = StageRequirements
+	t.UpdatedAt = time.Now().UTC()
+
+	if err := s.writeTask(t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// ReviseToPlanning is the "Revise Plan" action: moves Stage back from
+// "implementation" or "review" to "planning". Milestone 5 (the executor
+// that actually reaches "implementation") doesn't exist yet, so this
+// boundary won't be exercised in practice until then, but the transition
+// is still valid structurally per CLAUDE.md ("each stage... can be
+// revisited").
+func (s *FileStore) ReviseToPlanning(id string) (Task, error) {
+	t, err := s.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StageImplementation && t.Stage != StageReview {
+		return Task{}, fmt.Errorf("revising plan for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+
+	t.Stage = StagePlanning
+	t.UpdatedAt = time.Now().UTC()
+
+	if err := s.writeTask(t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}

@@ -8,6 +8,17 @@ package task
 
 import "time"
 
+// Stage values, per docs/task schema v0.md §2. Declared as constants so
+// lifecycle.go's transitions don't rely on string literals scattered across
+// the package.
+const (
+	StageRequirements   = "requirements"
+	StagePlanning       = "planning"
+	StageImplementation = "implementation"
+	StageReview         = "review"
+	StageComplete       = "complete"
+)
+
 // Task is a versioned intent object stored as <task root>/<id>/task.yaml
 // (e.g. data/projects/<projectId>/tasks/<id>/task.yaml with the default
 // WORKSPACE_ROOT).

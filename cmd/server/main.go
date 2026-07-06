@@ -14,6 +14,7 @@ import (
 
 	"github.com/timmersuk/llm-workbench/internal/api"
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
 	"github.com/timmersuk/llm-workbench/internal/utils"
@@ -37,6 +38,7 @@ func main() {
 
 	projectStore := project.NewFileStore(filepath.Join(workspaceRoot, "projects"))
 	chatClient := chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout)
+	knowledgeReader := knowledge.NewFileReader(filepath.Join(workspaceRoot, "knowledge"))
 
 	frontendFS, err := fs.Sub(web.Files, "dist")
 	if err != nil {
@@ -44,7 +46,7 @@ func main() {
 	}
 
 	taskStores := func(root string) api.TaskStore { return task.NewFileStore(root) }
-	router := api.NewRouter(projectStore, taskStores, defaultModelCompleter{chatClient, llmModel}, frontendFS, BuildID)
+	router := api.NewRouter(projectStore, taskStores, defaultModelCompleter{chatClient, llmModel}, knowledgeReader, frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":          httpAddr,

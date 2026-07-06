@@ -55,8 +55,8 @@ export function ProjectForm({ initial, onSubmit, onCancel }: ProjectFormProps) {
     <form className="entity-form" onSubmit={handleSubmit}>
       {initial && (
         <div className="form-row">
-          <label>ID</label>
-          <input type="text" value={initial.id} disabled />
+          <label htmlFor="project-id">ID</label>
+          <input id="project-id" type="text" value={initial.id} disabled />
         </div>
       )}
       <div className="form-row">

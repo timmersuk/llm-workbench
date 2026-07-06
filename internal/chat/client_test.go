@@ -286,6 +286,106 @@ func TestClient_StreamChatCompletion_MalformedChunk(t *testing.T) {
 	assert.Equal(t, []Delta{{Content: "ok"}}, got)
 }
 
+// writeToolCallSSE writes a single "chat.completion.chunk" SSE line
+// carrying one streamed tool-call fragment at the given index, matching the
+// real upstream shape confirmed against a live LM Studio server: id/name
+// only present on a call's first fragment, arguments arriving as
+// incremental string pieces.
+func writeToolCallSSE(w http.ResponseWriter, index int, id, name, argsFragment string) {
+	chunk := map[string]any{
+		"id":     "chatcmpl-test",
+		"object": "chat.completion.chunk",
+		"choices": []map[string]any{{
+			"index": 0,
+			"delta": map[string]any{
+				"tool_calls": []map[string]any{{
+					"index":    index,
+					"id":       id,
+					"function": map[string]string{"name": name, "arguments": argsFragment},
+				}},
+			},
+		}},
+	}
+	data, _ := json.Marshal(chunk)
+	fmt.Fprintf(w, "data: %s\n\n", data)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func writeFinishReasonSSE(w http.ResponseWriter, reason string) {
+	fmt.Fprintf(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":%q}]}`+"\n\n", reason)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func TestClient_StreamChatCompletion_AccumulatesFragmentedToolCallArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeToolCallSSE(w, 0, "call-1", "propose_context", "")
+		writeToolCallSSE(w, 0, "", "", `{"objective":`)
+		writeToolCallSSE(w, 0, "", "", `"ship login"}`)
+		writeFinishReasonSSE(w, "tool_calls")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	var got []Delta
+	err := client.StreamChatCompletion(context.Background(), CompletionRequest{Model: "m"}, func(d Delta) error {
+		got = append(got, d)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].ToolCall)
+	assert.Equal(t, "call-1", got[0].ToolCall.ID)
+	assert.Equal(t, "propose_context", got[0].ToolCall.Function.Name)
+	assert.Equal(t, `{"objective":"ship login"}`, got[0].ToolCall.Function.Arguments)
+}
+
+func TestClient_StreamChatCompletion_FlushesMultipleToolCallsInOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeToolCallSSE(w, 0, "call-1", "first", `{}`)
+		writeToolCallSSE(w, 1, "call-2", "second", `{}`)
+		writeFinishReasonSSE(w, "tool_calls")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	var got []Delta
+	err := client.StreamChatCompletion(context.Background(), CompletionRequest{Model: "m"}, func(d Delta) error {
+		got = append(got, d)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "first", got[0].ToolCall.Function.Name)
+	assert.Equal(t, "second", got[1].ToolCall.Function.Name)
+}
+
+func TestClient_StreamChatCompletion_NoToolCallDeltaWhenUpstreamOmitsToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w, "hello", "")
+		writeFinishReasonSSE(w, "stop")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	var got []Delta
+	err := client.StreamChatCompletion(context.Background(), CompletionRequest{Model: "m"}, func(d Delta) error {
+		got = append(got, d)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []Delta{{Content: "hello"}}, got)
+}
+
 // hangingBody never closes on its own — the handler blocks until the
 // request context is cancelled, simulating a slow/unresponsive upstream so
 // StreamChatCompletion's context-cancellation path can be exercised without

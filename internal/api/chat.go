@@ -13,11 +13,25 @@ import (
 // actually configured — the frontend only ever sees this shape, never the
 // upstream's own wire format. Error is only set on the final event of a
 // stream that failed partway through: whatever content/reasoning_content
-// already streamed is left in place, not discarded.
+// already streamed is left in place, not discarded. ToolCall is only ever
+// set by handlePostStageMessage (stage_conversation.go), when GrillMe/
+// Planning Mode's registered tool is called — the free-floating chat
+// endpoint below never registers any tools, so it never populates this
+// field, but shares the same event shape.
 type chatStreamEvent struct {
-	Content          string `json:"content,omitempty"`
-	ReasoningContent string `json:"reasoning_content,omitempty"`
-	Error            string `json:"error,omitempty"`
+	Content          string             `json:"content,omitempty"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	ToolCall         *chatToolCallEvent `json:"tool_call,omitempty"`
+	Error            string             `json:"error,omitempty"`
+}
+
+// chatToolCallEvent is the wire shape of a proposed Draft's tool call:
+// Arguments is the raw JSON-string of the proposed fields, left for the
+// frontend to parse per-stage (RequirementsDraft vs Plan shape) rather than
+// decoded server-side.
+type chatToolCallEvent struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 func handleChatCompletions(completer chat.ChatClient) http.HandlerFunc {

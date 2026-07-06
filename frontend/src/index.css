@@ -288,3 +288,93 @@ td button {
   margin-bottom: 16px;
   font-size: 14px;
 }
+
+.task-view-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+.task-view-toggle button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.kanban-board {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.kanban-column {
+  flex: 1 0 160px;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kanban-column h4 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.kanban-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.kanban-card-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.stage-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.tool-call-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+}
+
+.draft-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.draft-review {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.stage-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}

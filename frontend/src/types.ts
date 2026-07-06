@@ -34,16 +34,14 @@ export interface Project {
 
 // CreateTaskRequest is the body for creating a task within a project (the
 // project itself comes from the URL, not this body). id is client-chosen
-// and must be unique within that project.
+// and must be unique within that project. status/stage/objective/
+// constraints/assumptions/success_criteria are deliberately absent: a task
+// always starts at stage: requirements, status: draft (server-defaulted),
+// and its requirements fields are set later via GrillMe's Finalize, not at
+// creation (see CONTEXT.md's "Draft"/"Finalize").
 export interface CreateTaskRequest {
   id: string
   title: string
-  status: TaskStatus
-  stage: TaskStage
-  objective: string
-  constraints: string[]
-  assumptions: string[]
-  success_criteria: string[]
   references: TaskReferences
 }
 
@@ -100,11 +98,75 @@ export interface ModelsListResult {
 }
 
 // ChatStreamEvent mirrors internal/api/chat.go's chatStreamEvent — one
-// incremental piece of a streamed chat completion. Content and
-// ReasoningContent are never both set on the same event; Error is only set
-// on the final event of a stream that failed partway through.
+// incremental piece of a streamed chat completion. content, reasoning_
+// content, and tool_call are never more than one set on the same event;
+// error is only set on the final event of a stream that failed partway
+// through. tool_call is only ever populated on the stage-conversation
+// endpoint (postStageMessage) — the free-floating chat endpoint never
+// registers tools, so never sets it, but shares this event shape.
 export interface ChatStreamEvent {
   content?: string
   reasoning_content?: string
+  tool_call?: { name: string; arguments: string }
   error?: string
+}
+
+// TaskContext mirrors task.Context (internal/task/context.go) —
+// context.yaml, GrillMe's Finalize output alongside the requirements
+// fields on Task itself.
+export interface TaskContext {
+  summary: string
+  background: string
+  files: string[]
+  detail: string
+  verification: string[]
+  open_questions: string[]
+}
+
+// TaskPlan mirrors task.Plan (internal/task/plan.go) — plan.yaml, Planning
+// Mode's Finalize output.
+export interface TaskPlan {
+  approach: string
+  steps: string[]
+  risks: string[]
+  estimated_complexity: 'low' | 'medium' | 'high' | ''
+  recommended_executor: string
+}
+
+// RequirementsDraft mirrors task.RequirementsDraft (internal/task/context.go)
+// — the wire shape for GrillMe's Draft (both the task.yaml-subset fields it
+// owns and the full TaskContext), used both to render an editable Draft
+// form and as the body finalizeRequirements posts.
+export interface RequirementsDraft {
+  objective: string
+  constraints: string[]
+  assumptions: string[]
+  success_criteria: string[]
+  context: TaskContext
+}
+
+// ConversationToolCall/ConversationMessage/Conversation mirror
+// internal/task/conversation.go — a stage's persisted, append-only message
+// history (CONTEXT.md's "Conversation").
+export interface ConversationToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+
+export interface ConversationMessage {
+  role: string
+  content: string
+  tool_call?: ConversationToolCall
+  tool_call_id?: string
+  created_at: string
+}
+
+// messages is nullable because Go's zero-value nil slice (a stage nobody
+// has chatted in yet — internal/task/conversation.go's GetConversation)
+// marshals to JSON null, not [] — same convention as TaskListResult.tasks/
+// ProjectListResult.projects below.
+export interface Conversation {
+  stage: string
+  messages: ConversationMessage[] | null
 }

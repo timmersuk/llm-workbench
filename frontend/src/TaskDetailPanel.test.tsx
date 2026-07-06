@@ -1,0 +1,180 @@
+import { describe, expect, it, vi } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { TaskDetailPanel } from './TaskDetailPanel'
+import * as api from './api'
+import type { Task, TaskStage } from './types'
+
+vi.mock('./api')
+vi.mock('./GrillMePanel', () => ({
+  GrillMePanel: (props: { projectId: string; taskId: string }) => (
+    <div data-testid="grillme-panel">
+      grillme:{props.projectId}:{props.taskId}
+    </div>
+  ),
+}))
+vi.mock('./PlanningModePanel', () => ({
+  PlanningModePanel: (props: { projectId: string; taskId: string }) => (
+    <div data-testid="planningmode-panel">
+      planningmode:{props.projectId}:{props.taskId}
+    </div>
+  ),
+}))
+
+const projectId = 'demo'
+
+function makeTask(stage: TaskStage, overrides: Partial<Task> = {}): Task {
+  return {
+    id: 'task-a',
+    title: 'Task A',
+    project: projectId,
+    status: 'draft',
+    stage,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    objective: '',
+    constraints: [],
+    assumptions: [],
+    success_criteria: [],
+    references: { knowledge: [], repo: [] },
+    ...overrides,
+  }
+}
+
+function stubNoContextOrPlan() {
+  vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
+  vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
+}
+
+describe('TaskDetailPanel — stage-conditional rendering', () => {
+  it('requirements stage renders GrillMePanel with the right props', async () => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    expect(await screen.findByTestId('grillme-panel')).toHaveTextContent('grillme:demo:task-a')
+    expect(screen.queryByTestId('planningmode-panel')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Revise/ })).not.toBeInTheDocument()
+  })
+
+  it('planning stage renders PlanningModePanel and a Revise Requirements button', async () => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+
+    expect(await screen.findByTestId('planningmode-panel')).toHaveTextContent('planningmode:demo:task-a')
+    expect(screen.getByRole('button', { name: 'Revise Requirements' })).toBeInTheDocument()
+  })
+
+  it('Revise Requirements calls reviseRequirements and updates the displayed task', async () => {
+    const user = userEvent.setup()
+    stubNoContextOrPlan()
+    const revised = makeTask('requirements')
+    vi.mocked(api.reviseRequirements).mockResolvedValue(revised)
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Revise Requirements' }))
+
+    expect(await screen.findByTestId('grillme-panel')).toBeInTheDocument()
+    expect(api.reviseRequirements).toHaveBeenCalledWith(projectId, 'task-a')
+  })
+
+  it('shows an inline error when Revise Requirements rejects', async () => {
+    const user = userEvent.setup()
+    stubNoContextOrPlan()
+    vi.mocked(api.reviseRequirements).mockRejectedValue(new Error('task is not in the expected stage'))
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Revise Requirements' }))
+
+    expect(await screen.findByText('task is not in the expected stage')).toBeInTheDocument()
+  })
+
+  it.each(['implementation', 'review'] as const)('%s stage renders only a Revise Plan button', async (stage) => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask(stage)} onBack={vi.fn()} />)
+
+    await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
+    expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('planningmode-panel')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Revise Plan' })).toBeInTheDocument()
+  })
+
+  it('complete stage renders neither stage panel nor any Revise button', async () => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('complete')} onBack={vi.fn()} />)
+
+    await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
+    expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('planningmode-panel')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Revise/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('TaskDetailPanel — Context/Plan sections', () => {
+  it('renders the Context section once getTaskContext resolves', async () => {
+    vi.mocked(api.getTaskContext).mockResolvedValue({
+      summary: 'A finalized summary',
+      background: '',
+      files: [],
+      detail: '',
+      verification: [],
+      open_questions: [],
+    })
+    vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+
+    expect(await screen.findByText('A finalized summary')).toBeInTheDocument()
+  })
+
+  it('omits the Context/Plan sections when both requests reject (not yet finalized)', async () => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    await screen.findByTestId('grillme-panel')
+    expect(screen.queryByText('Context')).not.toBeInTheDocument()
+    expect(screen.queryByText('Plan')).not.toBeInTheDocument()
+  })
+
+  it('renders the Plan section once getTaskPlan resolves', async () => {
+    vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
+    vi.mocked(api.getTaskPlan).mockResolvedValue({
+      approach: 'A finalized approach',
+      steps: ['Step one'],
+      risks: [],
+      estimated_complexity: 'low',
+      recommended_executor: '',
+    })
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+
+    expect(await screen.findByText('A finalized approach')).toBeInTheDocument()
+    expect(screen.getByText('Step one')).toBeInTheDocument()
+  })
+})
+
+describe('TaskDetailPanel — status select', () => {
+  it('changing the status calls updateProjectTask with the full current task fields', async () => {
+    const user = userEvent.setup()
+    stubNoContextOrPlan()
+    const task = makeTask('requirements', { title: 'Task A', objective: 'ship it', constraints: ['no new deps'] })
+    const updated = { ...task, status: 'in_progress' as const }
+    vi.mocked(api.updateProjectTask).mockResolvedValue(updated)
+
+    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} />)
+    await screen.findByTestId('grillme-panel')
+
+    await user.selectOptions(screen.getByDisplayValue('draft'), 'in_progress')
+
+    expect(api.updateProjectTask).toHaveBeenCalledWith(projectId, 'task-a', {
+      title: 'Task A',
+      status: 'in_progress',
+      stage: 'requirements',
+      objective: 'ship it',
+      constraints: ['no new deps'],
+      assumptions: [],
+      success_criteria: [],
+      references: { knowledge: [], repo: [] },
+    })
+    await waitFor(() => expect(screen.getByDisplayValue('in_progress')).toBeInTheDocument())
+  })
+})

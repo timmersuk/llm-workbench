@@ -231,8 +231,19 @@ doesn't have to be re-derived or re-litigated later.
   component is self-contained: fetch + loading/error/empty states + render,
   no shared data-fetching hook abstraction yet.
 * **Tooling**: linting is `oxlint` (not ESLint). `build` runs
-  `tsc -b && vite build` (type-check, then bundle). No test framework is
-  configured yet.
+  `tsc -b && vite build` (type-check, then bundle).
+* **Testing**: Vitest + `@testing-library/react`, jsdom environment
+  (`frontend/vitest.config.ts`, a sibling config that `mergeConfig`s
+  `vite.config.ts` rather than a `test` block inside it, since the latter
+  would put a devDependency on the production build's `tsc -b` type-check
+  path — see `frontend/tsconfig.node.json`'s `include`). Tests are
+  colocated `*.test.ts`/`*.test.tsx` next to source. `frontend/src/api.test.ts`
+  mocks global `fetch` directly (`vi.stubGlobal('fetch', ...)`) to assert
+  wire-format correctness; every other test mocks the `./api` module
+  boundary (`vi.mock('./api')`) instead, so component tests assert
+  rendering/state logic with no overlap between the two layers. Run via
+  `pnpm run test` (`vitest run`) inside `frontend/`, or `make test` at the
+  repo root (`frontend-test` Makefile target).
 
 ## General
 

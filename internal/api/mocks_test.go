@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
@@ -46,6 +47,89 @@ func (m *mockTaskStore) Update(id string, t task.Task) (task.Task, error) {
 		updated = v.(task.Task)
 	}
 	return updated, args.Error(1)
+}
+
+func (m *mockTaskStore) GetContext(id string) (task.Context, error) {
+	args := m.Called(id)
+	var c task.Context
+	if v := args.Get(0); v != nil {
+		c = v.(task.Context)
+	}
+	return c, args.Error(1)
+}
+
+func (m *mockTaskStore) GetPlan(id string) (task.Plan, error) {
+	args := m.Called(id)
+	var p task.Plan
+	if v := args.Get(0); v != nil {
+		p = v.(task.Plan)
+	}
+	return p, args.Error(1)
+}
+
+func (m *mockTaskStore) GetConversation(id, stage string) (task.Conversation, error) {
+	args := m.Called(id, stage)
+	var c task.Conversation
+	if v := args.Get(0); v != nil {
+		c = v.(task.Conversation)
+	}
+	return c, args.Error(1)
+}
+
+func (m *mockTaskStore) AppendConversationMessages(id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error) {
+	args := m.Called(id, stage, msgs)
+	var c task.Conversation
+	if v := args.Get(0); v != nil {
+		c = v.(task.Conversation)
+	}
+	return c, args.Error(1)
+}
+
+func (m *mockTaskStore) FinalizeRequirements(id string, draft task.RequirementsDraft) (task.Task, error) {
+	args := m.Called(id, draft)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
+func (m *mockTaskStore) FinalizePlan(id string, plan task.Plan) (task.Task, error) {
+	args := m.Called(id, plan)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
+func (m *mockTaskStore) ReviseToRequirements(id string) (task.Task, error) {
+	args := m.Called(id)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
+func (m *mockTaskStore) ReviseToPlanning(id string) (task.Task, error) {
+	args := m.Called(id)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
+type mockKnowledgeReader struct{ mock.Mock }
+
+func (m *mockKnowledgeReader) Get(conceptID string) (knowledge.Concept, error) {
+	args := m.Called(conceptID)
+	var c knowledge.Concept
+	if v := args.Get(0); v != nil {
+		c = v.(knowledge.Concept)
+	}
+	return c, args.Error(1)
 }
 
 // fixedTaskStoreFactory adapts an already-constructed TaskStore (typically

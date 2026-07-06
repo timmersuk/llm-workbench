@@ -1,13 +1,17 @@
 import type {
   ChatMessage,
   ChatStreamEvent,
+  Conversation,
   CreateProjectRequest,
   CreateTaskRequest,
   ModelsListResult,
   Project,
   ProjectListResult,
+  RequirementsDraft,
   Task,
+  TaskContext,
   TaskListResult,
+  TaskPlan,
   UpdateProjectRequest,
   UpdateTaskRequest,
 } from './types'
@@ -65,6 +69,48 @@ export function updateProjectTask(projectId: string, taskId: string, req: Update
   )
 }
 
+function taskPath(projectId: string, taskId: string): string {
+  return `/api/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`
+}
+
+export function getTaskContext(projectId: string, taskId: string): Promise<TaskContext> {
+  return getJSON<TaskContext>(`${taskPath(projectId, taskId)}/context`)
+}
+
+export function getTaskPlan(projectId: string, taskId: string): Promise<TaskPlan> {
+  return getJSON<TaskPlan>(`${taskPath(projectId, taskId)}/plan`)
+}
+
+export function getStageConversation(projectId: string, taskId: string, stage: string): Promise<Conversation> {
+  return getJSON<Conversation>(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/conversation`)
+}
+
+export interface FinalizeRequirementsResponse {
+  task: Task
+  context: TaskContext
+}
+
+export interface FinalizePlanResponse {
+  task: Task
+  plan: TaskPlan
+}
+
+export function finalizeRequirements(projectId: string, taskId: string, draft: RequirementsDraft): Promise<FinalizeRequirementsResponse> {
+  return mutateJSON<FinalizeRequirementsResponse>('POST', `${taskPath(projectId, taskId)}/requirements/finalize`, draft)
+}
+
+export function finalizePlan(projectId: string, taskId: string, plan: TaskPlan): Promise<FinalizePlanResponse> {
+  return mutateJSON<FinalizePlanResponse>('POST', `${taskPath(projectId, taskId)}/plan/finalize`, plan)
+}
+
+export function reviseRequirements(projectId: string, taskId: string): Promise<Task> {
+  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/requirements/revise`, {})
+}
+
+export function revisePlan(projectId: string, taskId: string): Promise<Task> {
+  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/plan/revise`, {})
+}
+
 export interface HealthStatus {
   status: string
   build_id: string
@@ -84,23 +130,14 @@ export function listModels(): Promise<ModelsListResult> {
   return getJSON<ModelsListResult>('/api/v1/chat/models')
 }
 
-// streamChatCompletion posts messages to the chat completions endpoint and
-// invokes onEvent once per incremental server-sent event as it arrives,
-// until the stream ends. Rejects if the request itself fails to start (bad
-// status, no body); once streaming begins, upstream failures surface as a
-// final event with `error` set (see ChatStreamEvent), not a rejection.
-export async function streamChatCompletion(
-  messages: ChatMessage[],
-  model: string,
-  onEvent: (event: ChatStreamEvent) => void,
-): Promise<void> {
-  const res = await fetch('/api/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages }),
-  })
+// streamSSE reads res's body as a "data: {...}\n\n"-per-line Server-Sent-
+// Events stream, invoking onEvent once per line until the stream ends.
+// Shared by streamChatCompletion (the free-floating chat tab) and
+// postStageMessage (GrillMe/Planning Mode) — both endpoints emit the same
+// ChatStreamEvent wire shape (internal/api/chat.go).
+async function streamSSE<T>(res: Response, onEvent: (event: T) => void): Promise<void> {
   if (!res.ok || !res.body) {
-    throw new Error(`chat completion request failed with status ${res.status}`)
+    throw new Error(`request failed with status ${res.status}`)
   }
 
   const reader = res.body.getReader()
@@ -121,7 +158,45 @@ export async function streamChatCompletion(
       if (!line.startsWith('data: ')) {
         continue
       }
-      onEvent(JSON.parse(line.slice('data: '.length)) as ChatStreamEvent)
+      onEvent(JSON.parse(line.slice('data: '.length)) as T)
     }
   }
+}
+
+// streamChatCompletion posts messages to the chat completions endpoint and
+// invokes onEvent once per incremental server-sent event as it arrives,
+// until the stream ends. Rejects if the request itself fails to start (bad
+// status, no body); once streaming begins, upstream failures surface as a
+// final event with `error` set (see ChatStreamEvent), not a rejection.
+export async function streamChatCompletion(
+  messages: ChatMessage[],
+  model: string,
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  const res = await fetch('/api/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages }),
+  })
+  await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
+// postStageMessage posts a user message to a task's GrillMe (stage:
+// "requirements") or Planning Mode (stage: "planning") Conversation and
+// streams the assistant's reply the same way streamChatCompletion does —
+// including a `tool_call` event if the model proposes a Draft.
+export async function postStageMessage(
+  projectId: string,
+  taskId: string,
+  stage: string,
+  content: string,
+  model: string,
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, model }),
+  })
+  await streamSSE<ChatStreamEvent>(res, onEvent)
 }

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
-import { createProjectTask, listProjectTasks, updateProject, updateProjectTask } from './api'
+import { createProjectTask, listProjectTasks, updateProject } from './api'
 import { ProjectForm } from './ProjectForm'
 import { TaskForm } from './TaskForm'
+import { TaskDetailPanel } from './TaskDetailPanel'
+import { TaskKanbanBoard } from './TaskKanbanBoard'
 import type { CreateTaskRequest, LoadError, Project, Task, UpdateProjectRequest } from './types'
 
 interface ProjectDetailPanelProps {
@@ -9,7 +11,7 @@ interface ProjectDetailPanelProps {
   onBack: () => void
 }
 
-type TaskFormMode = { kind: 'create' } | { kind: 'edit'; task: Task }
+type TaskView = 'list' | 'kanban'
 
 export function ProjectDetailPanel({ project, onBack }: ProjectDetailPanelProps) {
   const [current, setCurrent] = useState(project)
@@ -18,7 +20,9 @@ export function ProjectDetailPanel({ project, onBack }: ProjectDetailPanelProps)
   const [tasks, setTasks] = useState<Task[]>([])
   const [loadErrors, setLoadErrors] = useState<LoadError[]>([])
   const [tasksError, setTasksError] = useState<string | null>(null)
-  const [taskForm, setTaskForm] = useState<TaskFormMode | null>(null)
+  const [creatingTask, setCreatingTask] = useState(false)
+  const [taskView, setTaskView] = useState<TaskView>('list')
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null)
 
   function reloadTasks() {
     listProjectTasks(current.id)
@@ -40,14 +44,9 @@ export function ProjectDetailPanel({ project, onBack }: ProjectDetailPanelProps)
     setEditingProject(false)
   }
 
-  async function handleTaskSave(req: CreateTaskRequest) {
-    if (taskForm?.kind === 'edit') {
-      const { id: _id, ...updateReq } = req
-      await updateProjectTask(current.id, taskForm.task.id, updateReq)
-    } else {
-      await createProjectTask(current.id, req)
-    }
-    setTaskForm(null)
+  async function handleTaskCreate(req: CreateTaskRequest) {
+    await createProjectTask(current.id, req)
+    setCreatingTask(false)
     reloadTasks()
   }
 
@@ -57,6 +56,19 @@ export function ProjectDetailPanel({ project, onBack }: ProjectDetailPanelProps)
       {loadErrors.map((e) => e.id).join(', ')}
     </p>
   )
+
+  if (selectedTask) {
+    return (
+      <TaskDetailPanel
+        projectId={current.id}
+        task={selectedTask}
+        onBack={() => {
+          setSelectedTask(null)
+          reloadTasks()
+        }}
+      />
+    )
+  }
 
   return (
     <div className="project-detail">
@@ -83,28 +95,33 @@ export function ProjectDetailPanel({ project, onBack }: ProjectDetailPanelProps)
       <section>
         <div className="panel-actions">
           <h3>Tasks</h3>
-          {!taskForm && (
-            <button type="button" onClick={() => setTaskForm({ kind: 'create' })}>
+          <div className="task-view-toggle">
+            <button type="button" className={taskView === 'list' ? 'active' : ''} onClick={() => setTaskView('list')}>
+              List
+            </button>
+            <button type="button" className={taskView === 'kanban' ? 'active' : ''} onClick={() => setTaskView('kanban')}>
+              Kanban
+            </button>
+          </div>
+          {!creatingTask && (
+            <button type="button" onClick={() => setCreatingTask(true)}>
               New Task
             </button>
           )}
         </div>
 
-        {taskForm && (
-          <TaskForm
-            mode={taskForm.kind}
-            initial={taskForm.kind === 'edit' ? taskForm.task : undefined}
-            onSubmit={handleTaskSave}
-            onCancel={() => setTaskForm(null)}
-          />
-        )}
+        {creatingTask && <TaskForm onSubmit={handleTaskCreate} onCancel={() => setCreatingTask(false)} />}
 
         {tasksError && <p className="error">Failed to load tasks: {tasksError}</p>}
         {loadErrorNotice}
 
         {!tasksError && tasks.length === 0 && <p>No tasks yet.</p>}
 
-        {!tasksError && tasks.length > 0 && (
+        {!tasksError && tasks.length > 0 && taskView === 'kanban' && (
+          <TaskKanbanBoard tasks={tasks} onSelect={setSelectedTask} />
+        )}
+
+        {!tasksError && tasks.length > 0 && taskView === 'list' && (
           <table>
             <thead>
               <tr>
@@ -123,8 +140,8 @@ export function ProjectDetailPanel({ project, onBack }: ProjectDetailPanelProps)
                   <td>{task.status}</td>
                   <td>{task.stage}</td>
                   <td>
-                    <button type="button" onClick={() => setTaskForm({ kind: 'edit', task })}>
-                      Edit
+                    <button type="button" onClick={() => setSelectedTask(task)}>
+                      Open
                     </button>
                   </td>
                 </tr>

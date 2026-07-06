@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 
+	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
@@ -18,7 +19,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeGetError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrInvalidID), errors.Is(err, project.ErrInvalidID):
+	case errors.Is(err, task.ErrInvalidID), errors.Is(err, project.ErrInvalidID),
+		errors.Is(err, task.ErrInvalidStage), errors.Is(err, knowledge.ErrInvalidConceptID):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, fs.ErrNotExist):
 		http.Error(w, "not found", http.StatusNotFound)
@@ -29,14 +31,17 @@ func writeGetError(w http.ResponseWriter, err error) {
 
 // writeMutationError maps Create/Update errors to HTTP status, the same
 // centralized-per-resource approach as writeGetError: bad input (invalid
-// id, missing name, id mismatch) -> 400, id collision -> 409, missing
-// target (edit of a nonexistent id) -> 404, anything else -> 500 generic.
+// id, missing name, id mismatch, invalid stage) -> 400, id collision or
+// wrong-stage Finalize/Revise -> 409, missing target (edit of a
+// nonexistent id) -> 404, anything else -> 500 generic.
 func writeMutationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, task.ErrInvalidID), errors.Is(err, project.ErrInvalidID),
-		errors.Is(err, project.ErrMissingName), errors.Is(err, task.ErrIDMismatch):
+		errors.Is(err, project.ErrMissingName), errors.Is(err, task.ErrIDMismatch),
+		errors.Is(err, task.ErrInvalidStage), errors.Is(err, knowledge.ErrInvalidConceptID):
 		http.Error(w, err.Error(), http.StatusBadRequest)
-	case errors.Is(err, task.ErrAlreadyExists), errors.Is(err, project.ErrAlreadyExists):
+	case errors.Is(err, task.ErrAlreadyExists), errors.Is(err, project.ErrAlreadyExists),
+		errors.Is(err, task.ErrWrongStage):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, fs.ErrNotExist):
 		http.Error(w, "not found", http.StatusNotFound)
