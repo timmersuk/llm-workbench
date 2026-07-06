@@ -192,6 +192,17 @@ doesn't have to be re-derived or re-litigated later.
   `docs/adr/0004-chat-client-openai-compatible-wire-format.md` for why
   this shape was standardized on instead of a bespoke interface with
   per-vendor adapters.
+* `LLM_TIMEOUT` means two different things depending on call shape, both
+  handled in `internal/chat/client.go`: for `StreamChatCompletion`, it's an
+  **idle/inactivity** timeout that resets on every chunk received, so a
+  stream that keeps emitting data never times out no matter its total
+  duration — only a stalled/hung connection aborts (as
+  `ErrStreamIdleTimeout`). For `CreateChatCompletion`, it's still a
+  **total-duration** timeout (via `context.WithTimeout`), and is also
+  relayed to the model as a leading system-message hint
+  (`withTimeBudgetHint`) so reasoning-capable models have a chance to pace
+  themselves instead of reliably blowing the deadline mid-reasoning. Keep
+  this distinction in mind before changing either method's timeout wiring.
 
 ## Build & single-binary packaging
 

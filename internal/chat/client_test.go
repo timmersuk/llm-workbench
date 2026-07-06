@@ -46,7 +46,10 @@ func TestClient_CreateChatCompletion_RequestShape(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Bearer test-key", gotAuth)
-	assert.Equal(t, req, gotReq)
+	assert.Equal(t, req.Model, gotReq.Model)
+	require.Len(t, gotReq.Messages, len(req.Messages)+1, "CreateChatCompletion must prepend a time-budget system message")
+	assert.Equal(t, "system", gotReq.Messages[0].Role)
+	assert.Equal(t, req.Messages, gotReq.Messages[1:])
 	assert.False(t, gotReq.Stream, "CreateChatCompletion must always send stream: false")
 	assert.Equal(t, "hello back", resp.Choices[0].Message.Content)
 }
@@ -148,6 +151,52 @@ func TestClient_CreateChatCompletion_ContextCancelled(t *testing.T) {
 	client := NewOpenAIClient(server.URL, "", 5*time.Second)
 	_, err := client.CreateChatCompletion(ctx, CompletionRequest{})
 	require.Error(t, err)
+}
+
+func TestClient_CreateChatCompletion_IncludesTimeBudgetHint(t *testing.T) {
+	t.Run("no existing system message", func(t *testing.T) {
+		var gotReq CompletionRequest
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotReq))
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(CompletionResponse{}))
+		}))
+		defer server.Close()
+
+		client := NewOpenAIClient(server.URL, "", 5*time.Second)
+		req := CompletionRequest{Messages: []Message{{Role: "user", Content: "hello"}}}
+		_, err := client.CreateChatCompletion(context.Background(), req)
+		require.NoError(t, err)
+
+		require.Len(t, gotReq.Messages, 2)
+		assert.Equal(t, "system", gotReq.Messages[0].Role)
+		assert.Contains(t, gotReq.Messages[0].Content, "5s")
+		assert.Equal(t, req.Messages[0], gotReq.Messages[1])
+	})
+
+	t.Run("appends to existing leading system message", func(t *testing.T) {
+		var gotReq CompletionRequest
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotReq))
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(CompletionResponse{}))
+		}))
+		defer server.Close()
+
+		client := NewOpenAIClient(server.URL, "", 5*time.Second)
+		req := CompletionRequest{Messages: []Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hello"},
+		}}
+		_, err := client.CreateChatCompletion(context.Background(), req)
+		require.NoError(t, err)
+
+		require.Len(t, gotReq.Messages, 2, "must not introduce a second system message")
+		assert.Equal(t, "system", gotReq.Messages[0].Role)
+		assert.Contains(t, gotReq.Messages[0].Content, "You are a helpful assistant.")
+		assert.Contains(t, gotReq.Messages[0].Content, "5s")
+		assert.Equal(t, req.Messages[1], gotReq.Messages[1])
+	})
 }
 
 // writeSSE writes a single OpenAI-compatible "chat.completion.chunk" SSE
@@ -413,5 +462,49 @@ func TestClient_StreamChatCompletion_ContextCancelled(t *testing.T) {
 
 	<-started
 	cancel()
-	require.Error(t, <-errCh)
+	err := <-errCh
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrStreamIdleTimeout), "caller cancellation must not be reported as an idle timeout")
+}
+
+func TestClient_StreamChatCompletion_IdleTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w, "hello", "")
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 50*time.Millisecond)
+	var got []Delta
+	err := client.StreamChatCompletion(context.Background(), CompletionRequest{Model: "m"}, func(d Delta) error {
+		got = append(got, d)
+		return nil
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStreamIdleTimeout)
+	assert.Equal(t, []Delta{{Content: "hello"}}, got)
+}
+
+func TestClient_StreamChatCompletion_LongRunningStreamDoesNotTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, chunk := range []string{"one", "two", "three", "four"} {
+			time.Sleep(30 * time.Millisecond)
+			writeSSE(w, chunk, "")
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	// Idle timeout (50ms) comfortably covers each individual gap (30ms), but
+	// the cumulative stream duration (~120ms) exceeds it — proving the fix.
+	client := NewOpenAIClient(server.URL, "", 50*time.Millisecond)
+	var got []Delta
+	err := client.StreamChatCompletion(context.Background(), CompletionRequest{Model: "m"}, func(d Delta) error {
+		got = append(got, d)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []Delta{{Content: "one"}, {Content: "two"}, {Content: "three"}, {Content: "four"}}, got)
 }

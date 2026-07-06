@@ -32,6 +32,8 @@ func main() {
 	llmBaseURL := utils.GetEnvDefault("LLM_BASE_URL", "http://localhost:11434/v1")
 	llmAPIKey := utils.GetEnvDefault("LLM_API_KEY", "")
 	llmModel := utils.GetEnvDefault("LLM_MODEL", "llama3")
+	// Idle timeout between streamed chunks (resets on every chunk received);
+	// total-duration timeout for non-streaming calls.
 	llmTimeout := utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second)
 
 	configureLogging(logLevel, logFormat)
