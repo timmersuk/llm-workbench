@@ -1,18 +1,22 @@
 # Task Schema v0
 
-A Task is a versioned intent object stored in a git-backed task repository.
+A Task is a versioned intent object.
 
 It represents a unit of work that moves through a structured workflow lifecycle.
+
+A task belongs to exactly one project permanently: it is stored nested
+inside that project's own directory and can never move to another project.
 
 ---
 
 ## 1. File Structure
 
-Each task is a directory under the workspace's task root (`WORKSPACE_ROOT`
-defaults to `data/`, so this repo's own tasks live at `data/tasks/`):
+Each task is a directory under its owning project's `tasks/` directory
+(`WORKSPACE_ROOT` defaults to `data/`, so this repo's own tasks live at
+`data/projects/<projectId>/tasks/`):
 
 ```
-data/tasks/TASK-0001/
+data/projects/llm-workbench/tasks/TASK-0001/
     task.yaml
     context.yaml (optional, derived — see below)
     plan.yaml (optional, generated)
@@ -20,7 +24,9 @@ data/tasks/TASK-0001/
     review.yaml (optional, human or system generated)
 ```
 
-Only `task.yaml` is required at creation.
+Only `task.yaml` is required at creation. A task's id is client-specified at
+creation time and unique only within its owning project — the same id may
+be reused by tasks in different projects.
 
 ---
 
@@ -171,6 +177,13 @@ Each task must belong to exactly one project:
 ```yaml
 project: auth-service
 ```
+
+This is structurally enforced, not just a matter of the `project:` field:
+a task's directory lives nested inside its owning project's directory
+(`data/projects/<projectId>/tasks/<taskId>/`), and the API only ever
+exposes task routes nested under a project (`/api/v1/projects/{projectId}/tasks/...`)
+— there is no route or field through which a task could move to a
+different project.
 
 Projects provide:
 - context

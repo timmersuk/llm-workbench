@@ -1,4 +1,16 @@
-import type { ChatCompletionResponse, ChatMessage, ModelsListResult, ProjectListResult, TaskListResult } from './types'
+import type {
+  ChatCompletionResponse,
+  ChatMessage,
+  CreateProjectRequest,
+  CreateTaskRequest,
+  ModelsListResult,
+  Project,
+  ProjectListResult,
+  Task,
+  TaskListResult,
+  UpdateProjectRequest,
+  UpdateTaskRequest,
+} from './types'
 
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -8,12 +20,49 @@ async function getJSON<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export function listTasks(): Promise<TaskListResult> {
-  return getJSON<TaskListResult>('/api/v1/tasks')
+async function mutateJSON<T>(method: 'POST' | 'PUT', path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const message = await res.text().catch(() => '')
+    throw new Error(message || `${method} ${path} returned ${res.status}`)
+  }
+  return res.json() as Promise<T>
 }
 
 export function listProjects(): Promise<ProjectListResult> {
   return getJSON<ProjectListResult>('/api/v1/projects')
+}
+
+export function createProject(req: CreateProjectRequest): Promise<Project> {
+  return mutateJSON<Project>('POST', '/api/v1/projects', req)
+}
+
+export function updateProject(id: string, req: UpdateProjectRequest): Promise<Project> {
+  return mutateJSON<Project>('PUT', `/api/v1/projects/${encodeURIComponent(id)}`, req)
+}
+
+export function listProjectTasks(projectId: string): Promise<TaskListResult> {
+  return getJSON<TaskListResult>(`/api/v1/projects/${encodeURIComponent(projectId)}/tasks`)
+}
+
+export function getProjectTask(projectId: string, taskId: string): Promise<Task> {
+  return getJSON<Task>(`/api/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`)
+}
+
+export function createProjectTask(projectId: string, req: CreateTaskRequest): Promise<Task> {
+  return mutateJSON<Task>('POST', `/api/v1/projects/${encodeURIComponent(projectId)}/tasks`, req)
+}
+
+export function updateProjectTask(projectId: string, taskId: string, req: UpdateTaskRequest): Promise<Task> {
+  return mutateJSON<Task>(
+    'PUT',
+    `/api/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
+    req,
+  )
 }
 
 export interface HealthStatus {

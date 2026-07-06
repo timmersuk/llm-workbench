@@ -112,3 +112,91 @@ func TestFileStore_Get_RejectsPathTraversal(t *testing.T) {
 		assert.Error(t, err, "expected id %q to be rejected", id)
 	}
 }
+
+func TestFileStore_Create_DerivesSlugFromName(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	p, err := store.Create(CreateInput{Name: "My Cool Project"})
+	require.NoError(t, err)
+	assert.Equal(t, "my-cool-project", p.ID)
+	assert.False(t, p.CreatedAt.IsZero())
+	assert.Equal(t, p.CreatedAt, p.UpdatedAt)
+
+	fetched, err := store.Get("my-cool-project")
+	require.NoError(t, err)
+	assert.Equal(t, "My Cool Project", fetched.Name)
+}
+
+func TestFileStore_Create_RejectsCollidingSlug(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.Create(CreateInput{Name: "Demo Project"})
+	require.NoError(t, err)
+
+	_, err = store.Create(CreateInput{Name: "Demo Project"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAlreadyExists)
+}
+
+func TestFileStore_Create_RejectsMissingName(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.Create(CreateInput{Name: "   "})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMissingName)
+}
+
+func TestFileStore_Update_PreservesCreatedAtBumpsUpdatedAt(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	created, err := store.Create(CreateInput{Name: "Demo Project"})
+	require.NoError(t, err)
+
+	updated, err := store.Update("demo-project", UpdateInput{Name: "Demo Project", Description: "updated"})
+	require.NoError(t, err)
+	assert.Equal(t, "updated", updated.Description)
+	assert.Equal(t, created.CreatedAt, updated.CreatedAt)
+	assert.True(t, updated.UpdatedAt.After(created.UpdatedAt) || updated.UpdatedAt.Equal(created.UpdatedAt))
+}
+
+func TestFileStore_Update_NotFound(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.Update("nonexistent", UpdateInput{Name: "X"})
+	require.Error(t, err)
+}
+
+func TestFileStore_Update_RejectsMissingName(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.Create(CreateInput{Name: "Demo Project"})
+	require.NoError(t, err)
+
+	_, err = store.Update("demo-project", UpdateInput{Name: ""})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMissingName)
+}
+
+func TestFileStore_TasksRoot_OK(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	tasksRoot, err := store.TasksRoot("demo-project")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "demo-project", "tasks"), tasksRoot)
+}
+
+func TestFileStore_TasksRoot_RejectsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.TasksRoot("../escape")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidID)
+}

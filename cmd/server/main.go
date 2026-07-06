@@ -1,5 +1,5 @@
-// Command server runs the llm-workbench HTTP server: a read-only API over
-// the task/project repositories, a chat completions proxy to a local
+// Command server runs the llm-workbench HTTP server: an API over the
+// task/project repositories, a chat completions proxy to a local
 // OpenAI-compatible LLM server, and the embedded frontend dashboard.
 package main
 
@@ -7,9 +7,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -37,7 +35,6 @@ func main() {
 
 	configureLogging(logLevel, logFormat)
 
-	taskStore := task.NewFileStore(resolveTaskStoreRoot(workspaceRoot))
 	projectStore := project.NewFileStore(filepath.Join(workspaceRoot, "projects"))
 	chatClient := chat.NewClient(llmBaseURL, llmAPIKey, llmTimeout)
 
@@ -46,7 +43,8 @@ func main() {
 		logrus.Fatalf("mounting embedded frontend: %v", err)
 	}
 
-	router := api.NewRouter(taskStore, projectStore, defaultModelCompleter{chatClient, llmModel}, frontendFS, BuildID)
+	taskStores := func(root string) api.TaskStore { return task.NewFileStore(root) }
+	router := api.NewRouter(projectStore, taskStores, defaultModelCompleter{chatClient, llmModel}, frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":          httpAddr,
@@ -59,22 +57,6 @@ func main() {
 	if err := http.ListenAndServe(httpAddr, router); err != nil {
 		logrus.Fatalf("server exited: %v", err)
 	}
-}
-
-func resolveTaskStoreRoot(workspaceRoot string) string {
-	candidates := []string{workspaceRoot, filepath.Join(workspaceRoot, "tasks")}
-	for _, candidate := range candidates {
-		entries, err := os.ReadDir(candidate)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() && strings.HasPrefix(entry.Name(), "TASK-") {
-				return candidate
-			}
-		}
-	}
-	return filepath.Join(workspaceRoot, "tasks")
 }
 
 func configureLogging(level, format string) {

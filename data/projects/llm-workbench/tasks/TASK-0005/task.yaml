@@ -1,0 +1,37 @@
+id: TASK-0005
+title: Migrate task/project storage to a real git-backed repository
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-06T00:00:00Z
+updated_at: 2026-07-06T00:00:00Z
+
+objective: >-
+  Revisit persistence for tasks and projects: today they're plain files under
+  data/ (WORKSPACE_ROOT), read/written directly via os.ReadFile/os.WriteFile
+  with no version history. Explore migrating to an actual git-backed
+  repository (a commit per create/update, full history/diff/blame available
+  for every task.yaml and project.yaml change) instead of the current
+  flat-file FileStore, matching the "git-backed" framing docs/project_summary.md
+  and CLAUDE.md originally used before Milestone 2 walked that back to plain
+  on-disk persistence.
+
+constraints:
+  - "No in-app git operations are in scope for Milestone 2 — this is deferred, future-milestone work only."
+  - "Must not require a running git binary as a hard runtime dependency without first evaluating a pure-Go git library (see architectural invariants: prefer open standards)."
+
+assumptions:
+  - A pure-Go git implementation (e.g. go-git) is preferable to shelling out to a git binary, but this hasn't been evaluated yet.
+  - The existing on-disk layout (data/projects/{projectId}/tasks/{taskId}/task.yaml) is a reasonable working-tree shape for a future git repo root and wouldn't need to change, only gain a .git/ alongside it.
+
+success_criteria:
+  - A follow-up milestone plan exists that either adopts real git-backed persistence or explicitly re-confirms plain on-disk persistence is sufficient long-term.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+    - docs/milestones/milestone2.md
+  repo: []

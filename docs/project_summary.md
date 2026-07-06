@@ -1,6 +1,6 @@
 # LLM Workbench — Project Summary
 
-> A git-backed workflow control plane for coordinating humans, LLMs, and coding tools through explicit, inspectable processes.
+> A workflow control plane for coordinating humans, LLMs, and coding tools through explicit, inspectable processes.
 
 ---
 
@@ -41,7 +41,7 @@ LLMs and tools are treated as **replaceable workers**, not system controllers.
 A Task is:
 
 - a versioned intent object
-- stored in a git-backed task repository
+- belonging to exactly one project permanently, stored nested under it
 - progressed through structured workflow stages
 - linked to code changes and execution outcomes
 
@@ -143,14 +143,15 @@ A workspace consists of:
 
 ```
 Workspace
-├── Task Repository (git-backed)
-│   ├── TASK-0001/
-│   ├── TASK-0002/
-│   └── ...
-│
 ├── Projects
 │   ├── auth-service
+│   │   └── Tasks
+│   │       ├── TASK-0001/
+│   │       ├── TASK-0002/
+│   │       └── ...
 │   ├── billing-system
+│   │   └── Tasks
+│   │       └── ...
 │   └── ...
 │
 ├── Knowledge Base
@@ -163,6 +164,9 @@ Workspace
     ├── service-b
     └── ...
 ```
+
+A task belongs to exactly one project permanently — it is stored nested
+under that project and can never move to another.
 
 ---
 
@@ -288,4 +292,4 @@ All meaningful system behaviour must be:
 
 ## 10. One-Line Summary
 
-> A git-backed, inspectable workflow control system for coordinating software engineering tasks across humans and interchangeable LLM/tool executors.
+> An inspectable workflow control system for coordinating software engineering tasks across humans and interchangeable LLM/tool executors.

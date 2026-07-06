@@ -8,7 +8,7 @@ The LLM Workbench is a system designed for managing software engineering work th
 
 ### Core Abstractions:
 
-*   **Task**: The primary unit of work. Tasks are versioned intent objects, stored in a git-backed repository (`data/tasks/`). Each task is a directory (e.g., `data/tasks/TASK-0001/`) containing:
+*   **Task**: The primary unit of work. Tasks are versioned intent objects, belonging to exactly one project permanently. Each task is a directory nested under its owning project (e.g., `data/projects/demo-project/tasks/TASK-0001/`) containing:
     *   `task.yaml`: Core definition (id, title, project, status, stage, objective, constraints, etc.).
     *   `context.yaml` (optional): Derived context — see `docs/task schema v0.md` for its shape.
     *   `plan.yaml` (optional): Generated structured plan.
@@ -32,11 +32,13 @@ conventions.md`'s Configuration section):
 
 ```
 data/                          (WORKSPACE_ROOT)
-├── tasks/                     (git-backed Task Repository)
-│   ├── TASK-0001/
-│   └── ...
 ├── projects/
 │   ├── auth-service/
+│   │   ├── project.yaml
+│   │   └── tasks/
+│   │       ├── TASK-0001/
+│   │       │   └── task.yaml
+│   │       └── ...
 │   └── ...
 └── knowledge/
     ├── coding-standards.md
@@ -82,4 +84,4 @@ Based on the project summary, the primary development tasks involve managing the
 *   **Knowledge Management:**
     *   Adding and modifying knowledge base documents.
 
-Specific commands for these tasks are not yet present in the codebase. Future instances of Claude Code should look for command-line tools or scripts within the `data/projects/` or `data/tasks/` directories that facilitate these operations. Given the "git-backed" nature, direct manipulation of YAML files within these directories using `Read`, `Write`, and `Edit` tools would also be a common approach for managing these structured workflows.
+Specific commands for these tasks are not yet present in the codebase. Future instances of Claude Code should look for command-line tools or scripts within the `data/projects/` directory (which also holds each project's nested `tasks/`) that facilitate these operations. Direct manipulation of YAML files within these directories using `Read`, `Write`, and `Edit` tools would also be a common approach for managing these structured workflows.

@@ -1,12 +1,16 @@
-// Package task provides the Task type and a read-only file-backed store over
-// a tasks/ directory (rooted at WORKSPACE_ROOT, which defaults to data/),
-// per docs/task schema v0.md.
+// Package task provides the Task type and a file-backed store over a
+// project's tasks/ directory, per docs/task schema v0.md. A task belongs to
+// exactly one project permanently; this package has no notion of "project"
+// beyond the opaque Project field — the store is always constructed rooted
+// at a single project's task directory (see project.FileStore.TasksRoot),
+// and a task's id is unique only within that root, not globally.
 package task
 
 import "time"
 
 // Task is a versioned intent object stored as <task root>/<id>/task.yaml
-// (e.g. data/tasks/<id>/task.yaml with the default WORKSPACE_ROOT).
+// (e.g. data/projects/<projectId>/tasks/<id>/task.yaml with the default
+// WORKSPACE_ROOT).
 type Task struct {
 	ID    string `yaml:"id" json:"id"`
 	Title string `yaml:"title" json:"title"`

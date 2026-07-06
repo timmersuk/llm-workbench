@@ -55,28 +55,29 @@ created_at: 2026-07-05T00:00:00Z
 updated_at: 2026-07-05T00:00:00Z
 `
 
-// newIntegrationServer boots a real router backed by real FileStores (seeded
-// with one fixture task/project each) and a real *chat.Client pointed at a
-// fake upstream, then serves it over a real net.Listener. Callers get back a
-// ready-to-use base URL and a cleanup-registered *chat.Client so upstream
-// behavior (e.g. closing the fake server) can be adjusted per test.
+// newIntegrationServer boots a real router backed by a real project
+// FileStore (seeded with one fixture project owning one fixture task) and a
+// real *chat.Client pointed at a fake upstream, then serves it over a real
+// net.Listener. Callers get back a ready-to-use base URL and a
+// cleanup-registered *chat.Client so upstream behavior (e.g. closing the
+// fake server) can be adjusted per test.
 func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL string, chatClient *chat.Client) {
 	t.Helper()
 
 	root := t.TempDir()
-	taskRoot := filepath.Join(root, "tasks", "TASK-0001")
-	require.NoError(t, os.MkdirAll(taskRoot, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(taskRoot, "task.yaml"), []byte(integrationTaskYAML), 0o644))
-
 	projectRoot := filepath.Join(root, "projects", "demo-project")
 	require.NoError(t, os.MkdirAll(projectRoot, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(projectRoot, "project.yaml"), []byte(integrationProjectYAML), 0o644))
 
-	taskStore := task.NewFileStore(filepath.Join(root, "tasks"))
+	taskRoot := filepath.Join(projectRoot, "tasks", "TASK-0001")
+	require.NoError(t, os.MkdirAll(taskRoot, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(taskRoot, "task.yaml"), []byte(integrationTaskYAML), 0o644))
+
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
+	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient = chat.NewClient(upstream.URL, "test-key", 5*time.Second)
 
-	router := NewRouter(taskStore, projectStore, chatClient, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -117,7 +118,7 @@ func TestIntegration_TasksAndProjectsServedFromRealStores(t *testing.T) {
 	baseURL, _ := newIntegrationServer(t, upstream)
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	resp, err := client.Get(baseURL + "/api/v1/tasks")
+	resp, err := client.Get(baseURL + "/api/v1/projects/demo-project/tasks")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -127,20 +128,20 @@ func TestIntegration_TasksAndProjectsServedFromRealStores(t *testing.T) {
 	assert.Equal(t, "TASK-0001", taskList.Tasks[0].ID)
 	assert.Empty(t, taskList.Errors)
 
-	resp, err = client.Get(baseURL + "/api/v1/tasks/TASK-0001")
+	resp, err = client.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-0001")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	resp, err = client.Get(baseURL + "/api/v1/tasks/TASK-9999")
+	resp, err = client.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-9999")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 
-	resp, err = client.Get(baseURL + "/api/v1/tasks/not-a-task-id")
+	resp, err = client.Get(baseURL + "/api/v1/projects/nonexistent/tasks/TASK-0001")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 
 	resp, err = client.Get(baseURL + "/api/v1/projects")
 	require.NoError(t, err)
@@ -163,27 +164,27 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 	defer upstream.Close()
 
 	root := t.TempDir()
-	validDir := filepath.Join(root, "tasks", "TASK-0001")
-	require.NoError(t, os.MkdirAll(validDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(validDir, "task.yaml"), []byte(integrationTaskYAML), 0o644))
-
-	brokenDir := filepath.Join(root, "tasks", "TASK-0002")
-	require.NoError(t, os.MkdirAll(brokenDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(brokenDir, "task.yaml"), []byte("id: [not valid yaml"), 0o644))
-
 	projectRoot := filepath.Join(root, "projects", "demo-project")
 	require.NoError(t, os.MkdirAll(projectRoot, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(projectRoot, "project.yaml"), []byte(integrationProjectYAML), 0o644))
 
-	taskStore := task.NewFileStore(filepath.Join(root, "tasks"))
+	validDir := filepath.Join(projectRoot, "tasks", "TASK-0001")
+	require.NoError(t, os.MkdirAll(validDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(validDir, "task.yaml"), []byte(integrationTaskYAML), 0o644))
+
+	brokenDir := filepath.Join(projectRoot, "tasks", "TASK-0002")
+	require.NoError(t, os.MkdirAll(brokenDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(brokenDir, "task.yaml"), []byte("id: [not valid yaml"), 0o644))
+
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
+	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient := chat.NewClient(upstream.URL, "test-key", 5*time.Second)
 
-	router := NewRouter(taskStore, projectStore, chatClient, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	resp, err := http.Get(server.URL + "/api/v1/tasks")
+	resp, err := http.Get(server.URL + "/api/v1/projects/demo-project/tasks")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "one malformed task must not fail the whole listing")
@@ -197,6 +198,169 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 	require.Len(t, got.Errors, 1)
 	assert.Equal(t, "TASK-0002", got.Errors[0].ID)
 	assert.Contains(t, got.Errors[0].Error, "parsing")
+}
+
+func TestIntegration_CreateTaskPersistsToRealFileStore(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	body, err := json.Marshal(task.Task{ID: "new-task", Title: "New task"})
+	require.NoError(t, err)
+
+	resp, err := http.Post(baseURL+"/api/v1/projects/demo-project/tasks", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created task.Task
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	assert.Equal(t, "new-task", created.ID)
+	assert.Equal(t, "demo-project", created.Project)
+
+	resp, err = http.Get(baseURL + "/api/v1/projects/demo-project/tasks/new-task")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+
+	root := t.TempDir()
+	for _, id := range []string{"demo-project", "other-project"} {
+		dir := filepath.Join(root, "projects", id)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "project.yaml"), []byte(integrationProjectYAML), 0o644))
+	}
+
+	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
+	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
+	chatClient := chat.NewClient(upstream.URL, "test-key", 5*time.Second)
+	router := NewRouter(projectStore, taskStores, chatClient, testFrontendFS(), "test-build")
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	body, err := json.Marshal(task.Task{ID: "shared-id", Title: "Shared"})
+	require.NoError(t, err)
+
+	for _, projectID := range []string{"demo-project", "other-project"} {
+		resp, err := http.Post(server.URL+"/api/v1/projects/"+projectID+"/tasks", "application/json", bytes.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusCreated, resp.StatusCode, "expected task creation to succeed for project %s", projectID)
+	}
+}
+
+func TestIntegration_CreateDuplicateTaskInSameProjectReturns409(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	body, err := json.Marshal(task.Task{ID: "dup-task", Title: "First"})
+	require.NoError(t, err)
+
+	resp, err := http.Post(baseURL+"/api/v1/projects/demo-project/tasks", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	resp, err = http.Post(baseURL+"/api/v1/projects/demo-project/tasks", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestIntegration_UpdateTaskPreservesCreatedAt(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	resp, err := http.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-0001")
+	require.NoError(t, err)
+	var before task.Task
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&before))
+	resp.Body.Close()
+
+	body, err := json.Marshal(task.Task{ID: "TASK-0001", Title: "Updated title"})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var after task.Task
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&after))
+	assert.Equal(t, "Updated title", after.Title)
+	assert.True(t, before.CreatedAt.Equal(after.CreatedAt))
+}
+
+func TestIntegration_UpdateTaskRejectsIDMismatch(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	body, err := json.Marshal(task.Task{ID: "TASK-9999", Title: "Moved?"})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestIntegration_CreateAndUpdateProject(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	body, err := json.Marshal(project.CreateInput{Name: "Another Project"})
+	require.NoError(t, err)
+	resp, err := http.Post(baseURL+"/api/v1/projects", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created project.Project
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	assert.Equal(t, "another-project", created.ID)
+
+	updateBody, err := json.Marshal(project.UpdateInput{Name: "Another Project", Description: "updated"})
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/api/v1/projects/another-project", bytes.NewReader(updateBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	updateResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer updateResp.Body.Close()
+	require.Equal(t, http.StatusOK, updateResp.StatusCode)
+
+	var updated project.Project
+	require.NoError(t, json.NewDecoder(updateResp.Body).Decode(&updated))
+	assert.Equal(t, "updated", updated.Description)
+}
+
+func TestIntegration_CreateDuplicateProjectNameReturns409(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	body, err := json.Marshal(project.CreateInput{Name: "Demo Project"})
+	require.NoError(t, err)
+
+	resp, err := http.Post(baseURL+"/api/v1/projects", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, "demo-project already exists from the fixture seed")
 }
 
 func TestIntegration_ChatCompletionsRoundTripsThroughRealClient(t *testing.T) {
