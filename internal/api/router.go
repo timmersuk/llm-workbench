@@ -4,10 +4,13 @@
 package api
 
 import (
+	"fmt"
 	"io/fs"
 	"net/http"
+	"sort"
+	"strings"
 
-	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
@@ -59,13 +62,20 @@ type TaskStoreFactory func(root string) TaskStore
 
 // NewRouter builds the full HTTP handler: the JSON API plus the embedded
 // frontend (serving frontendFS, with an index.html SPA fallback for unknown
-// paths). chatCompleter is chat.ChatClient — declared and documented in
-// internal/chat as a deliberate exception to interfaces normally living in
-// the consuming package (see docs/adr/0001-opaque-chat-provider-implementation.md).
-func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, chatCompleter chat.ChatClient, knowledgeReader KnowledgeReader, frontendFS fs.FS, buildId string) http.Handler {
+// paths). agentRunners keys the tool-equipped/chat executor options shared
+// by both Requirements/Planning stage conversations and the free-floating
+// Chat tab (e.g. "claude-code", "local") — every chat/agent interaction
+// goes through this map, there is no separate direct chat.ChatClient path.
+// Each entry's actual availability is determined at request time via
+// AgentRunner.CheckHealth, not by static configuration. reposRoot is the
+// local directory agent runners resolve a project's configured repository
+// into a workspace under (see agentrunner.ResolveWorkspace); free chat has
+// no per-task project, so it passes reposRoot itself as the workspace
+// instead.
+func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, frontendFS fs.FS, buildId string) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthcheck", handleHealthcheck(chatCompleter, buildId))
+	mux.HandleFunc("GET /healthcheck", handleHealthcheck(agentRunners, buildId))
 	mux.HandleFunc("GET /api/v1/version", handleVersion(buildId))
 
 	mux.HandleFunc("GET /api/v1/projects", handleListProjects(projects))
@@ -81,30 +91,68 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, chatCompleter
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/context", handleGetTaskContext(projects, taskStores))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/plan", handleGetTaskPlan(projects, taskStores))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/conversation", handleGetStageConversation(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages", handlePostStageMessage(projects, taskStores, chatCompleter, knowledgeReader))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", handleFinalizeRequirements(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", handleFinalizePlan(projects, taskStores))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages", handlePostStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", handleFinalizeRequirements(projects, taskStores, agentRunners))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", handleFinalizePlan(projects, taskStores, agentRunners))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/revise", handleReviseRequirements(projects, taskStores))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", handleRevisePlan(projects, taskStores))
 
-	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(chatCompleter))
-	mux.HandleFunc("GET /api/v1/chat/models", handleListModels(chatCompleter))
+	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(agentRunners, reposRoot))
+	mux.HandleFunc("POST /api/v1/chat/sessions/close", handleCloseChatSession(agentRunners))
+	mux.HandleFunc("GET /api/v1/chat/models", handleListModels(agentRunners))
+	mux.HandleFunc("GET /api/v1/agent-executors", handleListAgentExecutors(agentRunners))
 
 	mux.Handle("GET /", newFrontendHandler(frontendFS))
 
 	return mux
 }
 
-func handleHealthcheck(chatCompleter chat.ChatClient, buildId string) http.HandlerFunc {
+// subsystemHealth is one entry in healthcheckResponse.Subsystems.
+type subsystemHealth struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// healthcheckResponse reports per-subsystem status (docs/engineering
+// conventions.md's Healthchecks section: "a caller should be able to tell
+// *which* dependency is down"), not just a single collapsed boolean.
+// Error is a semicolon-joined summary of every failing subsystem, kept
+// alongside Subsystems for frontend backward-compatibility
+// (frontend/src/api.ts's HealthStatus.error).
+type healthcheckResponse struct {
+	Status     string                     `json:"status"`
+	BuildId    string                     `json:"build_id"`
+	Error      string                     `json:"error,omitempty"`
+	Subsystems map[string]subsystemHealth `json:"subsystems"`
+}
+
+func handleHealthcheck(agentRunners map[string]agentrunner.AgentRunner, buildId string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if chatCompleter != nil {
-			if err := chatCompleter.CheckHealth(r.Context()); err != nil {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "build_id": buildId, "error": err.Error()})
+		subsystems := map[string]subsystemHealth{}
+		var failures []string
+
+		probe := func(key string, check func() error) {
+			if err := check(); err != nil {
+				subsystems[key] = subsystemHealth{Status: "error", Error: err.Error()}
+				failures = append(failures, fmt.Sprintf("%s: %s", key, err.Error()))
 				return
 			}
+			subsystems[key] = subsystemHealth{Status: "ok"}
 		}
 
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "build_id": buildId})
+		for name, runner := range agentRunners {
+			probe("agent:"+name, func() error { return runner.CheckHealth(r.Context()) })
+		}
+
+		resp := healthcheckResponse{Status: "ok", BuildId: buildId, Subsystems: subsystems}
+		status := http.StatusOK
+		if len(failures) > 0 {
+			sort.Strings(failures)
+			resp.Status = "error"
+			resp.Error = strings.Join(failures, "; ")
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, resp)
 	}
 }
 

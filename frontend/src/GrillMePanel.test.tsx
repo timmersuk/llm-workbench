@@ -39,6 +39,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 
 beforeEach(() => {
   vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a', 'model-b'] })
+  vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
   vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'requirements', messages: [] })
 })
 
@@ -83,6 +84,33 @@ describe('GrillMePanel — initial load', () => {
     expect(screen.getByRole('option', { name: 'model-b' })).toBeInTheDocument()
   })
 
+  it('only offers Local LLM chat as the executor when no agent executors are enabled server-side', async () => {
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await waitFor(() => expect(api.listAgentExecutors).toHaveBeenCalled())
+    expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Claude Code' })).not.toBeInTheDocument()
+  })
+
+  it('offers Claude Code as an executor once the server reports it enabled', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    expect(await screen.findByRole('option', { name: 'Claude Code' })).toBeInTheDocument()
+  })
+
+  it('never offers "local" as a stage-conversation executor, even if the server reports it', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local', 'claude-code'] })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await screen.findByRole('option', { name: 'Claude Code' })
+    expect(screen.queryByRole('option', { name: 'local' })).not.toBeInTheDocument()
+    // "Local LLM chat" (the "" bypass sentinel) is still the always-on entry.
+    expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
+  })
+
   it('disables the model select with no models when listModels rejects', async () => {
     vi.mocked(api.listModels).mockRejectedValue(new Error('boom'))
 
@@ -98,7 +126,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
     let finish!: () => void
-    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, onEvent) => {
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
       deliver = onEvent
       return new Promise((resolve) => {
         finish = resolve
@@ -131,7 +159,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
     let finish!: () => void
-    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, onEvent) => {
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
       deliver = onEvent
       return new Promise((resolve) => {
         finish = resolve
@@ -155,7 +183,7 @@ describe('GrillMePanel — Draft review', () => {
   async function sendAndReceiveToolCall(argsObject: Record<string, unknown>) {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
-    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, onEvent) => {
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
       deliver = onEvent
       return Promise.resolve()
     })
@@ -197,7 +225,7 @@ describe('GrillMePanel — Draft review', () => {
     vi.mocked(api.finalizeRequirements).mockResolvedValue({ task: resultTask, context: emptyContext })
 
     let deliver!: (event: ChatStreamEvent) => void
-    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, onEvent) => {
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
       deliver = onEvent
       return Promise.resolve()
     })
@@ -220,7 +248,7 @@ describe('GrillMePanel — Draft review', () => {
     vi.mocked(api.finalizeRequirements).mockRejectedValue(new Error('task is not in the expected stage'))
 
     let deliver!: (event: ChatStreamEvent) => void
-    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, onEvent) => {
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
       deliver = onEvent
       return Promise.resolve()
     })
@@ -241,7 +269,7 @@ describe('GrillMePanel — Draft review', () => {
   it('silently ignores malformed tool_call arguments JSON — no draft section, no crash', async () => {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
-    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, onEvent) => {
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
       deliver = onEvent
       return Promise.resolve()
     })

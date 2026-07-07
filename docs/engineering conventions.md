@@ -116,15 +116,23 @@ doesn't have to be re-derived or re-litigated later.
 
 ## Healthchecks
 
-* `GET /healthcheck` reflects the status of the subsystems the server
-  depends on (currently the chat completer's `CheckHealth`), not just process
-  liveness. As more subsystems are added, extend the handler to check each
-  one and report per-subsystem success/failure rather than collapsing to a
-  single boolean — a caller should be able to tell *which* dependency is
-  down.
-* Shape: `{"status": "ok"|"error", "build_id": "..."}` on success, plus an
-  `"error"` field with the underlying message when a subsystem check fails.
-  Failure returns `503 Service Unavailable`.
+* `GET /healthcheck` reflects the status of every subsystem the server
+  depends on — each registered `agentrunner.AgentRunner`'s `CheckHealth`,
+  not just process liveness — per-subsystem, not collapsed to a single
+  boolean, so a caller can tell *which* dependency is down. There is no
+  separate chat-completer probe: the local-LLM path is itself an
+  `AgentRunner` entry (`"local"`, wrapping `chat.ChatClient` via
+  `ChatClientRunner`), so its health surfaces the same way as every other
+  entry. As more subsystems are added, extend the handler
+  (`handleHealthcheck`, `internal/api/router.go`) to probe each one the
+  same way.
+* Shape: `{"status": "ok"|"error", "build_id": "...", "subsystems": {"<key>":
+  {"status": "ok"|"error", "error"?: "..."}, ...}}`. Subsystem keys are
+  `"agent:<name>"` for each `agentRunners` entry (e.g. `"agent:claude-code"`,
+  `"agent:local"`). The top-level `"error"` field is a semicolon-joined
+  summary of every failing subsystem, kept for frontend backward-
+  compatibility alongside the per-subsystem detail. Failure (any subsystem
+  down) returns `503 Service Unavailable`.
 
 ## API error responses
 
@@ -204,6 +212,93 @@ doesn't have to be re-derived or re-litigated later.
   themselves instead of reliably blowing the deadline mid-reasoning. Keep
   this distinction in mind before changing either method's timeout wiring.
 
+## Requirements/Planning agent executors
+
+* `internal/agentrunner` implements the `executor.type: claude-code | codex |
+  local | human` abstraction from `docs/task schema v0.md` for both
+  Requirements/Planning stage conversations and the free-floating Chat tab
+  — there is no separate direct `chat.ChatClient` code path in
+  `internal/api`; every executor, including the local-LLM one, is reached
+  through `agentRunners` (`api.NewRouter`'s `agentRunners` param) and
+  `AgentRunner.Run`. `AgentRunner.Run` is one conversational turn, keyed by
+  `RunInput.SessionKey` (stage conversations use `taskID+":"+stage`; free
+  chat uses a client-generated id). `*ClaudeRunner` (`claude_runner.go`) is
+  backed by `github.com/severity1/claude-agent-sdk-go` (an unofficial
+  wrapper around the `claude` CLI subprocess — pin its version in `go.mod`,
+  don't float it); `*ChatClientRunner` (`chat_client_runner.go`) adapts any
+  `chat.ChatClient` (the local-LLM path) into the same interface, offering
+  `RunInput.Tool` to `chat.ChatClient.StreamSessionTurn`'s `tools` param so
+  Draft proposals (`propose_context`/`propose_plan`) work identically to
+  `ClaudeRunner`'s. A `codex_runner.go` is expected to follow the same
+  `AgentRunner` interface later. Adopting a third-party multi-agent
+  orchestration framework (e.g. AgenticGoKit) instead of this hand-rolled
+  layer was considered and deferred — see
+  `docs/adr/0005-defer-agenticgokit-adoption.md`.
+* `chat.ChatClient.StreamSessionTurn` holds a session's conversation
+  history in-memory (`openAIClient.sessions`, keyed by `sessionKey`) rather
+  than the caller resending full history each call — same
+  process-lifetime-only tradeoff `ClaudeRunner`'s cached `claudecode.Client`
+  already has. If the model calls a tool, `StreamSessionTurn` returns the
+  `*chat.ToolCall` and records it in the held history as an assistant
+  tool-call message plus a synthetic tool-role acknowledgement
+  (`"Draft proposed to user for review."`, matching `ClaudeRunner`'s own
+  ack text), so the next turn stays protocol-valid without the caller
+  reconstructing that shape.
+* Availability is otherwise discovered live via `AgentRunner.CheckHealth`,
+  not gated by a static enable flag — mirrors `chat.ChatClient.CheckHealth`'s
+  real upstream probe. `main.go` always registers `"claude-code"` into the
+  shared `agentRunners` map passed to `api.NewRouter`; `ClaudeRunner.
+  CheckHealth` reports unavailable if the `claude` CLI isn't on `PATH`
+  (`exec.LookPath`, indirected behind a package-level `lookPath` var for
+  tests — the SDK has no cheaper real ping; a full `Connect`+`Disconnect`
+  would spawn a subprocess per check). `AGENT_REPOS_ROOT` itself is a hard
+  startup requirement, not a health-checked one: `main.go` reads it via
+  `utils.MustGetEnv` and refuses to start without it, since any agent
+  runner capable of introspecting a task's reference repo (`claude-code`
+  today, others later) needs it to know where repos live. `ClaudeRunner.
+  CheckHealth` still separately errors if constructed with an empty
+  `reposRoot` (defense-in-depth for direct/test construction bypassing
+  `main.go`).
+  `handleListAgentExecutors` (`internal/api/agent_executors.go`) and
+  `handleHealthcheck` both call `CheckHealth` per entry rather than just
+  checking map presence. `agentrunner.ResolveWorkspace` derives a
+  per-task agent's cwd from a project's first configured `Repositories`
+  entry (e.g. `github.com/timmersuk/logthing`) by convention: its last path
+  segment joined under `AGENT_REPOS_ROOT` (so repos checked out as siblings
+  of this workbench resolve correctly), validated to exist and to never
+  escape that root. `handlePostStageMessage` (`stage_conversation.go`)
+  calls `ResolveWorkspace` unconditionally for every executor, including
+  `"local"` — a project with no resolvable `Repositories` entry can't run
+  GrillMe/Planning Mode with any executor, even though `ChatClientRunner`
+  itself ignores `RunInput.Workspace`. Free chat has no per-task project, so
+  it passes `AGENT_REPOS_ROOT` itself as `RunInput.Workspace` without
+  calling `ResolveWorkspace` — a Claude Code session started from the Chat
+  tab gets read access rooted at the whole sibling-repos directory, not one
+  specific repo. `AGENT_TIMEOUT` (default 5m) bounds a single `Run` call end
+  to end.
+* Safety guardrails, all in `internal/agentrunner`: `WithAllowedTools`
+  restricted to `Read`/`Grep`/`Glob` plus the stage's Draft-proposing MCP
+  tool — no `Write`/`Edit`/`Bash`, ever, regardless of what the model asks
+  for; `RunInput.Tool` is optional (its zero value means no MCP tool is
+  registered at all — the shape free chat uses, since it has no Draft
+  concept); the workspace path is always caller-resolved via
+  `ResolveWorkspace` (or the free-chat default above), never agent-chosen;
+  one in-flight run per `SessionKey` at a time (`ClaudeRunner.tryLock`/
+  `unlock`); a hard `context.WithTimeout` wraps each `Run` call. Nothing is
+  written to `context.yaml`/`plan.yaml` from this path — same Draft/
+  Finalize separation as the chat path (`internal/api/stage_conversation.go`).
+* One `claudecode.Client` (one `claude` CLI subprocess) is created lazily
+  per `SessionKey` and kept alive until `AgentRunner.CloseSession(sessionKey)`
+  is called, since `WithCwd`/`WithSystemPrompt`/`WithAllowedTools` are all
+  client-scoped (fixed at `Connect` time) rather than per-query in this SDK
+  — a single global client couldn't serve two sessions with different
+  workspaces/prompts. `CloseSession` calls the SDK's own `Disconnect()`
+  and forgets the cached client; it's wired to two real call sites — a
+  successful Finalize (`internal/api/finalize.go`; deliberately *not*
+  Revise, which resumes the same `Conversation` by design) and the Chat
+  tab's "New chat" action (`POST /api/v1/chat/sessions/close`) — rather
+  than left as an unused capability.
+
 ## Build & single-binary packaging
 
 * The frontend builds to `internal/web/dist` (`vite.config.ts`:
@@ -255,6 +350,17 @@ doesn't have to be re-derived or re-litigated later.
   rendering/state logic with no overlap between the two layers. Run via
   `pnpm run test` (`vitest run`) inside `frontend/`, or `make test` at the
   repo root (`frontend-test` Makefile target).
+
+## Exploratory manual testing
+
+* When an agent is running the service locally and "trying things out" —
+  more than a one-off `curl` call, but not a formal test script — prefer
+  driving it through the REST API (`curl`/`httpie`/a script) over the
+  browser UI, unless the thing actually being tested *is* UI behavior
+  (rendering, interactions, layout). Puppeting a full browser for every
+  intermediate check is slow and burns far more tokens than an equivalent
+  API call for the same information. Reach for the browser only when the
+  question can't be answered any other way.
 
 ## General
 

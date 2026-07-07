@@ -12,6 +12,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/api"
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
@@ -35,6 +36,11 @@ func main() {
 	// Idle timeout between streamed chunks (resets on every chunk received);
 	// total-duration timeout for non-streaming calls.
 	llmTimeout := utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second)
+	agentTimeout := utils.GetEnvDefault("AGENT_TIMEOUT", 5*time.Minute)
+	// Required: any agent runner that can introspect a task's reference
+	// repository (claude-code today; codex/others later) needs to know
+	// where to find/clone it, so the server refuses to start without one.
+	agentReposRoot := utils.MustGetEnv("AGENT_REPOS_ROOT")
 
 	configureLogging(logLevel, logFormat)
 
@@ -42,20 +48,32 @@ func main() {
 	chatClient := chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout)
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(workspaceRoot, "knowledge"))
 
+	// One shared map: registered runners are selectable from both
+	// Requirements/Planning stage conversations and the free-floating Chat
+	// tab, and both consume it identically — there is no separate
+	// stateless/bypass path for either. "local" wraps the same chatClient
+	// used by defaultModelCompleter below, giving it session-held history
+	// (chat.ChatClient.StreamSessionTurn) exactly like "claude-code".
+	agentRunners := map[string]agentrunner.AgentRunner{
+		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentReposRoot),
+		"local":       agentrunner.NewChatClientRunner(defaultModelCompleter{chatClient, llmModel}),
+	}
+
 	frontendFS, err := fs.Sub(web.Files, "dist")
 	if err != nil {
 		logrus.Fatalf("mounting embedded frontend: %v", err)
 	}
 
 	taskStores := func(root string) api.TaskStore { return task.NewFileStore(root) }
-	router := api.NewRouter(projectStore, taskStores, defaultModelCompleter{chatClient, llmModel}, knowledgeReader, frontendFS, BuildID)
+	router := api.NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, agentReposRoot, frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
-		"addr":          httpAddr,
-		"workspaceRoot": workspaceRoot,
-		"llmBaseURL":    llmBaseURL,
-		"llmModel":      llmModel,
-		"buildID":       BuildID,
+		"addr":           httpAddr,
+		"workspaceRoot":  workspaceRoot,
+		"llmBaseURL":     llmBaseURL,
+		"llmModel":       llmModel,
+		"agentReposRoot": agentReposRoot,
+		"buildID":        BuildID,
 	}).Info("starting llm-workbench server")
 
 	if err := http.ListenAndServe(httpAddr, router); err != nil {
@@ -66,7 +84,7 @@ func main() {
 func configureLogging(level, format string) {
 	lvl, err := logrus.ParseLevel(level)
 	if err != nil {
-		logrus.Warnf("invalid LOG_LEVEL %q, defaulting to info", level)
+		logrus.WithField("level", level).Warn("invalid LOG_LEVEL, defaulting to info")
 		lvl = logrus.InfoLevel
 	}
 	logrus.SetLevel(lvl)
@@ -107,4 +125,15 @@ func (c defaultModelCompleter) CheckHealth(ctx context.Context) error {
 
 func (c defaultModelCompleter) ListModels(ctx context.Context) ([]string, error) {
 	return c.client.ListModels(ctx)
+}
+
+func (c defaultModelCompleter) StreamSessionTurn(ctx context.Context, sessionKey, systemPrompt, model, userMessage string, tools []chat.Tool, onDelta func(chat.Delta) error) (string, *chat.ToolCall, error) {
+	if model == "" {
+		model = c.model
+	}
+	return c.client.StreamSessionTurn(ctx, sessionKey, systemPrompt, model, userMessage, tools, onDelta)
+}
+
+func (c defaultModelCompleter) CloseSession(sessionKey string) {
+	c.client.CloseSession(sessionKey)
 }

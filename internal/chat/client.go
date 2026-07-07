@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -32,6 +33,22 @@ type ChatClient interface {
 	StreamChatCompletion(ctx context.Context, req CompletionRequest, onDelta func(Delta) error) error
 	ListModels(ctx context.Context) ([]string, error)
 	CheckHealth(ctx context.Context) error
+
+	// StreamSessionTurn appends userMessage to sessionKey's held history
+	// (seeding a leading system message from systemPrompt on the
+	// session's first turn), streams via StreamChatCompletion (offering
+	// tools, if any), and appends the accumulated assistant reply back
+	// into history before returning — so callers send only the newest
+	// turn instead of resending full history each call. If the model
+	// calls one of tools, the returned ToolCall is non-nil and the held
+	// history records it as an assistant tool-call message followed by a
+	// synthetic tool-role acknowledgement, so the next turn stays
+	// protocol-valid without the caller reconstructing that shape itself.
+	StreamSessionTurn(ctx context.Context, sessionKey, systemPrompt, model, userMessage string, tools []Tool, onDelta func(Delta) error) (content string, toolCall *ToolCall, err error)
+
+	// CloseSession discards sessionKey's held history. Safe to call for a
+	// key that never had one (no-op).
+	CloseSession(sessionKey string)
 }
 
 // openAIClient talks to an OpenAI-compatible chat completions endpoint. It
@@ -42,6 +59,9 @@ type openAIClient struct {
 	apiKey     string
 	httpClient *http.Client
 	timeout    time.Duration
+
+	sessionsMu sync.Mutex
+	sessions   map[string][]Message
 }
 
 // NewOpenAIClient returns a ChatClient speaking the OpenAI-compatible chat
@@ -58,6 +78,7 @@ func NewOpenAIClient(baseURL, apiKey string, timeout time.Duration) ChatClient {
 		apiKey:     apiKey,
 		httpClient: &http.Client{},
 		timeout:    timeout,
+		sessions:   make(map[string][]Message),
 	}
 }
 
@@ -271,6 +292,55 @@ func (c *openAIClient) ListModels(ctx context.Context) ([]string, error) {
 		ids = append(ids, m.ID)
 	}
 	return ids, nil
+}
+
+// StreamSessionTurn implements ChatClient. Unbounded in-memory growth for
+// the life of the process is expected — CloseSession is the mitigation for
+// a session that's genuinely done, not a size cap.
+func (c *openAIClient) StreamSessionTurn(ctx context.Context, sessionKey, systemPrompt, model, userMessage string, tools []Tool, onDelta func(Delta) error) (string, *ToolCall, error) {
+	c.sessionsMu.Lock()
+	history := append([]Message{}, c.sessions[sessionKey]...)
+	c.sessionsMu.Unlock()
+
+	messages := history
+	if systemPrompt != "" && (len(messages) == 0 || messages[0].Role != "system") {
+		messages = append([]Message{{Role: "system", Content: systemPrompt}}, messages...)
+	}
+	messages = append(messages, Message{Role: "user", Content: userMessage})
+
+	var content strings.Builder
+	var toolCall *ToolCall
+	err := c.StreamChatCompletion(ctx, CompletionRequest{Model: model, Messages: messages, Tools: tools}, func(d Delta) error {
+		if d.Content != "" {
+			content.WriteString(d.Content)
+		}
+		if d.ToolCall != nil {
+			toolCall = d.ToolCall
+		}
+		return onDelta(d)
+	})
+
+	result := content.String()
+
+	assistantMsg := Message{Role: "assistant", Content: result}
+	newHistory := append(messages, assistantMsg)
+	if toolCall != nil {
+		newHistory[len(newHistory)-1].ToolCalls = []ToolCall{*toolCall}
+		newHistory = append(newHistory, Message{Role: "tool", ToolCallID: toolCall.ID, Content: "Draft proposed to user for review."})
+	}
+
+	c.sessionsMu.Lock()
+	c.sessions[sessionKey] = newHistory
+	c.sessionsMu.Unlock()
+
+	return result, toolCall, err
+}
+
+// CloseSession implements ChatClient.
+func (c *openAIClient) CloseSession(sessionKey string) {
+	c.sessionsMu.Lock()
+	delete(c.sessions, sessionKey)
+	c.sessionsMu.Unlock()
 }
 
 func (c *openAIClient) setHeaders(req *http.Request) {

@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
@@ -78,12 +79,19 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	require.NoError(t, os.MkdirAll(taskRoot, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(taskRoot, "task.yaml"), []byte(integrationTaskYAML), 0o644))
 
+	// integrationProjectYAML's repositories: [github.com/org/demo] resolves
+	// (agentrunner.ResolveWorkspace) to reposRoot/demo — every stage-message
+	// executor, including "local", now requires this to exist.
+	reposRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(reposRoot, "demo"), 0o755))
+
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient = chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
+	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
 
-	router := NewRouter(projectStore, taskStores, chatClient, knowledgeReader, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -186,10 +194,9 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
-	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 
-	router := NewRouter(projectStore, taskStores, chatClient, knowledgeReader, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -246,9 +253,8 @@ func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing
 
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
-	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
-	router := NewRouter(projectStore, taskStores, chatClient, knowledgeReader, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -378,9 +384,10 @@ func TestIntegration_ChatCompletionsRoundTripsThroughRealClient(t *testing.T) {
 	defer upstream.Close()
 	baseURL, _ := newIntegrationServer(t, upstream)
 
-	body, err := json.Marshal(chat.CompletionRequest{
-		Model:    "test-model",
-		Messages: []chat.Message{{Role: "user", Content: "hello"}},
+	body, err := json.Marshal(chatCompletionRequest{
+		Content:    "hello",
+		Model:      "test-model",
+		SessionKey: "integration-test-session",
 	})
 	require.NoError(t, err)
 
@@ -442,10 +449,20 @@ func TestIntegration_HealthcheckReflectsRealChatClient(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 
-	var got map[string]string
+	var got struct {
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+		Subsystems map[string]struct {
+			Status string `json:"status"`
+			Error  string `json:"error,omitempty"`
+		} `json:"subsystems"`
+	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	assert.Equal(t, "error", got["status"])
-	assert.NotEmpty(t, got["error"])
+	assert.Equal(t, "error", got.Status)
+	assert.NotEmpty(t, got.Error)
+	require.Contains(t, got.Subsystems, "agent:local")
+	assert.Equal(t, "error", got.Subsystems["agent:local"].Status)
+	assert.NotEmpty(t, got.Subsystems["agent:local"].Error)
 }
 
 // fakeUpstreamProposingToolCall behaves like fakeUpstream but, for

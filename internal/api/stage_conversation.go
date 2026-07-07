@@ -8,6 +8,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
@@ -80,9 +81,13 @@ func stageTool(stage string) (chat.Tool, bool) {
 }
 
 // stageMessageRequest is the request body for handlePostStageMessage.
+// Executor selects which agentRunners entry produces the reply, defaulting
+// to defaultChatExecutor (chat.go) when empty — same convention as the
+// free-floating chat endpoint's chatCompletionRequest.Executor.
 type stageMessageRequest struct {
-	Content string `json:"content"`
-	Model   string `json:"model"`
+	Content  string `json:"content"`
+	Model    string `json:"model"`
+	Executor string `json:"executor,omitempty"`
 }
 
 // handleGetStageConversation returns a stage's persisted message history.
@@ -116,7 +121,7 @@ func handleGetStageConversation(projects ProjectStore, factory TaskStoreFactory)
 // Draft itself (CONTEXT.md) — for the frontend to render for review; it is
 // not persisted or written to disk here, only Finalize (finalize.go) does
 // that.
-func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, chatCompleter chat.ChatClient, knowledgeReader KnowledgeReader) http.HandlerFunc {
+func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		tool, ok := stageTool(stage)
@@ -128,6 +133,16 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, cha
 		var req stageMessageRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		executorKey := req.Executor
+		if executorKey == "" {
+			executorKey = defaultChatExecutor
+		}
+		runner, ok := agentRunners[executorKey]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
 			return
 		}
 
@@ -152,15 +167,7 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, cha
 			return
 		}
 
-		conv, err := store.GetConversation(taskId, stage)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-
 		systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
-		messages := append([]chat.Message{{Role: "system", Content: systemPrompt}}, replayConversation(conv)...)
-		messages = append(messages, chat.Message{Role: "user", Content: req.Content})
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -181,26 +188,33 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, cha
 
 		var assistantContent strings.Builder
 		var proposed *chat.ToolCall
+		var streamErr error
 
-		streamErr := chatCompleter.StreamChatCompletion(r.Context(), chat.CompletionRequest{
-			Model:    req.Model,
-			Messages: messages,
-			Tools:    []chat.Tool{tool},
-		}, func(d chat.Delta) error {
-			if d.ToolCall != nil {
-				if proposed == nil {
-					proposed = d.ToolCall
-				}
-				writeEvent(chatStreamEvent{ToolCall: &chatToolCallEvent{
-					Name:      d.ToolCall.Function.Name,
-					Arguments: d.ToolCall.Function.Arguments,
-				}})
+		workspace, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
+		if wsErr != nil {
+			streamErr = fmt.Errorf("resolving workspace: %w", wsErr)
+		} else {
+			out, runErr := runner.Run(r.Context(), agentrunner.RunInput{
+				SessionKey:   taskId + ":" + stage,
+				Workspace:    workspace,
+				SystemPrompt: systemPrompt,
+				UserMessage:  req.Content,
+				Model:        req.Model,
+				Tool:         tool,
+			}, func(d chat.Delta) error {
+				writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
 				return nil
+			})
+			streamErr = runErr
+			assistantContent.WriteString(out.Content)
+			proposed = out.ToolCall
+			if proposed != nil {
+				writeEvent(chatStreamEvent{ToolCall: &chatToolCallEvent{
+					Name:      proposed.Function.Name,
+					Arguments: proposed.Function.Arguments,
+				}})
 			}
-			assistantContent.WriteString(d.Content)
-			writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
-			return nil
-		})
+		}
 		if streamErr != nil {
 			// Headers (200 OK) are already sent, so a failed stream can't
 			// surface as an HTTP error status — relayed as a final SSE
@@ -225,39 +239,6 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, cha
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
 	}
-}
-
-// replayConversation reconstructs a stage's persisted history into
-// []chat.Message for the outbound completion request. A prior assistant
-// tool call is replayed as an assistant tool-call message followed by a
-// synthetic tool-role reply — required so continuing after a
-// non-finalized Draft stays protocol-valid — which is reconstructed here
-// on the fly and never itself persisted into Conversation.Messages.
-func replayConversation(conv task.Conversation) []chat.Message {
-	messages := make([]chat.Message, 0, len(conv.Messages))
-	for _, m := range conv.Messages {
-		if m.ToolCall != nil {
-			messages = append(messages, chat.Message{
-				Role: "assistant",
-				ToolCalls: []chat.ToolCall{{
-					ID:   m.ToolCall.ID,
-					Type: "function",
-					Function: chat.ToolCallFunction{
-						Name:      m.ToolCall.Name,
-						Arguments: m.ToolCall.Arguments,
-					},
-				}},
-			})
-			messages = append(messages, chat.Message{
-				Role:       "tool",
-				ToolCallID: m.ToolCall.ID,
-				Content:    "Draft proposed to user for review.",
-			})
-			continue
-		}
-		messages = append(messages, chat.Message{Role: m.Role, Content: m.Content})
-	}
-	return messages
 }
 
 // buildStagePrompt seeds the interview's system prompt with the task's own

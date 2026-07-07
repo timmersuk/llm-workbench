@@ -1,5 +1,6 @@
 import type {
-  ChatMessage,
+  AgentExecutorsListResult,
+  ChatCompletionRequestBody,
   ChatStreamEvent,
   Conversation,
   CreateProjectRequest,
@@ -130,6 +131,14 @@ export function listModels(): Promise<ModelsListResult> {
   return getJSON<ModelsListResult>('/api/v1/chat/models')
 }
 
+// listAgentExecutors reports which registered agentRunners entries
+// currently respond to a live CheckHealth probe — used to only offer an
+// executor choice the server will actually accept. Shared by both the
+// StageConversationPanel and ChatPanel pickers (see AgentExecutorsListResult).
+export function listAgentExecutors(): Promise<AgentExecutorsListResult> {
+  return getJSON<AgentExecutorsListResult>('/api/v1/agent-executors')
+}
+
 // streamSSE reads res's body as a "data: {...}\n\n"-per-line Server-Sent-
 // Events stream, invoking onEvent once per line until the stream ends.
 // Shared by streamChatCompletion (the free-floating chat tab) and
@@ -163,40 +172,67 @@ async function streamSSE<T>(res: Response, onEvent: (event: T) => void): Promise
   }
 }
 
-// streamChatCompletion posts messages to the chat completions endpoint and
-// invokes onEvent once per incremental server-sent event as it arrives,
-// until the stream ends. Rejects if the request itself fails to start (bad
-// status, no body); once streaming begins, upstream failures surface as a
-// final event with `error` set (see ChatStreamEvent), not a rejection.
+// streamChatCompletion posts one new message to the chat completions
+// endpoint and invokes onEvent once per incremental server-sent event as it
+// arrives, until the stream ends. The server holds this conversation's
+// history keyed by sessionKey (a client-generated id stable for the
+// lifetime of one ChatPanel mount) — unlike postStageMessage's stage
+// conversations, the client never resends prior turns. executor selects
+// which registered agentRunners entry produces the reply (e.g. "local",
+// "claude-code" — see AgentExecutorsListResult); model is only honored by
+// model-selectable executors. Rejects if the request itself fails to start
+// (bad status, no body); once streaming begins, upstream failures surface
+// as a final event with `error` set (see ChatStreamEvent), not a rejection.
 export async function streamChatCompletion(
-  messages: ChatMessage[],
+  content: string,
   model: string,
+  executor: string,
+  sessionKey: string,
   onEvent: (event: ChatStreamEvent) => void,
 ): Promise<void> {
+  const body: ChatCompletionRequestBody = { content, model, executor, session_key: sessionKey }
   const res = await fetch('/api/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages }),
+    body: JSON.stringify(body),
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
+// closeChatSession discards a free-chat session's server-held history —
+// the "New chat" action's server-side counterpart.
+export async function closeChatSession(sessionKey: string): Promise<void> {
+  const res = await fetch('/api/v1/chat/sessions/close', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_key: sessionKey }),
+  })
+  if (!res.ok) {
+    throw new Error(`closing chat session returned ${res.status}`)
+  }
 }
 
 // postStageMessage posts a user message to a task's GrillMe (stage:
 // "requirements") or Planning Mode (stage: "planning") Conversation and
 // streams the assistant's reply the same way streamChatCompletion does —
-// including a `tool_call` event if the model proposes a Draft.
+// including a `tool_call` event if the model proposes a Draft. executor
+// selects which backend produces the reply: "" (default) is the local-LLM
+// chat path (model applies); any other value (e.g. "claude-code") routes
+// to a tool-equipped agent executor instead, and model is ignored
+// (internal/api/stage_conversation.go).
 export async function postStageMessage(
   projectId: string,
   taskId: string,
   stage: string,
   content: string,
   model: string,
+  executor: string,
   onEvent: (event: ChatStreamEvent) => void,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, model }),
+    body: JSON.stringify({ content, model, executor }),
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
 }

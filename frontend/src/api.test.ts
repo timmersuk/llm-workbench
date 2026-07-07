@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  closeChatSession,
   createProject,
   createProjectTask,
   finalizePlan,
@@ -9,6 +10,7 @@ import {
   getStageConversation,
   getTaskContext,
   getTaskPlan,
+  listAgentExecutors,
   listModels,
   listProjectTasks,
   listProjects,
@@ -112,6 +114,13 @@ describe('getJSON-backed requests', () => {
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(listModels()).resolves.toEqual(body)
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/models')
+  })
+
+  it('listAgentExecutors hits the right path and returns the parsed body', async () => {
+    const body = { executors: ['claude-code'] }
+    const fetchMock = stubFetch(jsonResponse(body))
+    await expect(listAgentExecutors()).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors')
   })
 })
 
@@ -247,67 +256,76 @@ describe('streaming (via streamChatCompletion)', () => {
   it('delivers multiple SSE events in order', async () => {
     stubFetch(sseResponse(['data: {"content":"Hello"}\n\n', 'data: {"content":" world"}\n\n']))
     const events: ChatStreamEvent[] = []
-    await streamChatCompletion([], 'model', (e) => events.push(e))
+    await streamChatCompletion('hi', 'model', 'local', 'sess-1', (e) => events.push(e))
     expect(events).toEqual([{ content: 'Hello' }, { content: ' world' }])
   })
 
   it('accumulates a data: line split across chunks', async () => {
     stubFetch(sseResponse(['data: {"conte', 'nt":"hi"}\n\n']))
     const events: ChatStreamEvent[] = []
-    await streamChatCompletion([], 'model', (e) => events.push(e))
+    await streamChatCompletion('hi', 'model', 'local', 'sess-1', (e) => events.push(e))
     expect(events).toEqual([{ content: 'hi' }])
   })
 
   it('rejects without calling onEvent when the response is non-ok', async () => {
     stubFetch(sseResponse(['data: {"content":"hi"}\n\n'], 500))
     const onEvent = vi.fn()
-    await expect(streamChatCompletion([], 'model', onEvent)).rejects.toThrow('request failed with status 500')
+    await expect(streamChatCompletion('hi', 'model', 'local', 'sess-1', onEvent)).rejects.toThrow('request failed with status 500')
     expect(onEvent).not.toHaveBeenCalled()
   })
 
   it('rejects when the response is ok but has no body', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 200 })))
     const onEvent = vi.fn()
-    await expect(streamChatCompletion([], 'model', onEvent)).rejects.toThrow('request failed with status 200')
+    await expect(streamChatCompletion('hi', 'model', 'local', 'sess-1', onEvent)).rejects.toThrow('request failed with status 200')
     expect(onEvent).not.toHaveBeenCalled()
   })
 
   it('silently drops a trailing partial line with no terminating newline', async () => {
     stubFetch(sseResponse(['data: {"content":"first"}\n\ndata: {"content":"incomplete"']))
     const events: ChatStreamEvent[] = []
-    await streamChatCompletion([], 'model', (e) => events.push(e))
+    await streamChatCompletion('hi', 'model', 'local', 'sess-1', (e) => events.push(e))
     expect(events).toEqual([{ content: 'first' }])
   })
 
   it('skips non-"data: " lines', async () => {
     stubFetch(sseResponse([': keep-alive\n\ndata: {"content":"real"}\n\n']))
     const events: ChatStreamEvent[] = []
-    await streamChatCompletion([], 'model', (e) => events.push(e))
+    await streamChatCompletion('hi', 'model', 'local', 'sess-1', (e) => events.push(e))
     expect(events).toEqual([{ content: 'real' }])
   })
 })
 
 describe('streamChatCompletion / postStageMessage request shape', () => {
-  it('streamChatCompletion POSTs model+messages to /api/v1/chat/completions', async () => {
+  it('streamChatCompletion POSTs content+model+executor+session_key to /api/v1/chat/completions', async () => {
     const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
-    const messages = [{ role: 'user', content: 'hello' }]
-    await streamChatCompletion(messages, 'my-model', vi.fn())
+    await streamChatCompletion('hello', 'my-model', 'local', 'sess-1', vi.fn())
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'my-model', messages }),
+      body: JSON.stringify({ content: 'hello', model: 'my-model', executor: 'local', session_key: 'sess-1' }),
     })
   })
 
-  it('postStageMessage POSTs content+model to the stage-scoped, escaped messages endpoint', async () => {
+  it('closeChatSession POSTs session_key to /api/v1/chat/sessions/close', async () => {
+    const fetchMock = stubFetch(new Response(null, { status: 204 }))
+    await closeChatSession('sess-1')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/sessions/close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_key: 'sess-1' }),
+    })
+  })
+
+  it('postStageMessage POSTs content+model+executor to the stage-scoped, escaped messages endpoint', async () => {
     const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
-    await postStageMessage('demo project', 'task one', 'requirements', 'hello', 'my-model', vi.fn())
+    await postStageMessage('demo project', 'task one', 'requirements', 'hello', 'my-model', 'claude-code', vi.fn())
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/projects/demo%20project/tasks/task%20one/stages/requirements/messages',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: 'hello', model: 'my-model' }),
+        body: JSON.stringify({ content: 'hello', model: 'my-model', executor: 'claude-code' }),
       },
     )
   })

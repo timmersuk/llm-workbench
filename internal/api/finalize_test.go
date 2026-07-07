@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
@@ -30,7 +32,7 @@ func TestHandleFinalizeRequirements_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks))(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizeRequirementsResponse
@@ -52,7 +54,7 @@ func TestHandleFinalizeRequirements_WrongStage(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks))(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -68,7 +70,7 @@ func TestHandleFinalizeRequirements_InvalidBody(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks))(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -89,7 +91,7 @@ func TestHandleFinalizePlan_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizePlan(projects, fixedTaskStoreFactory(tasks))(w, req)
+	handleFinalizePlan(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizePlanResponse
@@ -111,7 +113,76 @@ func TestHandleFinalizePlan_WrongStage(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizePlan(projects, fixedTaskStoreFactory(tasks))(w, req)
+	handleFinalizePlan(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
+func TestHandleFinalizeRequirements_ClosesAgentSessionsOnSuccess(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
+	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
+
+	draft := task.RequirementsDraft{}
+	updated := task.Task{ID: "TASK-0001", Stage: task.StagePlanning}
+	tasks := new(mockTaskStore)
+	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(updated, nil)
+	tasks.On("GetContext", "TASK-0001").Return(task.Context{}, nil)
+
+	runner := new(mockAgentRunner)
+	runner.On("CloseSession", "TASK-0001:"+task.StageRequirements)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/requirements/finalize", draft)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	runner.AssertCalled(t, "CloseSession", "TASK-0001:"+task.StageRequirements)
+}
+
+func TestHandleFinalizeRequirements_DoesNotCloseSessionsWhenFinalizeFails(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
+	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
+
+	draft := task.RequirementsDraft{}
+	tasks := new(mockTaskStore)
+	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
+
+	runner := new(mockAgentRunner)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/requirements/finalize", draft)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	runner.AssertNotCalled(t, "CloseSession", mock.Anything)
+}
+
+func TestHandleFinalizePlan_ClosesAgentSessionsOnSuccess(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
+	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
+
+	plan := task.Plan{}
+	updated := task.Task{ID: "TASK-0001", Stage: task.StageImplementation}
+	tasks := new(mockTaskStore)
+	tasks.On("FinalizePlan", "TASK-0001", plan).Return(updated, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+
+	runner := new(mockAgentRunner)
+	runner.On("CloseSession", "TASK-0001:"+task.StagePlanning)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/plan/finalize", plan)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	handleFinalizePlan(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	runner.AssertCalled(t, "CloseSession", "TASK-0001:"+task.StagePlanning)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/chat"
 )
 
@@ -34,15 +35,16 @@ func parseSSEEvents(t *testing.T, body string) []chatStreamEvent {
 }
 
 func TestHandleChatCompletions_OK(t *testing.T) {
-	completer := new(mockChatCompleter)
-	reqBody := chat.CompletionRequest{Model: "test", Messages: []chat.Message{{Role: "user", Content: "hi"}}}
-	completer.On("StreamChatCompletion", mock.Anything, reqBody, mock.Anything).
-		Return([]chat.Delta{{ReasoningContent: "thinking"}, {Content: "hello"}}, nil)
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
+		return in.SessionKey == "sess-1" && in.UserMessage == "hi" && in.Model == "test" && in.Workspace == "/repos"
+	}), mock.Anything).Return([]chat.Delta{{ReasoningContent: "thinking"}, {Content: "hello"}}, agentrunner.RunOutput{Content: "hello"}, nil)
 
+	reqBody := chatCompletionRequest{Content: "hi", Model: "test", SessionKey: "sess-1"}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	handleChatCompletions(completer)(w, req)
+	handleChatCompletions(map[string]agentrunner.AgentRunner{"local": runner}, "/repos")(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "text/event-stream", w.Header().Get("Content-Type"))
@@ -52,27 +54,61 @@ func TestHandleChatCompletions_OK(t *testing.T) {
 	}, parseSSEEvents(t, w.Body.String()))
 }
 
-func TestHandleChatCompletions_BadRequestBody(t *testing.T) {
-	completer := new(mockChatCompleter)
+func TestHandleChatCompletions_DefaultsToLocalExecutorWhenExecutorOmitted(t *testing.T) {
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).Return(nil, agentrunner.RunOutput{}, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", bytes.NewReader([]byte("{not json")))
-	w := httptest.NewRecorder()
-	handleChatCompletions(completer)(w, req)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	completer.AssertNotCalled(t, "StreamChatCompletion", mock.Anything, mock.Anything, mock.Anything)
-}
-
-func TestHandleChatCompletions_MidStreamErrorKeepsPartialContent(t *testing.T) {
-	completer := new(mockChatCompleter)
-	reqBody := chat.CompletionRequest{}
-	completer.On("StreamChatCompletion", mock.Anything, reqBody, mock.Anything).
-		Return([]chat.Delta{{Content: "partial "}, {Content: "answer"}}, errors.New("upstream connection dropped"))
-
+	reqBody := chatCompletionRequest{Content: "hi", SessionKey: "sess-1"}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	handleChatCompletions(completer)(w, req)
+	handleChatCompletions(map[string]agentrunner.AgentRunner{"local": runner}, "")(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	runner.AssertCalled(t, "Run", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestHandleChatCompletions_UnknownExecutor_BadRequest(t *testing.T) {
+	reqBody := chatCompletionRequest{Content: "hi", SessionKey: "sess-1", Executor: "does-not-exist"}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handleChatCompletions(map[string]agentrunner.AgentRunner{}, "")(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleChatCompletions_MissingSessionKey_BadRequest(t *testing.T) {
+	reqBody := chatCompletionRequest{Content: "hi"}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handleChatCompletions(map[string]agentrunner.AgentRunner{}, "")(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleChatCompletions_BadRequestBody(t *testing.T) {
+	runner := new(mockAgentRunner)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", bytes.NewReader([]byte("{not json")))
+	w := httptest.NewRecorder()
+	handleChatCompletions(map[string]agentrunner.AgentRunner{"local": runner}, "")(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	runner.AssertNotCalled(t, "Run", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestHandleChatCompletions_MidStreamErrorKeepsPartialContent(t *testing.T) {
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).
+		Return([]chat.Delta{{Content: "partial "}, {Content: "answer"}}, agentrunner.RunOutput{Content: "partial answer"}, errors.New("upstream connection dropped"))
+
+	reqBody := chatCompletionRequest{Content: "hi", SessionKey: "sess-1"}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handleChatCompletions(map[string]agentrunner.AgentRunner{"local": runner}, "")(w, req)
 
 	// Headers are already committed to 200 by the time a mid-stream error
 	// happens, so the failure surfaces as a final SSE event, not an HTTP
@@ -85,13 +121,38 @@ func TestHandleChatCompletions_MidStreamErrorKeepsPartialContent(t *testing.T) {
 	}, parseSSEEvents(t, w.Body.String()))
 }
 
+func TestHandleCloseChatSession_ClosesAcrossAllRegisteredRunners(t *testing.T) {
+	claudeRunner := new(mockAgentRunner)
+	claudeRunner.On("CloseSession", "sess-1")
+	localRunner := new(mockAgentRunner)
+	localRunner.On("CloseSession", "sess-1")
+
+	reqBody := chatSessionCloseRequest{SessionKey: "sess-1"}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/sessions/close", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCloseChatSession(map[string]agentrunner.AgentRunner{"claude-code": claudeRunner, "local": localRunner})(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	claudeRunner.AssertCalled(t, "CloseSession", "sess-1")
+	localRunner.AssertCalled(t, "CloseSession", "sess-1")
+}
+
+func TestHandleCloseChatSession_MissingSessionKey_BadRequest(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/sessions/close", bytes.NewReader([]byte("{}")))
+	w := httptest.NewRecorder()
+	handleCloseChatSession(map[string]agentrunner.AgentRunner{})(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 func TestHandleListModels_OK(t *testing.T) {
-	completer := new(mockChatCompleter)
-	completer.On("ListModels", mock.Anything).Return([]string{"llama3", "mistral"}, nil)
+	runner := new(mockAgentRunner)
+	runner.On("ListModels", mock.Anything).Return([]string{"llama3", "mistral"}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/models", nil)
 	w := httptest.NewRecorder()
-	handleListModels(completer)(w, req)
+	handleListModels(map[string]agentrunner.AgentRunner{"local": runner})(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got struct {
@@ -102,12 +163,20 @@ func TestHandleListModels_OK(t *testing.T) {
 }
 
 func TestHandleListModels_UpstreamError(t *testing.T) {
-	completer := new(mockChatCompleter)
-	completer.On("ListModels", mock.Anything).Return(nil, errors.New("upstream down"))
+	runner := new(mockAgentRunner)
+	runner.On("ListModels", mock.Anything).Return(nil, errors.New("upstream down"))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/models", nil)
 	w := httptest.NewRecorder()
-	handleListModels(completer)(w, req)
+	handleListModels(map[string]agentrunner.AgentRunner{"local": runner})(w, req)
 
 	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestHandleListModels_NoLocalExecutorRegistered(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/models", nil)
+	w := httptest.NewRecorder()
+	handleListModels(map[string]agentrunner.AgentRunner{})(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }

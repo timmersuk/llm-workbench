@@ -486,6 +486,202 @@ func TestClient_StreamChatCompletion_IdleTimeout(t *testing.T) {
 	assert.Equal(t, []Delta{{Content: "hello"}}, got)
 }
 
+func TestClient_StreamSessionTurn_FirstTurnSendsSystemPromptThenUserMessage(t *testing.T) {
+	var gotReq CompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotReq))
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w, "hi there", "")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	content, toolCall, err := client.StreamSessionTurn(context.Background(), "sess-1", "You are helpful.", "m", "hello", nil, func(Delta) error { return nil })
+	require.NoError(t, err)
+	assert.Equal(t, "hi there", content)
+	assert.Nil(t, toolCall)
+
+	require.Len(t, gotReq.Messages, 2)
+	assert.Equal(t, Message{Role: "system", Content: "You are helpful."}, gotReq.Messages[0])
+	assert.Equal(t, Message{Role: "user", Content: "hello"}, gotReq.Messages[1])
+}
+
+func TestClient_StreamSessionTurn_SecondTurnReplaysPriorHistoryForSameSessionKey(t *testing.T) {
+	var requests []CompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CompletionRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		requests = append(requests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w, fmt.Sprintf("reply %d", len(requests)), "")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	_, _, err := client.StreamSessionTurn(context.Background(), "sess-1", "sys", "m", "first message", nil, func(Delta) error { return nil })
+	require.NoError(t, err)
+	_, _, err = client.StreamSessionTurn(context.Background(), "sess-1", "sys", "m", "second message", nil, func(Delta) error { return nil })
+	require.NoError(t, err)
+
+	require.Len(t, requests, 2)
+	// Second turn's outbound history: system, first user turn, first
+	// assistant reply, second user turn — proving StreamSessionTurn held
+	// and replayed the prior turn rather than starting fresh.
+	require.Len(t, requests[1].Messages, 4)
+	assert.Equal(t, Message{Role: "system", Content: "sys"}, requests[1].Messages[0])
+	assert.Equal(t, Message{Role: "user", Content: "first message"}, requests[1].Messages[1])
+	assert.Equal(t, Message{Role: "assistant", Content: "reply 1"}, requests[1].Messages[2])
+	assert.Equal(t, Message{Role: "user", Content: "second message"}, requests[1].Messages[3])
+}
+
+func TestClient_StreamSessionTurn_DifferentSessionKeysDoNotShareHistory(t *testing.T) {
+	var requests []CompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CompletionRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		requests = append(requests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	_, _, err := client.StreamSessionTurn(context.Background(), "sess-a", "", "m", "from A", nil, func(Delta) error { return nil })
+	require.NoError(t, err)
+	_, _, err = client.StreamSessionTurn(context.Background(), "sess-b", "", "m", "from B", nil, func(Delta) error { return nil })
+	require.NoError(t, err)
+
+	require.Len(t, requests, 2)
+	assert.Len(t, requests[1].Messages, 1, "a different SessionKey must not see sess-a's history")
+	assert.Equal(t, Message{Role: "user", Content: "from B"}, requests[1].Messages[0])
+}
+
+func TestClient_StreamSessionTurn_ForwardsReasoningOnlyDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w, "", "thinking")
+		writeSSE(w, "answer", "")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	var got []Delta
+	content, _, err := client.StreamSessionTurn(context.Background(), "sess-1", "", "m", "hi", nil, func(d Delta) error {
+		got = append(got, d)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "answer", content, "only Content deltas accumulate into the returned/persisted content")
+	assert.Equal(t, []Delta{{ReasoningContent: "thinking"}, {Content: "answer"}}, got, "reasoning-only deltas must still reach onDelta")
+}
+
+func TestClient_StreamSessionTurn_ForwardsToolsAndReturnsToolCall(t *testing.T) {
+	var gotReq CompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotReq))
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeToolCallSSE(w, 0, "call-1", "propose_context", `{"objective":"ship login"}`)
+		writeFinishReasonSSE(w, "tool_calls")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	tools := []Tool{{Type: "function", Function: ToolSchema{Name: "propose_context"}}}
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	_, toolCall, err := client.StreamSessionTurn(context.Background(), "sess-1", "sys", "m", "let's start", tools, func(Delta) error { return nil })
+	require.NoError(t, err)
+
+	require.Len(t, gotReq.Tools, 1)
+	assert.Equal(t, "propose_context", gotReq.Tools[0].Function.Name)
+
+	require.NotNil(t, toolCall)
+	assert.Equal(t, "call-1", toolCall.ID)
+	assert.Equal(t, "propose_context", toolCall.Function.Name)
+	assert.Equal(t, `{"objective":"ship login"}`, toolCall.Function.Arguments)
+}
+
+func TestClient_StreamSessionTurn_ReplaysPriorToolCallAsAssistantAndSyntheticToolMessage(t *testing.T) {
+	var requests []CompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CompletionRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		requests = append(requests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requests) == 1 {
+			writeToolCallSSE(w, 0, "call-1", "propose_context", `{"objective":"x"}`)
+			writeFinishReasonSSE(w, "tool_calls")
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	tools := []Tool{{Type: "function", Function: ToolSchema{Name: "propose_context"}}}
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	_, _, err := client.StreamSessionTurn(context.Background(), "sess-1", "sys", "m", "let's start", tools, func(Delta) error { return nil })
+	require.NoError(t, err)
+	_, _, err = client.StreamSessionTurn(context.Background(), "sess-1", "sys", "m", "one more thing", tools, func(Delta) error { return nil })
+	require.NoError(t, err)
+
+	require.Len(t, requests, 2)
+	// system, user, assistant(tool_calls), tool(synthetic reply), user(new)
+	require.Len(t, requests[1].Messages, 5)
+	assert.Equal(t, "assistant", requests[1].Messages[2].Role)
+	require.Len(t, requests[1].Messages[2].ToolCalls, 1)
+	assert.Equal(t, "call-1", requests[1].Messages[2].ToolCalls[0].ID)
+	assert.Equal(t, "tool", requests[1].Messages[3].Role)
+	assert.Equal(t, "call-1", requests[1].Messages[3].ToolCallID)
+}
+
+func TestClient_StreamSessionTurn_PropagatesOnDeltaError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(w, "one", "")
+		writeSSE(w, "two", "")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	boom := errors.New("boom")
+	_, _, err := client.StreamSessionTurn(context.Background(), "sess-1", "", "m", "hi", nil, func(d Delta) error {
+		return boom
+	})
+	require.ErrorIs(t, err, boom)
+}
+
+func TestClient_CloseSession_DiscardsHistory(t *testing.T) {
+	var requests []CompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CompletionRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		requests = append(requests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "", 5*time.Second)
+	_, _, err := client.StreamSessionTurn(context.Background(), "sess-1", "", "m", "first", nil, func(Delta) error { return nil })
+	require.NoError(t, err)
+
+	client.CloseSession("sess-1")
+
+	_, _, err = client.StreamSessionTurn(context.Background(), "sess-1", "", "m", "after close", nil, func(Delta) error { return nil })
+	require.NoError(t, err)
+
+	require.Len(t, requests, 2)
+	assert.Len(t, requests[1].Messages, 1, "CloseSession must discard the prior turn's history")
+	assert.Equal(t, Message{Role: "user", Content: "after close"}, requests[1].Messages[0])
+}
+
+func TestClient_CloseSession_OnUnknownKeyIsANoOp(t *testing.T) {
+	client := NewOpenAIClient("http://example.invalid", "", 5*time.Second)
+	assert.NotPanics(t, func() { client.CloseSession("no-such-session") })
+}
+
 func TestClient_StreamChatCompletion_LongRunningStreamDoesNotTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

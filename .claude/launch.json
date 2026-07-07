@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "pnpm@latest", "run", "dev"],
+      "cwd": "frontend",
+      "port": 5173,
+      "autoPort": true
+    }
+  ]
+}

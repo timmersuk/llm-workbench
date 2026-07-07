@@ -88,13 +88,30 @@ export interface ProjectListResult {
   errors: LoadError[] | null
 }
 
-export interface ChatMessage {
-  role: string
-  content: string
-}
-
 export interface ModelsListResult {
   models: string[]
+}
+
+// AgentExecutorsListResult mirrors internal/api/agent_executors.go's
+// handleListAgentExecutors response — every registered agentRunners entry
+// that currently responds to a live CheckHealth probe (e.g. "claude-code",
+// "local"). The same endpoint backs both StageConversationPanel and
+// ChatPanel's executor pickers; StageConversationPanel filters out "local"
+// client-side since selecting it there would never produce a Draft.
+export interface AgentExecutorsListResult {
+  executors: string[]
+}
+
+// ChatCompletionRequestBody mirrors internal/api/chat.go's
+// chatCompletionRequest — the free-floating Chat tab's request shape.
+// session_key is required: the server holds this conversation's history
+// keyed by it (chat.ChatClient.StreamSessionTurn), so the client sends
+// only the newest turn rather than resending full history every call.
+export interface ChatCompletionRequestBody {
+  content: string
+  model: string
+  executor: string
+  session_key: string
 }
 
 // ChatStreamEvent mirrors internal/api/chat.go's chatStreamEvent — one

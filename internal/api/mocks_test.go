@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
@@ -183,42 +184,41 @@ func (m *mockProjectStore) TasksRoot(id string) (string, error) {
 	return args.String(0), args.Error(1)
 }
 
-type mockChatCompleter struct{ mock.Mock }
+type mockAgentRunner struct{ mock.Mock }
 
-func (m *mockChatCompleter) CreateChatCompletion(ctx context.Context, req chat.CompletionRequest) (chat.CompletionResponse, error) {
-	args := m.Called(ctx, req)
-	var resp chat.CompletionResponse
-	if v := args.Get(0); v != nil {
-		resp = v.(chat.CompletionResponse)
-	}
-	return resp, args.Error(1)
-}
-
-// StreamChatCompletion's test double is configured with .Return(deltas,
-// err): deltas ([]chat.Delta) are fed through onDelta in order (stopping
-// early if onDelta itself errors), then err is returned.
-func (m *mockChatCompleter) StreamChatCompletion(ctx context.Context, req chat.CompletionRequest, onDelta func(chat.Delta) error) error {
-	args := m.Called(ctx, req, onDelta)
+// Run's test double is configured with .Return(deltas, out, err): deltas
+// ([]chat.Delta) are fed through onDelta in order before out/err are
+// returned.
+func (m *mockAgentRunner) Run(ctx context.Context, in agentrunner.RunInput, onDelta func(chat.Delta) error) (agentrunner.RunOutput, error) {
+	args := m.Called(ctx, in, onDelta)
 	if deltas, ok := args.Get(0).([]chat.Delta); ok {
 		for _, d := range deltas {
 			if err := onDelta(d); err != nil {
-				return err
+				return agentrunner.RunOutput{}, err
 			}
 		}
 	}
-	return args.Error(1)
+	var out agentrunner.RunOutput
+	if v := args.Get(1); v != nil {
+		out = v.(agentrunner.RunOutput)
+	}
+	return out, args.Error(2)
 }
 
-func (m *mockChatCompleter) CheckHealth(ctx context.Context) error {
+func (m *mockAgentRunner) CheckHealth(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)
 }
 
-func (m *mockChatCompleter) ListModels(ctx context.Context) ([]string, error) {
+func (m *mockAgentRunner) ListModels(ctx context.Context) ([]string, error) {
 	args := m.Called(ctx)
 	var models []string
 	if v := args.Get(0); v != nil {
 		models = v.([]string)
 	}
 	return models, args.Error(1)
+}
+
+func (m *mockAgentRunner) CloseSession(sessionKey string) {
+	m.Called(sessionKey)
 }

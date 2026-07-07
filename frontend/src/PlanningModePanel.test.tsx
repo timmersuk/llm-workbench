@@ -31,6 +31,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 describe('PlanningModePanel', () => {
   it('mounts and renders the model select and empty transcript', async () => {
     vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
     vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'planning', messages: [] })
 
     render(<PlanningModePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
@@ -42,6 +43,7 @@ describe('PlanningModePanel', () => {
   it('a Finalize round-trip calls finalizePlan and reports the result via onFinalized', async () => {
     const user = userEvent.setup()
     vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
     vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'planning', messages: [] })
 
     const resultTask = makeTask()
@@ -49,7 +51,7 @@ describe('PlanningModePanel', () => {
     vi.mocked(api.finalizePlan).mockResolvedValue({ task: resultTask, plan: resultPlan })
 
     let deliver!: (event: ChatStreamEvent) => void
-    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, onEvent) => {
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
       deliver = onEvent
       return Promise.resolve()
     })

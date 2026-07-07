@@ -150,6 +150,70 @@ th {
   background: var(--bg-alt);
 }
 
+.markdown-message p:first-child {
+  margin-top: 0;
+}
+
+.markdown-message p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-message pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.markdown-message code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.markdown-message :not(pre) > code {
+  background: var(--bg-alt);
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.markdown-message blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+
+.markdown-message a {
+  color: var(--accent);
+}
+
+/* highlight.js semantic classes, themed off the existing palette only */
+.hljs-comment,
+.hljs-quote {
+  color: var(--text-muted);
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-title,
+.hljs-section,
+.hljs-doctag,
+.hljs-type,
+.hljs-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hljs-deletion {
+  color: var(--error);
+}
+
+.hljs-addition {
+  color: var(--accent);
+}
+
 .thinking-panel {
   margin-bottom: 8px;
   font-size: 13px;

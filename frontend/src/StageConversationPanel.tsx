@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { getStageConversation, listModels, postStageMessage } from './api'
+import { getStageConversation, listAgentExecutors, listModels, postStageMessage } from './api'
+import { MarkdownMessage } from './MarkdownMessage'
 import type { ConversationMessage } from './types'
 
 interface DisplayMessage {
@@ -56,6 +57,16 @@ interface StageConversationPanelProps<D> {
   onFinalize: (draft: D) => Promise<void>
 }
 
+// localChatOption is always available — the local-LLM chat path
+// (internal/chat) needs no server opt-in, unlike agent executors below.
+const localChatOption = { value: '', label: 'Local LLM chat' }
+
+// executorLabels maps an agent executor key (internal/agentrunner) to its
+// display label, for whichever keys listAgentExecutors currently reports
+// healthy — an executor that isn't live right now is never offered, so
+// selecting one can't 400.
+const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code' }
+
 // StageConversationPanel is the mechanism shared by GrillMe and Planning
 // Mode (CONTEXT.md): a persisted Conversation transcript, a message input
 // that streams the assistant's reply, and — when the model calls its
@@ -75,6 +86,8 @@ export function StageConversationPanel<D>({
   const [sending, setSending] = useState(false)
   const [models, setModels] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState('')
+  const [executor, setExecutor] = useState('')
+  const [executorOptions, setExecutorOptions] = useState([localChatOption])
   const [pendingDraft, setPendingDraft] = useState<D | null>(null)
   const [finalizing, setFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
@@ -87,6 +100,18 @@ export function StageConversationPanel<D>({
       .then((result) => {
         setModels(result.models)
         setSelectedModel((current) => current || result.models[0] || '')
+      })
+      .catch(() => undefined)
+    listAgentExecutors()
+      .then((result) => {
+        // "local" is registered for the free-floating Chat tab, not for
+        // stage conversations — it has no notion of this stage's
+        // Draft-proposing tool, so selecting it here would silently never
+        // produce a Draft. Filtered out rather than offered as a dead end.
+        setExecutorOptions([
+          localChatOption,
+          ...result.executors.filter((key) => key !== 'local').map((key) => ({ value: key, label: executorLabels[key] ?? key })),
+        ])
       })
       .catch(() => undefined)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -118,7 +143,7 @@ export function StageConversationPanel<D>({
     setSending(true)
 
     try {
-      await postStageMessage(projectId, taskId, stage, text, selectedModel, (event) => {
+      await postStageMessage(projectId, taskId, stage, text, selectedModel, executor, (event) => {
         if (event.error) {
           updateLastMessage((msg) => ({ ...msg, error: event.error! }))
           return
@@ -166,15 +191,28 @@ export function StageConversationPanel<D>({
   return (
     <div className="stage-conversation">
       <div className="chat-model-row">
-        <label htmlFor={`stage-model-${stage}`}>Model</label>
-        <select id={`stage-model-${stage}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
-          {models.length === 0 && <option value="">No models available</option>}
-          {models.map((model) => (
-            <option key={model} value={model}>
-              {model}
+        <label htmlFor={`stage-executor-${stage}`}>Executor</label>
+        <select id={`stage-executor-${stage}`} value={executor} onChange={(e) => setExecutor(e.target.value)}>
+          {executorOptions.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
             </option>
           ))}
         </select>
+
+        {!executor && (
+          <>
+            <label htmlFor={`stage-model-${stage}`}>Model</label>
+            <select id={`stage-model-${stage}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
+              {models.length === 0 && <option value="">No models available</option>}
+              {models.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
       </div>
 
       {loadError && <p className="error">Could not load conversation: {loadError}</p>}
@@ -188,7 +226,7 @@ export function StageConversationPanel<D>({
                 <div className="thinking-content">{message.reasoningContent}</div>
               </details>
             )}
-            <strong>{message.role}:</strong> {message.content}
+            <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
             {message.toolCallName && <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>}
             {message.error && <p className="error">{message.error}</p>}
           </div>
