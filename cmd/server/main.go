@@ -45,7 +45,6 @@ func main() {
 	configureLogging(logLevel, logFormat)
 
 	projectStore := project.NewFileStore(filepath.Join(workspaceRoot, "projects"))
-	chatClient := chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout)
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(workspaceRoot, "knowledge"))
 
 	// One shared map: registered runners are selectable from both
@@ -56,7 +55,10 @@ func main() {
 	// (chat.ChatClient.StreamSessionTurn) exactly like "claude-code".
 	agentRunners := map[string]agentrunner.AgentRunner{
 		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentReposRoot),
-		"local":       agentrunner.NewChatClientRunner(defaultModelCompleter{chatClient, llmModel}),
+		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
+			client: chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout),
+			model:  llmModel,
+		}),
 	}
 
 	frontendFS, err := fs.Sub(web.Files, "dist")

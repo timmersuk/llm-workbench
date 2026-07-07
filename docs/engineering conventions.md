@@ -10,8 +10,22 @@ doesn't have to be re-derived or re-litigated later.
 
 * Backend logging uses `logrus` (`github.com/sirupsen/logrus`), configured
   globally in `cmd/server/main.go` via `LOG_LEVEL` and a JSON/text formatter
-  switch. Use `logrus.WithFields` for structured context rather than
-  string-formatted messages.
+  switch.
+* Always use structured logging: attach context via `WithField(key, value)`
+  (one field) or `WithFields(logrus.Fields{...})` (multiple fields, plus
+  `WithError(err)` for an error value), then call `Debug`/`Info`/`Warn`/
+  `Error`/`Panic` with a short, fixed message string. Never use the
+  `printf`-style variants (`Debugf`/`Infof`/`Warnf`/`Errorf`/`Printf`/
+  `Panicf`) — interpolated values belong in fields, not the message, so
+  they're queryable in the JSON log output. See `cmd/server/main.go`'s
+  startup log, `internal/project/store.go`/`internal/task/store.go`'s
+  `List()` skip-warnings, and `internal/api/stage_conversation.go`'s
+  error/warn logs for the pattern to match.
+* Exception: `logrus.Fatalf` is fine as-is. It's only used on unrecoverable
+  startup failures (`utils.MustGetEnv*` in `internal/utils/env.go` and
+  `cmd/server/main.go`'s frontend-mount/listen failures) where the process
+  exits immediately after, so there's no downstream log aggregation benefit
+  to structuring it.
 
 ## Configuration
 
