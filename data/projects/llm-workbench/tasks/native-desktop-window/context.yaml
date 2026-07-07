@@ -1,0 +1,47 @@
+summary: >-
+  Explore replacing the browser tab with an actual native window (e.g.
+  Wails) around the existing embedded UI, as a fuller desktop-app
+  experience beyond windows-systray-icon's tray affordance. Deliberately
+  scoped as exploration-only for now, not a committed build.
+
+background: >-
+  Surfaced 2026-07-07 during the same architectural-pivot assessment as
+  the other three tasks in this group, then explicitly deferred: the
+  systray icon already solves "no manual browser tab" for most practical
+  purposes, so a full native window is lower-value, later work rather than
+  part of the initial background-service pivot.
+
+files:
+  - path: internal/web/assets.go
+    role: >-
+      the existing //go:embed all:dist embedding — a native window would
+      most likely reuse this exact embedded filesystem rather than
+      requiring any UI rewrite
+  - path: internal/api/router.go
+    role: >-
+      NewRouter already returns a plain http.Handler serving the embedded
+      UI and API together — a native window could point a webview at an
+      in-process instance of this handler (e.g. bound to a loopback port,
+      or via a library-level embed) without changing its shape
+
+detail: |
+  The server binary is already a single self-contained executable — UI
+  embedded via go:embed, no CGO, no OS-specific code anywhere in the tree
+  — so a native-window wrapper is additive packaging on top of an
+  already-working foundation, not a prerequisite for or blocker of
+  graceful-shutdown, windows-background-service, or windows-systray-icon.
+  Those three should ship independently of whatever this task eventually
+  decides.
+
+  Not designed in any depth yet: no library has been evaluated beyond
+  naming Wails as an example, no decision on whether this would replace or
+  coexist with the systray icon, and no assessment of packaging/signing
+  overhead per OS.
+
+verification:
+  - "N/A at this stage — this task's own success criterion is a documented decision, not a working feature."
+
+open_questions:
+  - "Is a native window worth building at all given windows-systray-icon already covers the main pain point (no manual browser tab, no port-number-remembering)? Or does it stay a browser-based UI indefinitely, with the tray as the only desktop affordance?"
+  - "If pursued: Wails vs. other options (e.g. a plain webview library) — not evaluated yet."
+  - "Would a native window replace the systray icon, or coexist with it (tray remains for background/service mode, native window is an optional richer client)?"

@@ -1,0 +1,75 @@
+summary: >-
+  cmd/server/main.go calls http.ListenAndServe(httpAddr, router) directly
+  (main.go:79) with no http.Server{}, no signal handling, and no
+  Shutdown(ctx) — the process only ever stops by being killed. This task
+  gives it a real stop path: an http.Server with a bounded Shutdown, wired
+  to both Ctrl+C in console/dev mode and (later, from
+  windows-background-service) a Windows Service Control Manager stop
+  request, plus cleanup of any claude CLI subprocess ClaudeRunner is still
+  holding open.
+
+background: >-
+  Surfaced 2026-07-07 while assessing how hard it would be to pivot this
+  service from "web server you run by hand" to a native background
+  service/desktop packaging, given the claude-code executor's fundamental
+  need to run on a machine with the claude CLI installed, authenticated,
+  and local filesystem access to AGENT_REPOS_ROOT (ruling out a small
+  shared remote server). Split out as its own task because both
+  windows-background-service (SCM stop requests) and windows-systray-icon
+  (a tray "Quit" action) need a clean, reusable stop path rather than each
+  reinventing shutdown handling.
+
+files:
+  - path: cmd/server/main.go
+    role: >-
+      extract the bootstrap body (main.go:28-68, env reads through router
+      construction) into run(ctx context.Context) error; replace
+      http.ListenAndServe (main.go:79) with an http.Server{} started in a
+      goroutine, Shutdown(ctx) called on ctx.Done() with a bounded timeout;
+      main() becomes signal.NotifyContext(context.Background(), os.Interrupt)
+      + run(ctx)
+  - path: internal/agentrunner/claude_runner.go
+    role: >-
+      ClaudeRunner (claude_runner.go:46-103) caches one claudecode.Client
+      per SessionKey in r.clients until CloseSession is called explicitly —
+      add a CloseAll()-style method that iterates r.clients under r.mu and
+      disconnects each, mirroring CloseSession's existing logic, so
+      shutdown doesn't orphan a running claude CLI subprocess
+  - path: internal/agentrunner/runner.go
+    role: >-
+      AgentRunner interface (runner.go:76-94) — decide whether to add a
+      Shutdown()/CloseAll() method to the interface itself (touches
+      ChatClientRunner too, which has nothing to clean up) or use a type
+      assertion in main.go's shutdown path to call it only on runners that
+      implement it
+
+detail: |
+  http.Server + graceful Shutdown is the standard net/http pattern: start
+  ListenAndServe in a goroutine, select on a done/cancel signal, then call
+  Shutdown(ctx) with its own bounded timeout (a new SHUTDOWN_TIMEOUT env,
+  following the same utils.GetEnvDefault pattern already used for
+  AGENT_TIMEOUT/LLM_TIMEOUT — no new config mechanism).
+
+  Windows console apps do receive Ctrl+C through signal.NotifyContext the
+  same way Unix does, so no OS-specific signal code is needed for the
+  console/dev-mode path. The reason this still needs to be a reusable
+  run(ctx) function rather than logic inlined in main() is
+  windows-background-service: a Windows Service does not receive a POSIX
+  SIGTERM from the Service Control Manager — stop requests arrive through
+  the service control dispatcher (kardianos/service's Stop callback) —
+  so that task needs to call the same run(ctx) with a context it cancels
+  itself, not rely on os/signal.
+
+  ClaudeRunner.clients has no existing "close everything" method, only
+  CloseSession(sessionKey) for a single key (claude_runner.go:93-103) — a
+  plain shutdown without this leaves every session's claude subprocess
+  running as an orphan, which is the concrete bug this task closes.
+
+verification:
+  - "Start a claude-code chat session (spawns a real claude CLI subprocess), Ctrl+C the server, confirm via Task Manager / Get-Process claude that no orphaned claude process remains."
+  - "Process exits within the configured shutdown timeout under normal conditions (no hung request)."
+  - "A request in flight when shutdown begins completes normally rather than being cut off (standard http.Server.Shutdown behaviour) — spot-check with a slow endpoint."
+
+open_questions:
+  - "Add Shutdown()/CloseAll() to the AgentRunner interface itself, or use a type assertion so ChatClientRunner (which owns nothing to close) doesn't need a no-op method? Leaning type-assertion to avoid interface churn, but worth confirming once a second CLI-backed executor (codex) is closer, since it'll need the same cleanup."
+  - "What should SHUTDOWN_TIMEOUT default to? AGENT_TIMEOUT defaults to 5m for a single agent Run call; shutdown itself should be much shorter (a few seconds to tens of seconds) so a stuck service-stop doesn't hang the SCM."

@@ -1,0 +1,53 @@
+id: windows-background-service
+title: Package the server as an installable Windows background service
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-07T00:00:00Z
+updated_at: 2026-07-07T00:00:00Z
+
+objective: >-
+  The claude-code executor (internal/agentrunner/claude_runner.go) spawns
+  the claude CLI as a local subprocess and needs direct filesystem access
+  to git checkouts under AGENT_REPOS_ROOT — a hard architectural
+  constraint, not a packaging artifact, since there's no SSH/RPC dispatch
+  layer. That rules out deploying to a small shared/remote server: whatever
+  host runs this binary must have the CLI installed, authenticated, and
+  repos checked out locally, which in practice means it should run as a
+  background service on the same machine, started automatically and left
+  running, rather than launched by hand each session. Use
+  github.com/kardianos/service (wraps Windows Service, launchd, and
+  systemd/upstart/sysv behind one interface) over hand-rolling
+  golang.org/x/sys/windows/svc directly, so the Windows-only work done now
+  doesn't need re-architecting when macOS/Linux support is picked up later
+  — confirmed actively maintained and packaged (Debian/Fedora) as of 2026.
+  Add install/uninstall/start/stop control to cmd/server/main.go built on
+  graceful-shutdown's run(ctx), reusing the same binary for both console
+  and service modes.
+
+constraints:
+  - "Depends on graceful-shutdown (needs run(ctx) and clean subprocess teardown before a service-managed stop is safe)."
+  - "Plain invocation (no install/service arg) must preserve today's console-mode behaviour exactly, so existing local dev/test workflows are unaffected."
+  - "No CGO requirement introduced on Windows — kardianos/service is backed by x/sys/windows/svc, already an indirect go.mod dependency."
+  - "Follow docs/engineering conventions.md's env-var configuration convention rather than introducing a new config file format."
+
+assumptions:
+  - Windows-only for the initial pass; macOS (launchd) and Linux (systemd) are deliberately deferred to later tasks, not designed in detail here, since kardianos/service should make that mostly a packaging/testing exercise rather than new service-management code.
+  - A Windows Service does not inherit a logged-in user's shell environment, so HTTP_ADDR/WORKSPACE_ROOT/AGENT_REPOS_ROOT/LLM_* vars will need to be set via the service's own environment config (svc.Config / registry Environment value) rather than assumed present — this needs to be documented, not discovered at install time.
+
+success_criteria:
+  - "workbench.exe install registers a Windows Service; starting it via services.msc or sc start makes GET /healthcheck respond."
+  - "sc stop performs a clean shutdown (no orphaned claude subprocess) within the SCM's stop timeout."
+  - "workbench.exe uninstall removes the service cleanly."
+  - docs/engineering conventions.md's Build & single-binary packaging section documents the new service mode and the environment-configuration caveat.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+  repo:
+    - cmd/server/main.go
+    - Makefile
+    - go.mod

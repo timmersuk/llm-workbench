@@ -1,0 +1,63 @@
+summary: >-
+  Add a small cmd/tray binary that puts a status/control icon in the
+  Windows notification area — live health status, "Open in browser", and
+  "Quit" — so the background-service deployment doesn't require remembering
+  a port number and opening a browser tab manually.
+
+background: >-
+  Surfaced 2026-07-07 alongside graceful-shutdown and
+  windows-background-service, as the middle option between "pure
+  background service, open a browser to use it" and a full native window
+  (deferred separately as native-desktop-window). Library choice
+  (fyne.io/systray) confirmed via web search (2026-07-07): it's a fork of
+  getlantern/systray maintained by the Fyne team, removes the original's
+  GTK dependency on Linux, and is backed by plain Win32 syscalls on
+  Windows — no CGO required for this task's Windows-first scope.
+
+files:
+  - path: cmd/tray (new)
+    role: >-
+      new binary alongside cmd/server, using fyne.io/systray; menu items
+      for live status (polling GET /healthcheck), "Open in browser", and
+      "Quit" (clean shutdown via the same path graceful-shutdown and
+      windows-background-service use)
+  - path: internal/api/router.go
+    role: >-
+      reference for the /healthcheck route shape the tray polls — no
+      changes expected here, just confirms the existing per-subsystem
+      health response is sufficient for a simple healthy/unhealthy status
+      icon
+  - path: cmd/server/main.go
+    role: >-
+      reference for HTTP_ADDR / port resolution — the tray needs to learn
+      whatever port the server actually bound, not assume the :8080
+      default, especially once windows-background-service is running
+
+detail: |
+  The open design question this task can't resolve on its own: does the
+  tray *own* the server process directly (importing and running
+  graceful-shutdown's run(ctx) in-process, or spawning cmd/server as a
+  child process), or does it *supervise* an already-installed
+  windows-background-service (a pure status/shortcut UI, with "Quit"
+  stopping the Windows Service via the Service Control Manager rather than
+  owning any process itself)? These are two different Windows process
+  models — a Windows Service has no desktop interaction session by
+  default, while a systray icon needs one — so this determines what
+  cmd/tray actually launches and needs settling before implementation
+  starts, not discovered partway through.
+
+  Precedent for the "own vs. supervise" choice: tools like Docker Desktop
+  run a background service plus a separate tray/UI process that talks to
+  it over an API rather than owning its lifetime directly — worth using as
+  a reference point given llm-workbench's server already exposes
+  GET /healthcheck and could similarly expose a stop-signal path if the
+  "supervise" model is chosen.
+
+verification:
+  - "Launching the tray binary shows an icon whose status reflects real /healthcheck state, verified by toggling the LLM backend on/off and observing the icon change."
+  - "\"Open in browser\" opens the correct host:port, including when the port isn't the fixed :8080 default."
+  - "\"Quit\" performs a full graceful shutdown (no orphaned claude subprocess, per graceful-shutdown's verification) and removes the tray icon from the notification area."
+
+open_questions:
+  - "Own vs. supervise the server process — see detail above. Blocks committing to cmd/tray's actual implementation shape."
+  - "If HTTP_ADDR becomes a dynamically-chosen port (flagged as an open question in windows-background-service), how does the tray discover the resolved port — shared config file, a fixed well-known discovery endpoint, or does dynamic-port allocation get dropped in favor of a fixed default to keep this simple?"

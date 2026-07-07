@@ -1,0 +1,44 @@
+id: graceful-shutdown
+title: Add graceful shutdown to the server process
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-07T00:00:00Z
+updated_at: 2026-07-07T00:00:00Z
+
+objective: >-
+  cmd/server/main.go currently calls http.ListenAndServe directly with no
+  http.Server, no signal handling, and no Shutdown(ctx) — Ctrl+C or a
+  service-stop kills the process hard, with no chance to drain in-flight
+  requests or disconnect any live claude CLI subprocesses held open by
+  ClaudeRunner's per-session client cache. Foundational for both
+  windows-background-service and windows-systray-icon, which both need a
+  clean stop path (SCM stop requests and a tray "Quit" action) rather than
+  relying on OS signals alone. Extract main()'s bootstrap into a
+  run(ctx context.Context) error function; build an http.Server{} and call
+  Shutdown(ctx) with a bounded timeout on ctx.Done(); add a CloseAll()-style
+  method to ClaudeRunner (internal/agentrunner/claude_runner.go) that
+  disconnects every cached client so no claude subprocess is orphaned on
+  exit.
+
+constraints:
+  - "Must not change today's console/dev-mode behaviour (make build && run the binary) beyond adding clean shutdown-on-Ctrl+C."
+  - "SHUTDOWN_TIMEOUT (or similar) should follow the existing GetEnvDefault pattern used for AGENT_TIMEOUT/LLM_TIMEOUT, not a new config mechanism."
+
+assumptions:
+  - Windows console apps receive Ctrl+C via signal.NotifyContext(os.Interrupt) the same as Unix, so this doesn't need OS-specific signal code.
+  - A Windows Service's stop request does not arrive as a POSIX signal — it comes through the service control dispatcher — so run(ctx) needs to accept cancellation from a source other than os/signal for windows-background-service to reuse it.
+
+success_criteria:
+  - Starting a claude-code chat session (which spawns a real claude CLI subprocess) and then stopping the server leaves no orphaned claude process running.
+  - The process exits within the configured shutdown timeout under normal conditions.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+  repo:
+    - cmd/server/main.go
+    - internal/agentrunner/claude_runner.go

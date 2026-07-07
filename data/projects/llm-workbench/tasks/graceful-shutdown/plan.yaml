@@ -1,0 +1,19 @@
+approach: >-
+  Extract main()'s bootstrap into a run(ctx context.Context) error function
+  built around a standard http.Server + Shutdown(ctx) pattern, driven by
+  signal.NotifyContext in console mode, and add a bulk-disconnect method to
+  ClaudeRunner so no claude CLI subprocess survives a shutdown.
+
+steps:
+  - "Extract cmd/server/main.go's env-read-through-router-construction body (main.go:28-68) into run(ctx context.Context) error, leaving main() as a thin signal.NotifyContext(os.Interrupt) + run(ctx) wrapper."
+  - "Replace the direct http.ListenAndServe call (main.go:79) with an http.Server{Addr, Handler} started via ListenAndServe in a goroutine, reporting non-ErrServerClosed errors back to run(ctx) via an error channel."
+  - "On ctx.Done(), call srv.Shutdown(shutdownCtx) with a bounded timeout sourced from a new SHUTDOWN_TIMEOUT env var (GetEnvDefault, same pattern as AGENT_TIMEOUT)."
+  - "Add a CloseAll() method to ClaudeRunner (internal/agentrunner/claude_runner.go) that disconnects every cached client under r.mu, mirroring CloseSession's logic; call it after Shutdown returns for every agentRunners entry that implements it."
+  - "Verify no orphaned claude subprocess remains after a real claude-code session is stopped via Ctrl+C."
+
+risks:
+  - "If Shutdown() is called before in-flight SSE/streaming chat responses finish, connections could be cut mid-stream — needs a spot-check against a real streaming chat/agent response, not just a plain request."
+  - "Deciding between an AgentRunner interface method vs. a type assertion for cleanup could affect ChatClientRunner and any future codex runner — worth a quick look at how disruptive an interface change would be before committing."
+
+estimated_complexity: low
+recommended_executor: ""
