@@ -1,5 +1,7 @@
 # Milestone 3 — Chat
 
+**Status: Done** — closed out 2026-07-06, implemented in PR #6 (stability fix in PR #7).
+
 Only then:
 
 * streaming responses

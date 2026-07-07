@@ -36,6 +36,6 @@ success_criteria:
 
 references:
   knowledge:
-    - docs/milestones/milestone3.md
+    - docs/milestones/done/milestone3.md
     - docs/milestones/milestone4.md
   repo: []
