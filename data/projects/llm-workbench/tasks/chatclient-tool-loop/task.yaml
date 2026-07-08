@@ -1,0 +1,47 @@
+id: chatclient-tool-loop
+title: Give ChatClientRunner a Read/Grep/Glob tool loop
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-08T00:00:00Z
+updated_at: 2026-07-08T00:00:00Z
+
+objective: >-
+  Let the local-LLM chat path (internal/chat.ChatClient via
+  internal/agentrunner.ChatClientRunner) ground GrillMe/Planning Mode
+  interview questions in the project's actual repository, the same way
+  ClaudeRunner already can via the `claude` CLI's built-in Read/Grep/Glob
+  tools. Today only claude-code can explore code; an OpenAI-compatible
+  local model offered as a stage-conversation executor has no way to read
+  the reference repository, so it can only ask the human questions the
+  code could have answered. Add an agentic tool-execution loop to
+  ChatClientRunner.Run: offer Read/Grep/Glob alongside the stage's
+  Draft-proposing tool, execute any tool calls the model makes against
+  in.Workspace, feed results back as tool-role messages, and keep looping
+  turns until the model produces text/a Draft proposal instead of another
+  tool call.
+
+constraints:
+  - "Read-only: Read/Grep/Glob only, matching agentrunner.readOnlyTools (claude_runner.go) — no Write/Edit/Bash, same trust boundary."
+  - "Tool execution must stay scoped to in.Workspace — no path escaping it, mirroring ResolveWorkspace's guarantee for ClaudeRunner."
+  - "Bound the number of tool-call round-trips per Run call (ClaudeRunner has claudeRunnerMaxTurns=30) so a model that never stops calling tools can't loop forever."
+
+assumptions:
+  - "The OpenAI-compatible upstream (internal/chat) actually supports function/tool calling in the request/response shape internal/chat/toolcall.go already parses — needs confirming against whatever local model is actually configured, since tool-calling support varies by model even when the wire format is present."
+  - "Open question: implement Read/Grep/Glob directly in Go (os.ReadFile, a small grep, filepath.Glob) rather than shelling out, to avoid a process-spawn dependency this path doesn't otherwise have."
+
+success_criteria:
+  - "A GrillMe/Planning Mode conversation using the local executor against a project with a configured repository can answer at least one interview question by reading a file in that repository, without the human supplying the answer."
+  - "Tool-call round-trips are visible in the persisted conversation-{stage}.yaml (or otherwise inspectable), consistent with docs/architectural invariants.md's 'no hidden state.'"
+  - "A tool call attempting to read outside in.Workspace is rejected, not silently clamped or ignored."
+
+references:
+  knowledge: []
+  repo:
+    - internal/agentrunner/chat_client_runner.go
+    - internal/agentrunner/claude_runner.go
+    - internal/chat/toolcall.go
+    - internal/api/stage_conversation.go

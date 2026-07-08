@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
-import { getStageConversation, listAgentExecutors, listModels, postStageMessage } from './api'
+import type { KeyboardEvent, ReactNode } from 'react'
+import {
+  deleteStageMessage,
+  getStageConversation,
+  listAgentExecutors,
+  listModels,
+  postStageMessage,
+  regenerateStageMessage,
+  startStageConversation,
+} from './api'
 import { MarkdownMessage } from './MarkdownMessage'
-import type { ConversationMessage } from './types'
+import type { ChatStreamEvent, ConversationMessage } from './types'
 
 interface DisplayMessage {
   role: string
@@ -43,7 +51,7 @@ function toDisplayMessage(m: ConversationMessage): DisplayMessage {
     content: m.content,
     reasoningContent: '',
     toolCallName: m.tool_call?.name ?? null,
-    error: null,
+    error: m.error ?? null,
     thinkingCollapsed: true,
   }
 }
@@ -52,6 +60,12 @@ interface StageConversationPanelProps<D> {
   projectId: string
   taskId: string
   stage: string
+  // title/description label this interview so it reads as a distinct,
+  // interactive zone rather than more of the read-only summary above it
+  // (TaskDetailPanel wraps the read-only fields and this panel in
+  // separately styled containers for the same reason).
+  title: string
+  description: string
   emptyDraft: D
   renderDraft: (draft: D, onChange: (draft: D) => void) => ReactNode
   onFinalize: (draft: D) => Promise<void>
@@ -76,6 +90,8 @@ export function StageConversationPanel<D>({
   projectId,
   taskId,
   stage,
+  title,
+  description,
   emptyDraft,
   renderDraft,
   onFinalize,
@@ -91,29 +107,99 @@ export function StageConversationPanel<D>({
   const [pendingDraft, setPendingDraft] = useState<D | null>(null)
   const [finalizing, setFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
+  const [requestChangesComment, setRequestChangesComment] = useState('')
+  // editingIndex is the position of the user message currently being
+  // edited (draft holds its in-progress edited text), or null when not
+  // editing — mutually exclusive with normal sending.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
 
   useEffect(() => {
-    getStageConversation(projectId, taskId, stage)
-      .then((conv) => setMessages((conv.messages ?? []).map(toDisplayMessage)))
-      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)))
-    listModels()
-      .then((result) => {
-        setModels(result.models)
-        setSelectedModel((current) => current || result.models[0] || '')
-      })
-      .catch(() => undefined)
-    listAgentExecutors()
-      .then((result) => {
-        // "local" is registered for the free-floating Chat tab, not for
-        // stage conversations — it has no notion of this stage's
-        // Draft-proposing tool, so selecting it here would silently never
-        // produce a Draft. Filtered out rather than offered as a dead end.
-        setExecutorOptions([
-          localChatOption,
-          ...result.executors.filter((key) => key !== 'local').map((key) => ({ value: key, label: executorLabels[key] ?? key })),
-        ])
-      })
-      .catch(() => undefined)
+    let cancelled = false
+
+    async function init() {
+      let loadedEmpty = false
+
+      try {
+        const conv = await getStageConversation(projectId, taskId, stage)
+        const loaded = conv.messages ?? []
+        if (cancelled) {
+          return
+        }
+        setMessages(loaded.map(toDisplayMessage))
+        loadedEmpty = loaded.length === 0
+        // Rehydrate the pending draft from the most recent proposed tool
+        // call — a reload or server restart must not lose a proposal the
+        // human hasn't finalized or discarded yet, since it's already sat
+        // for review in a prior session.
+        for (let i = loaded.length - 1; i >= 0; i--) {
+          const toolCall = loaded[i].tool_call
+          if (toolCall) {
+            try {
+              setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(toolCall.arguments)))
+            } catch {
+              // Malformed arguments JSON from a past turn — nothing to
+              // rehydrate, the human can just keep chatting.
+            }
+            break
+          }
+        }
+      } catch (err) {
+        // Can't confirm the conversation is actually empty, so don't risk
+        // auto-starting on top of unknown state — the human can still send
+        // a message manually once the load error is visible.
+        if (!cancelled) {
+          setLoadError(err instanceof Error ? err.message : String(err))
+        }
+        return
+      }
+
+      let resolvedModel = ''
+      try {
+        const result = await listModels()
+        if (!cancelled) {
+          setModels(result.models)
+          resolvedModel = result.models[0] ?? ''
+          setSelectedModel((current) => current || resolvedModel)
+        }
+      } catch {
+        // No models available — local-chat model selection just stays empty.
+      }
+
+      let resolvedExecutor = ''
+      try {
+        const result = await listAgentExecutors()
+        if (!cancelled) {
+          // "local" is registered for the free-floating Chat tab, not for
+          // stage conversations — it has no notion of this stage's
+          // Draft-proposing tool, so selecting it here would silently never
+          // produce a Draft. Filtered out rather than offered as a dead end.
+          const executors = result.executors.filter((key) => key !== 'local')
+          setExecutorOptions([localChatOption, ...executors.map((key) => ({ value: key, label: executorLabels[key] ?? key }))])
+          // claude-code can ground its questions in the actual repository
+          // (Read/Grep/Glob), unlike the local chat path, so it's preferred
+          // whenever it's healthy — the picker still lets the human switch
+          // back to local chat.
+          if (executors.includes('claude-code')) {
+            resolvedExecutor = 'claude-code'
+            setExecutor((current) => current || 'claude-code')
+          }
+        }
+      } catch {
+        // No agent executors available — Local LLM chat stays the only option.
+      }
+
+      // A brand-new conversation has nothing for the human to reply to —
+      // GrillMe/Planning Mode asks the opening question itself instead of
+      // waiting on a message that doesn't exist yet.
+      if (!cancelled && loadedEmpty) {
+        await startConversation(resolvedModel, resolvedExecutor)
+      }
+    }
+
+    init()
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, taskId, stage])
 
@@ -128,8 +214,49 @@ export function StageConversationPanel<D>({
     })
   }
 
-  async function handleSend() {
-    const text = draft.trim()
+  // updateMessageAt is updateLastMessage's general form, for surfacing a
+  // delete failure inline on the specific message that failed to delete
+  // (not necessarily the last one).
+  function updateMessageAt(index: number, update: (msg: DisplayMessage) => DisplayMessage) {
+    setMessages((prev) => {
+      if (index < 0 || index >= prev.length) {
+        return prev
+      }
+      const next = prev.slice()
+      next[index] = update(next[index])
+      return next
+    })
+  }
+
+  // handleStreamEvent applies one streamed ChatStreamEvent to the
+  // in-progress last message — shared by sendMessage's postStageMessage
+  // call and startConversation's startStageConversation call, since both
+  // stream the identical event shape onto an assistant bubble that's
+  // already been appended by their respective callers.
+  function handleStreamEvent(event: ChatStreamEvent) {
+    if (event.error) {
+      updateLastMessage((msg) => ({ ...msg, error: event.error! }))
+      return
+    }
+    if (event.tool_call) {
+      updateLastMessage((msg) => ({ ...msg, toolCallName: event.tool_call!.name }))
+      try {
+        setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(event.tool_call.arguments)))
+      } catch {
+        // Malformed arguments JSON is surfaced via the chip only; the
+        // human can keep chatting and ask the model to try again.
+      }
+      return
+    }
+    if (event.reasoning_content) {
+      updateLastMessage((msg) => ({ ...msg, reasoningContent: msg.reasoningContent + event.reasoning_content }))
+    }
+    if (event.content) {
+      updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
+    }
+  }
+
+  async function sendMessage(text: string) {
     if (!text || sending) {
       return
     }
@@ -139,37 +266,176 @@ export function StageConversationPanel<D>({
       { role: 'user', content: text, reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: true },
       { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
     ])
-    setDraft('')
     setSending(true)
 
     try {
-      await postStageMessage(projectId, taskId, stage, text, selectedModel, executor, (event) => {
-        if (event.error) {
-          updateLastMessage((msg) => ({ ...msg, error: event.error! }))
-          return
-        }
-        if (event.tool_call) {
-          updateLastMessage((msg) => ({ ...msg, toolCallName: event.tool_call!.name }))
-          try {
-            setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(event.tool_call.arguments)))
-          } catch {
-            // Malformed arguments JSON is surfaced via the chip only; the
-            // human can keep chatting and ask the model to try again.
-          }
-          return
-        }
-        if (event.reasoning_content) {
-          updateLastMessage((msg) => ({ ...msg, reasoningContent: msg.reasoningContent + event.reasoning_content }))
-        }
-        if (event.content) {
-          updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
-        }
-      })
+      await postStageMessage(projectId, taskId, stage, text, selectedModel, executor, handleStreamEvent)
     } catch (err) {
       updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
     } finally {
       setSending(false)
     }
+  }
+
+  // startConversation kicks off a brand-new, empty stage Conversation on
+  // load (see the init effect above) — there's no human message to pair
+  // with the opening question, so only an assistant bubble is appended.
+  // model/executorKey are passed explicitly rather than read from
+  // selectedModel/executor state, since this runs as part of the same
+  // effect that resolves them — reading state here could race against
+  // React not having flushed those updates yet.
+  async function startConversation(model: string, executorKey: string) {
+    setMessages((prev) => [
+      ...prev,
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
+    ])
+    setSending(true)
+
+    try {
+      await startStageConversation(projectId, taskId, stage, model, executorKey, handleStreamEvent)
+    } catch (err) {
+      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  async function handleSend() {
+    const text = draft.trim()
+    if (!text || sending) {
+      return
+    }
+    if (editingIndex !== null) {
+      const index = editingIndex
+      setEditingIndex(null)
+      setDraft('')
+      await truncateAndResend(index, text)
+      return
+    }
+    setDraft('')
+    await sendMessage(text)
+  }
+
+  // truncateAndResend discards everything from index onward (locally and,
+  // via regenerateStageMessage, server-side) and resends content as a
+  // fresh [user, assistant] pair — the shared core of both Edit (index is
+  // the edited message's own position, content is the new text) and
+  // Regenerate (index is the preceding user message, content is its
+  // existing text unchanged). Any pending Draft is cleared: whatever tool
+  // call produced it may no longer be part of history after truncation.
+  async function truncateAndResend(index: number, content: string) {
+    if (sending) {
+      return
+    }
+    setMessages((prev) => [
+      ...prev.slice(0, index),
+      { role: 'user', content, reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: true },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
+    ])
+    setPendingDraft(null)
+    setSending(true)
+
+    try {
+      await regenerateStageMessage(projectId, taskId, stage, index, content, selectedModel, executor, handleStreamEvent)
+    } catch (err) {
+      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  function handleCopyMessage(content: string) {
+    void navigator.clipboard.writeText(content)
+  }
+
+  function handleEditMessage(index: number) {
+    setEditingIndex(index)
+    setDraft(messages[index].content)
+  }
+
+  function handleCancelEdit() {
+    setEditingIndex(null)
+    setDraft('')
+  }
+
+  // handleRegenerateMessage targets assistantIndex's preceding user
+  // message (a well-formed conversation always alternates user/assistant,
+  // so assistantIndex - 1 is that user turn) and resends its existing
+  // content unchanged.
+  function handleRegenerateMessage(assistantIndex: number) {
+    const userIndex = assistantIndex - 1
+    if (userIndex < 0 || sending) {
+      return
+    }
+    void truncateAndResend(userIndex, messages[userIndex].content)
+  }
+
+  async function handleDeleteMessage(index: number) {
+    if (sending) {
+      return
+    }
+    try {
+      await deleteStageMessage(projectId, taskId, stage, index)
+      setMessages((prev) => prev.filter((_, i) => i !== index))
+      if (editingIndex === index) {
+        setEditingIndex(null)
+        setDraft('')
+      }
+    } catch (err) {
+      updateMessageAt(index, (msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+    }
+  }
+
+  // Enter sends the reply, matching most chat UIs; Alt+Enter inserts a
+  // newline instead, for the rare multi-line reply. The newline is spliced
+  // in at the cursor explicitly (rather than left to the textarea's
+  // default handling) so the cursor lands in the right place regardless of
+  // modifier keys, since a plain, unmodified Enter is the one case a
+  // browser textarea inserts a newline for by default — Alt+Enter isn't.
+  function handleDraftKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== 'Enter') {
+      return
+    }
+    if (e.altKey) {
+      e.preventDefault()
+      const el = e.currentTarget
+      const start = el.selectionStart ?? draft.length
+      const end = el.selectionEnd ?? draft.length
+      const next = draft.slice(0, start) + '\n' + draft.slice(end)
+      el.value = next
+      el.selectionStart = el.selectionEnd = start + 1
+      setDraft(next)
+      return
+    }
+    if (sending) {
+      // A reply is already streaming — handleSend would silently no-op
+      // here (its own guard), which from the keyboard alone looks like
+      // Enter just swallowed the keystroke and did nothing. Let it insert
+      // a normal newline instead, same as it would with nothing handling
+      // Enter at all, so typing ahead still works while busy.
+      return
+    }
+    e.preventDefault()
+    void handleSend()
+  }
+
+  // handleRequestChanges sends the human's edited draft back to the model
+  // as a single message — the comment plus the current (edited) draft as a
+  // fenced JSON block — through the same postStageMessage path a normal
+  // reply uses, so the transcript shows exactly what the model saw (no
+  // hidden state). The system prompt (buildStagePrompt) tells the model to
+  // treat such a block as the authoritative starting point for its
+  // revision. pendingDraft is cleared since the model is expected to
+  // re-propose once it has revised.
+  async function handleRequestChanges() {
+    if (!pendingDraft || sending) {
+      return
+    }
+    const comment = requestChangesComment.trim()
+    const text = `${comment || 'Please revise the draft below.'}\n\n\`\`\`json\n${JSON.stringify(pendingDraft, null, 2)}\n\`\`\``
+    setRequestChangesComment('')
+    setPendingDraft(null)
+    await sendMessage(text)
   }
 
   async function handleFinalize() {
@@ -190,6 +456,11 @@ export function StageConversationPanel<D>({
 
   return (
     <div className="stage-conversation">
+      <div className="stage-conversation-header">
+        <h4>{title}</h4>
+        <p className="stage-conversation-intro">{description}</p>
+      </div>
+
       <div className="chat-model-row">
         <label htmlFor={`stage-executor-${stage}`}>Executor</label>
         <select id={`stage-executor-${stage}`} value={executor} onChange={(e) => setExecutor(e.target.value)}>
@@ -229,6 +500,24 @@ export function StageConversationPanel<D>({
             <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
             {message.toolCallName && <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>}
             {message.error && <p className="error">{message.error}</p>}
+            <div className="message-actions">
+              <button type="button" className="action-btn" onClick={() => handleCopyMessage(message.content)}>
+                Copy
+              </button>
+              {message.role === 'user' && (
+                <button type="button" className="action-btn" onClick={() => handleEditMessage(index)} disabled={sending}>
+                  Edit
+                </button>
+              )}
+              {message.role === 'assistant' && index > 0 && (
+                <button type="button" className="action-btn" onClick={() => handleRegenerateMessage(index)} disabled={sending}>
+                  Regenerate
+                </button>
+              )}
+              <button type="button" className="action-btn" onClick={() => handleDeleteMessage(index)} disabled={sending}>
+                Delete
+              </button>
+            </div>
           </div>
         ))}
       </div>
@@ -237,22 +526,44 @@ export function StageConversationPanel<D>({
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="Reply..."
+          onKeyDown={handleDraftKeyDown}
+          placeholder={editingIndex !== null ? 'Editing message...' : 'Reply...'}
           rows={3}
         />
-        <button type="button" onClick={handleSend} disabled={sending || !draft.trim()}>
-          {sending ? 'Sending...' : 'Send'}
-        </button>
+        {editingIndex !== null ? (
+          <div className="chat-input-edit-controls">
+            <button type="button" className="action-btn-cancel" onClick={handleCancelEdit} disabled={sending}>
+              Cancel
+            </button>
+            <button type="button" onClick={handleSend} disabled={sending || !draft.trim()}>
+              {sending ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        ) : (
+          <button type="button" onClick={handleSend} disabled={sending || !draft.trim()}>
+            {sending ? 'Sending...' : 'Send'}
+          </button>
+        )}
       </div>
+      <p className="chat-input-hint">Enter to send &middot; Alt+Enter for a new line</p>
 
       {pendingDraft && (
         <div className="draft-review">
           <h4>Proposed draft</h4>
           {renderDraft(pendingDraft, setPendingDraft)}
           {finalizeError && <p className="error">{finalizeError}</p>}
+          <textarea
+            value={requestChangesComment}
+            onChange={(e) => setRequestChangesComment(e.target.value)}
+            placeholder="What should change? (optional — edit the draft above first)"
+            rows={2}
+          />
           <div className="stage-actions">
             <button type="button" onClick={handleFinalize} disabled={finalizing}>
               {finalizing ? 'Finalizing...' : 'Finalize'}
+            </button>
+            <button type="button" onClick={handleRequestChanges} disabled={finalizing || sending}>
+              Request changes
             </button>
             <button type="button" onClick={() => setPendingDraft(null)} disabled={finalizing}>
               Discard

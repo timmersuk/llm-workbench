@@ -152,6 +152,32 @@ describe('TaskDetailPanel — Context/Plan sections', () => {
   })
 })
 
+describe('TaskDetailPanel — summary/interview zone separation', () => {
+  it('wraps the read-only summary and the GrillMe interview in separate containers', async () => {
+    stubNoContextOrPlan()
+    const task = makeTask('requirements', { objective: 'ship it' })
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} />)
+
+    const grillme = await screen.findByTestId('grillme-panel')
+    const summary = container.querySelector('.task-summary')
+    const interview = container.querySelector('.task-interview')
+
+    expect(summary).toBeInTheDocument()
+    expect(summary).toHaveTextContent('ship it')
+    expect(interview).toBeInTheDocument()
+    expect(interview).toContainElement(grillme)
+    expect(summary).not.toContainElement(grillme)
+  })
+
+  it('omits the summary container entirely when there is nothing to summarize', async () => {
+    stubNoContextOrPlan()
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    await screen.findByTestId('grillme-panel')
+    expect(container.querySelector('.task-summary')).not.toBeInTheDocument()
+  })
+})
+
 describe('TaskDetailPanel — status select', () => {
   it('changing the status calls updateProjectTask with the full current task fields', async () => {
     const user = userEvent.setup()

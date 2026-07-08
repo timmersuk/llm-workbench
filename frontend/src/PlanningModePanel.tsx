@@ -26,6 +26,8 @@ export function PlanningModePanel({ projectId, taskId, onFinalized }: PlanningMo
       projectId={projectId}
       taskId={taskId}
       stage="planning"
+      title="Planning Mode"
+      description="Reply below to answer Planning Mode's questions — its proposal will become this task's execution plan once you finalize it."
       emptyDraft={EMPTY_DRAFT}
       renderDraft={(draft, onChange) => <PlanDraftForm draft={draft} onChange={onChange} />}
       onFinalize={async (draft) => {

@@ -67,6 +67,10 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
     }
   }
 
+  const hasSummary = Boolean(
+    task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0 || context || plan,
+  )
+
   return (
     <div className="task-detail">
       <button type="button" className="back-link" onClick={onBack}>
@@ -87,80 +91,86 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
         {task.id} &middot; stage: {task.stage}
       </p>
 
-      {(task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0) && (
-        <section>
-          <h4>Requirements</h4>
-          {task.objective && <p>{task.objective}</p>}
-          {task.constraints.length > 0 && (
-            <>
-              <strong>Constraints</strong>
-              <ul>
-                {task.constraints.map((c) => (
-                  <li key={c}>{c}</li>
-                ))}
-              </ul>
-            </>
+      {hasSummary && (
+        <div className="task-summary">
+          {(task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0) && (
+            <section>
+              <h4>Requirements</h4>
+              {task.objective && <p>{task.objective}</p>}
+              {task.constraints.length > 0 && (
+                <>
+                  <strong>Constraints</strong>
+                  <ul>
+                    {task.constraints.map((c) => (
+                      <li key={c}>{c}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {task.assumptions.length > 0 && (
+                <>
+                  <strong>Assumptions</strong>
+                  <ul>
+                    {task.assumptions.map((a) => (
+                      <li key={a}>{a}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {task.success_criteria.length > 0 && (
+                <>
+                  <strong>Success criteria</strong>
+                  <ul>
+                    {task.success_criteria.map((s) => (
+                      <li key={s}>{s}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
           )}
-          {task.assumptions.length > 0 && (
-            <>
-              <strong>Assumptions</strong>
-              <ul>
-                {task.assumptions.map((a) => (
-                  <li key={a}>{a}</li>
-                ))}
-              </ul>
-            </>
-          )}
-          {task.success_criteria.length > 0 && (
-            <>
-              <strong>Success criteria</strong>
-              <ul>
-                {task.success_criteria.map((s) => (
-                  <li key={s}>{s}</li>
-                ))}
-              </ul>
-            </>
-          )}
-        </section>
-      )}
 
-      {context && (
-        <section>
-          <h4>Context</h4>
-          {context.summary && <p>{context.summary}</p>}
-          {context.background && <p>{context.background}</p>}
-        </section>
-      )}
-
-      {plan && (
-        <section>
-          <h4>Plan</h4>
-          {plan.approach && <p>{plan.approach}</p>}
-          {plan.steps.length > 0 && (
-            <ol>
-              {plan.steps.map((s) => (
-                <li key={s}>{s}</li>
-              ))}
-            </ol>
+          {context && (
+            <section>
+              <h4>Context</h4>
+              {context.summary && <p>{context.summary}</p>}
+              {context.background && <p>{context.background}</p>}
+            </section>
           )}
-        </section>
+
+          {plan && (
+            <section>
+              <h4>Plan</h4>
+              {plan.approach && <p>{plan.approach}</p>}
+              {plan.steps.length > 0 && (
+                <ol>
+                  {plan.steps.map((s) => (
+                    <li key={s}>{s}</li>
+                  ))}
+                </ol>
+              )}
+            </section>
+          )}
+        </div>
       )}
 
       {reviseError && <p className="error">{reviseError}</p>}
 
       {task.stage === 'requirements' && (
-        <GrillMePanel
-          projectId={projectId}
-          taskId={task.id}
-          onFinalized={(updatedTask, updatedContext) => {
-            setTask(updatedTask)
-            setContext(updatedContext)
-          }}
-        />
+        <div className="task-interview">
+          <GrillMePanel
+            projectId={projectId}
+            taskId={task.id}
+            onFinalized={(updatedTask, updatedContext) => {
+              setTask(updatedTask)
+              setContext(updatedContext)
+            }}
+          />
+        </div>
       )}
 
       {task.stage === 'planning' && (
-        <>
+        <div className="task-interview">
           <PlanningModePanel
             projectId={projectId}
             taskId={task.id}
@@ -178,7 +188,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
               Revise Requirements
             </button>
           </div>
-        </>
+        </div>
       )}
 
       {(task.stage === 'implementation' || task.stage === 'review') && (

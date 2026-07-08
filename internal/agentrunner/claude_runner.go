@@ -49,6 +49,11 @@ type ClaudeRunner struct {
 	inFlight  map[string]bool
 	timeout   time.Duration
 	reposRoot string
+	// newClient constructs a claudecode.Client from the given options —
+	// indirected (defaulting to claudecode.NewClient) purely so tests can
+	// substitute a fake client without spawning a real `claude` subprocess,
+	// the same seam lookPath provides for CheckHealth.
+	newClient func(opts ...claudecode.Option) claudecode.Client
 }
 
 // NewClaudeRunner returns a ClaudeRunner whose Run calls are each bounded
@@ -61,6 +66,7 @@ func NewClaudeRunner(timeout time.Duration, reposRoot string) *ClaudeRunner {
 		inFlight:  make(map[string]bool),
 		timeout:   timeout,
 		reposRoot: reposRoot,
+		newClient: claudecode.NewClient,
 	}
 }
 
@@ -119,7 +125,24 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 	}
 
 	if err := client.Query(runCtx, in.UserMessage); err != nil {
-		return RunOutput{}, fmt.Errorf("querying claude code agent: %w", err)
+		if !isStaleClaudeConnectionError(err) {
+			return RunOutput{}, fmt.Errorf("querying claude code agent: %w", err)
+		}
+		// A long idle gap between conversation turns (e.g. the human took
+		// a while to reply) can outlive the cached `claude` CLI
+		// subprocess — its stdin pipe is already gone, so the write fails
+		// regardless of what's sent, on every future turn, until the
+		// stale client is discarded. Evict it and reconnect exactly once
+		// rather than surfacing a raw pipe error for something the human
+		// did nothing to cause.
+		r.CloseSession(key)
+		client, err = r.clientFor(runCtx, key, in)
+		if err != nil {
+			return RunOutput{}, err
+		}
+		if err := client.Query(runCtx, in.UserMessage); err != nil {
+			return RunOutput{}, fmt.Errorf("querying claude code agent: %w", err)
+		}
 	}
 
 	var out RunOutput
@@ -164,9 +187,13 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 		return client, nil
 	}
 
+	if in.Workspace == "" {
+		return nil, errors.New("claude-code requires a project repository checked out under AGENT_REPOS_ROOT")
+	}
+
 	opts := []claudecode.Option{
 		claudecode.WithCwd(in.Workspace),
-		claudecode.WithSystemPrompt(in.SystemPrompt),
+		claudecode.WithSystemPrompt(systemPromptWithHistory(in.SystemPrompt, in.History)),
 		claudecode.WithPartialStreaming(),
 		claudecode.WithMaxTurns(claudeRunnerMaxTurns),
 	}
@@ -187,7 +214,7 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	}
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
 
-	client = claudecode.NewClient(opts...)
+	client = r.newClient(opts...)
 	if err := client.Connect(ctx); err != nil {
 		return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
 	}
@@ -196,6 +223,57 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	r.clients[key] = client
 	r.mu.Unlock()
 	return client, nil
+}
+
+// systemPromptWithHistory returns systemPrompt unchanged when history is
+// empty (the common case: an already-live session, or a brand-new
+// conversation with nothing to replay), or with a rendered transcript of
+// history appended when a fresh client is being created to replace one
+// this process lost (e.g. a server restart wiped ClaudeRunner's cached
+// clients even though the conversation's messages survived in
+// conversation-{stage}.yaml). The CLI has no "resume with this history"
+// primitive — only a system prompt fixed at connect time and a fresh
+// Query — so a rendered transcript block is the only way a new session's
+// agent learns what was already discussed.
+func systemPromptWithHistory(systemPrompt string, history []chat.Message) string {
+	if len(history) == 0 {
+		return systemPrompt
+	}
+	var b strings.Builder
+	b.WriteString(systemPrompt)
+	b.WriteString("\n\n## Prior conversation (restored after restart)\n")
+	for _, m := range history {
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
+	}
+	return b.String()
+}
+
+// isStaleClaudeConnectionError reports whether err indicates the cached
+// `claude` CLI subprocess is already gone — its stdin pipe closed, or the
+// SDK's own transport already noticed the process died — as opposed to a
+// genuine query failure that reconnecting wouldn't fix. This is the
+// specific failure a long idle gap between conversation turns produces:
+// ClaudeRunner keeps a claudecode.Client cached indefinitely per
+// SessionKey (see the type doc), but nothing keeps the underlying `claude`
+// subprocess itself alive forever, so writing to a turn after it has
+// exited fails with a low-level pipe error. Detected by message content
+// since neither the OS-level error (its concrete type differs by
+// platform) nor the SDK (github.com/severity1/claude-agent-sdk-go)
+// exposes a stable sentinel for this.
+func isStaleClaudeConnectionError(err error) bool {
+	msg := err.Error()
+	for _, substr := range []string{
+		"pipe is being closed", // Windows: write to a pipe the peer closed
+		"broken pipe",          // Unix: write to a pipe the peer closed
+		"closed pipe",          // io.ErrClosedPipe's message
+		"stdin closed",         // the SDK's own "transport not connected or stdin closed"
+		"file already closed",  // os.ErrClosed's message
+	} {
+		if strings.Contains(msg, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpQualifiedName returns the fully-qualified tool name the `claude` CLI

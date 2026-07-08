@@ -140,3 +140,69 @@ func TestFileStore_AppendConversationMessages_RejectsInvalidStage(t *testing.T) 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidStage)
 }
+
+func TestFileStore_ReplaceConversationMessages_OverwritesAndPersists(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create(Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	_, err = store.AppendConversationMessages("task-a", StageRequirements,
+		ConversationMessage{Role: "user", Content: "first"},
+		ConversationMessage{Role: "assistant", Content: "first reply"},
+		ConversationMessage{Role: "user", Content: "second"},
+	)
+	require.NoError(t, err)
+
+	// A delete-style replace: drop the middle message.
+	existing, err := store.GetConversation("task-a", StageRequirements)
+	require.NoError(t, err)
+	replacement := []ConversationMessage{existing.Messages[0], existing.Messages[2]}
+
+	conv, err := store.ReplaceConversationMessages("task-a", StageRequirements, replacement)
+	require.NoError(t, err)
+	require.Len(t, conv.Messages, 2)
+	assert.Equal(t, "first", conv.Messages[0].Content)
+	assert.Equal(t, "second", conv.Messages[1].Content)
+
+	reloaded, err := store.GetConversation("task-a", StageRequirements)
+	require.NoError(t, err)
+	assert.Len(t, reloaded.Messages, 2)
+}
+
+func TestFileStore_ReplaceConversationMessages_AllowsEmptyList(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create(Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+	_, err = store.AppendConversationMessages("task-a", StageRequirements, ConversationMessage{Role: "user", Content: "x"})
+	require.NoError(t, err)
+
+	conv, err := store.ReplaceConversationMessages("task-a", StageRequirements, []ConversationMessage{})
+	require.NoError(t, err)
+	assert.Empty(t, conv.Messages)
+
+	reloaded, err := store.GetConversation("task-a", StageRequirements)
+	require.NoError(t, err)
+	assert.Empty(t, reloaded.Messages)
+}
+
+func TestFileStore_ReplaceConversationMessages_RejectsInvalidStage(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create(Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	_, err = store.ReplaceConversationMessages("task-a", "complete", nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidStage)
+}
+
+func TestFileStore_ReplaceConversationMessages_RejectsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.ReplaceConversationMessages("../escape", StageRequirements, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidID)
+}

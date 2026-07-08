@@ -46,12 +46,20 @@ type chatToolCallEvent struct {
 // keyed by it (agentrunner.RunInput.SessionKey), so the client sends only
 // the newest turn rather than resending full history every call. Executor
 // selects which registered agentRunners entry produces the reply,
-// defaulting to defaultChatExecutor when empty.
+// defaulting to defaultChatExecutor when empty. History is optional and
+// normally omitted — free chat has no durable server-side transcript to
+// resend from, so it's only populated by the frontend immediately after a
+// delete/edit/regenerate action closes the session (closeChatSession):
+// RunInput.History is "only consulted when the runner has no live session"
+// (agentrunner/runner.go), so sending it alongside a live session is a
+// harmless no-op, and sending it right after an eviction is what makes the
+// correction actually stick.
 type chatCompletionRequest struct {
-	Content    string `json:"content"`
-	Model      string `json:"model"`
-	Executor   string `json:"executor,omitempty"`
-	SessionKey string `json:"session_key"`
+	Content    string         `json:"content"`
+	Model      string         `json:"model"`
+	Executor   string         `json:"executor,omitempty"`
+	SessionKey string         `json:"session_key"`
+	History    []chat.Message `json:"history,omitempty"`
 }
 
 func handleChatCompletions(agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
@@ -104,6 +112,7 @@ func handleChatCompletions(agentRunners map[string]agentrunner.AgentRunner, repo
 			Workspace:   reposRoot,
 			UserMessage: req.Content,
 			Model:       req.Model,
+			History:     req.History,
 		}, func(d chat.Delta) error {
 			writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
 			return nil

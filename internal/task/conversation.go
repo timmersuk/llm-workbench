@@ -35,7 +35,12 @@ type ConversationMessage struct {
 	Content    string                `yaml:"content" json:"content"`
 	ToolCall   *ConversationToolCall `yaml:"tool_call,omitempty" json:"tool_call,omitempty"`
 	ToolCallID string                `yaml:"tool_call_id,omitempty" json:"tool_call_id,omitempty"`
-	CreatedAt  time.Time             `yaml:"created_at" json:"created_at"`
+	// Error records why this turn failed, if it did — an assistant message
+	// with empty Content and no Error means the agent genuinely said
+	// nothing; empty Content with Error set means the turn errored out
+	// before (or without) producing a reply. Never set on a "user" message.
+	Error     string    `yaml:"error,omitempty" json:"error,omitempty"`
+	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
 }
 
 // Conversation is one stage's full, append-only message history, stored as
@@ -124,19 +129,47 @@ func (s *FileStore) AppendConversationMessages(id, stage string, msgs ...Convers
 	}
 	existing.Stage = stage
 
-	dir := filepath.Join(s.Root, id)
+	return existing, writeConversation(s.Root, id, stage, existing)
+}
+
+// ReplaceConversationMessages overwrites the stage's Conversation for id
+// with exactly msgs, rewriting the file. Unlike AppendConversationMessages,
+// this is a plain "set the list to this" — no stamping or trimming — since
+// callers here (message delete/edit/regenerate) are already working from a
+// mix of kept messages (their real CreatedAt/Content untouched) and at most
+// one freshly-produced message they're responsible for finishing
+// themselves. This is how a human-directed correction (not a new exchange)
+// gets to rewrite already-persisted messages, a deliberate departure from
+// AppendConversationMessages' append-only policy.
+func (s *FileStore) ReplaceConversationMessages(id, stage string, msgs []ConversationMessage) (Conversation, error) {
+	if err := validateID(id); err != nil {
+		return Conversation{}, err
+	}
+	if err := validateConversationStage(stage); err != nil {
+		return Conversation{}, err
+	}
+
+	replaced := Conversation{Stage: stage, Messages: msgs}
+	return replaced, writeConversation(s.Root, id, stage, replaced)
+}
+
+// writeConversation marshals and writes conv to id/stage's conversation
+// file, creating the task directory if needed — the shared tail of both
+// AppendConversationMessages and ReplaceConversationMessages.
+func writeConversation(root, id, stage string, conv Conversation) error {
+	dir := filepath.Join(root, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return Conversation{}, fmt.Errorf("creating task directory %s: %w", dir, err)
+		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(existing)
+	data, err := yaml.Marshal(conv)
 	if err != nil {
-		return Conversation{}, fmt.Errorf("encoding conversation for %s/%s: %w", id, stage, err)
+		return fmt.Errorf("encoding conversation for %s/%s: %w", id, stage, err)
 	}
 
-	path := conversationPath(s.Root, id, stage)
+	path := conversationPath(root, id, stage)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return Conversation{}, fmt.Errorf("writing %s: %w", path, err)
+		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	return existing, nil
+	return nil
 }

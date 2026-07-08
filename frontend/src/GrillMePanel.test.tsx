@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { GrillMePanel } from './GrillMePanel'
 import * as api from './api'
@@ -41,6 +41,10 @@ beforeEach(() => {
   vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a', 'model-b'] })
   vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
   vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'requirements', messages: [] })
+  // An empty conversation (the default above) auto-starts the interview —
+  // resolve immediately by default so tests not specifically about the
+  // kickoff aren't left with a stream that never settles.
+  vi.mocked(api.startStageConversation).mockResolvedValue()
 })
 
 describe('GrillMePanel — initial load', () => {
@@ -60,13 +64,12 @@ describe('GrillMePanel — initial load', () => {
     expect(screen.getByText('Sure, tell me more.')).toBeInTheDocument()
   })
 
-  it('renders no messages, without crashing, when messages is null', async () => {
+  it('does not crash, and still auto-starts, when messages is null', async () => {
     vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'requirements', messages: null })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
-    expect(screen.queryByText(/user:|assistant:/)).not.toBeInTheDocument()
+    await waitFor(() => expect(api.startStageConversation).toHaveBeenCalled())
   })
 
   it('shows an inline error when getStageConversation rejects', async () => {
@@ -119,6 +122,97 @@ describe('GrillMePanel — initial load', () => {
     expect(await screen.findByText('No models available')).toBeInTheDocument()
     expect(screen.getByLabelText('Model')).toBeDisabled()
   })
+
+  it('preselects Claude Code as the executor once the server reports it healthy', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByLabelText('Executor')).toHaveValue('claude-code'))
+  })
+
+  it('leaves Local LLM chat selected when Claude Code is not reported healthy', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await waitFor(() => expect(api.listAgentExecutors).toHaveBeenCalled())
+    expect(screen.getByLabelText('Executor')).toHaveValue('')
+  })
+
+  it('labels the panel as GrillMe with an explanatory intro, distinct from the chat history', async () => {
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    expect(await screen.findByRole('heading', { name: 'GrillMe' })).toBeInTheDocument()
+    expect(screen.getByText(/Reply below to answer GrillMe's questions/)).toBeInTheDocument()
+  })
+
+  it('rehydrates the most recent proposed draft from the loaded conversation', async () => {
+    const conv: Conversation = {
+      stage: 'requirements',
+      messages: [
+        { role: 'user', content: "let's start", created_at: '2026-01-01T00:00:00Z' },
+        {
+          role: 'assistant',
+          content: "here's a first pass",
+          tool_call: { id: 'call-1', name: 'propose_context', arguments: JSON.stringify({ objective: 'Ship login', context: { summary: 'Adds a login page' } }) },
+          created_at: '2026-01-01T00:00:01Z',
+        },
+      ],
+    }
+    vi.mocked(api.getStageConversation).mockResolvedValue(conv)
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    expect(await screen.findByText('Proposed draft')).toBeInTheDocument()
+    expect(screen.getByLabelText('Objective')).toHaveValue('Ship login')
+    expect(screen.getByLabelText('Summary')).toHaveValue('Adds a login page')
+  })
+})
+
+describe('GrillMePanel — auto-starting an empty conversation', () => {
+  it('calls startStageConversation, not postStageMessage, when the conversation is empty', async () => {
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await waitFor(() => expect(api.startStageConversation).toHaveBeenCalledTimes(1))
+    expect(api.postStageMessage).not.toHaveBeenCalled()
+  })
+
+  it('streams the opening question into an assistant-only bubble, with no user message', async () => {
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.startStageConversation).mockImplementation((_p, _t, _s, _m, _e, onEvent) => {
+      deliver = onEvent
+      return new Promise(() => undefined)
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await waitFor(() => expect(api.startStageConversation).toHaveBeenCalled())
+
+    act(() => deliver({ content: "What's the objective?" }))
+
+    expect(screen.getByText("What's the objective?")).toBeInTheDocument()
+    expect(screen.queryByText('user:')).not.toBeInTheDocument()
+  })
+
+  it('waits for the preselected executor before starting, passing it through', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await waitFor(() => expect(api.startStageConversation).toHaveBeenCalledWith(projectId, taskId, 'requirements', expect.anything(), 'claude-code', expect.anything()))
+  })
+
+  it('does not auto-start when the conversation already has messages', async () => {
+    vi.mocked(api.getStageConversation).mockResolvedValue({
+      stage: 'requirements',
+      messages: [{ role: 'assistant', content: 'already asked something', created_at: '2026-01-01T00:00:00Z' }],
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await screen.findByText('already asked something')
+    expect(api.startStageConversation).not.toHaveBeenCalled()
+  })
 })
 
 describe('GrillMePanel — sending a message and streaming the reply', () => {
@@ -155,6 +249,61 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled())
   })
 
+  it('sends on Enter without needing the Send button', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.postStageMessage).mockResolvedValue()
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'Hello there{Enter}')
+
+    expect(api.postStageMessage).toHaveBeenCalledWith(projectId, taskId, 'requirements', 'Hello there', expect.anything(), expect.anything(), expect.anything())
+    expect(screen.getByPlaceholderText('Reply...')).toHaveValue('')
+  })
+
+  it('Alt+Enter inserts a newline instead of sending', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.postStageMessage).mockResolvedValue()
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+
+    const textarea = screen.getByPlaceholderText('Reply...')
+    await user.type(textarea, 'line one{Alt>}{Enter}{/Alt}line two')
+
+    expect(textarea).toHaveValue('line one\nline two')
+    expect(api.postStageMessage).not.toHaveBeenCalled()
+  })
+
+  it('while a reply is still streaming, Enter inserts a newline instead of silently swallowing the keystroke', async () => {
+    const user = userEvent.setup()
+    let finishFirstSend!: () => void
+    vi.mocked(api.postStageMessage).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishFirstSend = resolve
+        }),
+    )
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+
+    const textarea = screen.getByPlaceholderText('Reply...')
+    await user.type(textarea, 'first message{Enter}')
+    expect(await screen.findByRole('button', { name: 'Sending...' })).toBeDisabled()
+    expect(api.postStageMessage).toHaveBeenCalledTimes(1)
+
+    // A second Enter while still sending must not be silently discarded —
+    // it should behave like a plain newline, not disappear with nothing
+    // sent and nothing shown.
+    await user.type(textarea, 'typed while busy{Enter}more text')
+    expect(textarea).toHaveValue('typed while busy\nmore text')
+    expect(api.postStageMessage).toHaveBeenCalledTimes(1)
+
+    await act(async () => finishFirstSend())
+  })
+
   it('surfaces a mid-stream error event inline', async () => {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
@@ -176,6 +325,116 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     expect(screen.getByText('upstream exploded')).toBeInTheDocument()
 
     await act(async () => finish())
+  })
+})
+
+describe('GrillMePanel — message actions', () => {
+  const twoMessageConversation: Conversation = {
+    stage: 'requirements',
+    messages: [
+      { role: 'user', content: 'first question', created_at: '2026-01-01T00:00:00Z' },
+      { role: 'assistant', content: 'first answer', created_at: '2026-01-01T00:00:01Z' },
+    ],
+  }
+
+  async function renderWithHistory() {
+    vi.mocked(api.getStageConversation).mockResolvedValue(twoMessageConversation)
+    const { container } = render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await screen.findByText('first answer')
+    return container
+  }
+
+  it('Copy writes that specific message content to the clipboard', async () => {
+    const user = userEvent.setup()
+    const container = await renderWithHistory()
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Copy' }))
+
+    expect(writeText).toHaveBeenCalledWith('first question')
+  })
+
+  it('Delete calls deleteStageMessage with the right index and removes only that message', async () => {
+    const user = userEvent.setup()
+    const container = await renderWithHistory()
+    vi.mocked(api.deleteStageMessage).mockResolvedValue({
+      stage: 'requirements',
+      messages: [twoMessageConversation.messages![1]],
+    })
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(api.deleteStageMessage).toHaveBeenCalledWith(projectId, taskId, 'requirements', 0))
+    expect(screen.queryByText('first question')).not.toBeInTheDocument()
+    expect(screen.getByText('first answer')).toBeInTheDocument()
+  })
+
+  it('Edit populates the input with that message, and Save calls regenerateStageMessage with the edited text', async () => {
+    const user = userEvent.setup()
+    const container = await renderWithHistory()
+    vi.mocked(api.regenerateStageMessage).mockResolvedValue()
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Edit' }))
+
+    expect(screen.getByDisplayValue('first question')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Editing message...')).toBeInTheDocument()
+
+    await user.clear(screen.getByPlaceholderText('Editing message...'))
+    await user.type(screen.getByPlaceholderText('Editing message...'), 'edited question')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(api.regenerateStageMessage).toHaveBeenCalledWith(
+        projectId,
+        taskId,
+        'requirements',
+        0,
+        'edited question',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
+    )
+  })
+
+  it('Cancel exits edit mode without calling any API', async () => {
+    const user = userEvent.setup()
+    const container = await renderWithHistory()
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Edit' }))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.getByPlaceholderText('Reply...')).toHaveValue('')
+    expect(api.regenerateStageMessage).not.toHaveBeenCalled()
+  })
+
+  it('Regenerate on an assistant message resends the preceding user message unchanged', async () => {
+    const user = userEvent.setup()
+    const container = await renderWithHistory()
+    vi.mocked(api.regenerateStageMessage).mockResolvedValue()
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[1] as HTMLElement).getByRole('button', { name: 'Regenerate' }))
+
+    await waitFor(() =>
+      expect(api.regenerateStageMessage).toHaveBeenCalledWith(
+        projectId,
+        taskId,
+        'requirements',
+        0,
+        'first question',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
+    )
+    expect(screen.queryByText('first answer')).not.toBeInTheDocument()
   })
 })
 
@@ -264,6 +523,29 @@ describe('GrillMePanel — Draft review', () => {
 
     expect(await screen.findByText('task is not in the expected stage')).toBeInTheDocument()
     expect(screen.getByText('Proposed draft')).toBeInTheDocument()
+  })
+
+  it('Request changes sends the comment plus the edited draft as a fenced JSON block, then clears the draft', async () => {
+    const user = userEvent.setup()
+    await sendAndReceiveToolCall({ objective: 'x', context: { summary: 'y' } })
+
+    const postCalls: Array<Parameters<typeof api.postStageMessage>> = []
+    vi.mocked(api.postStageMessage).mockImplementation((...args) => {
+      postCalls.push(args)
+      return Promise.resolve()
+    })
+
+    await user.clear(screen.getByLabelText('Objective'))
+    await user.type(screen.getByLabelText('Objective'), 'better objective')
+    await user.type(screen.getByPlaceholderText(/What should change/), 'tighten this up')
+    await user.click(screen.getByRole('button', { name: 'Request changes' }))
+
+    expect(postCalls).toHaveLength(1)
+    const sentContent = postCalls[0][3]
+    expect(sentContent).toContain('tighten this up')
+    expect(sentContent).toContain('```json')
+    expect(sentContent).toContain('better objective')
+    expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
   })
 
   it('silently ignores malformed tool_call arguments JSON — no draft section, no crash', async () => {

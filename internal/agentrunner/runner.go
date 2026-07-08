@@ -58,6 +58,17 @@ type RunInput struct {
 	// zero value (Tool.Function.Name == "") means no tool is offered —
 	// free-chat callers leave this unset.
 	Tool chat.Tool
+	// History is a stage conversation's persisted transcript so far
+	// (internal/task.Conversation, mapped to chat.Message by the caller),
+	// used to rehydrate an AgentRunner's in-memory session state after a
+	// server restart wiped it. It is only ever consulted when the runner
+	// has no live session for SessionKey already — replaying it into an
+	// established session would duplicate history the runner already
+	// holds — so callers always populate it from the durable record
+	// regardless of whether a live session might still exist. Free-chat
+	// callers, which have no durable transcript to replay from, leave this
+	// nil.
+	History []chat.Message
 }
 
 // RunOutput is the result of one AgentRunner.Run call: the assistant's

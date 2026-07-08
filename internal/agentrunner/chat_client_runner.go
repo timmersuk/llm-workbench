@@ -30,6 +30,9 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	if in.SessionKey == "" {
 		return RunOutput{}, errors.New("chat client runner requires a non-empty SessionKey")
 	}
+	if len(in.History) > 0 {
+		r.client.SeedSessionHistory(in.SessionKey, in.History)
+	}
 	var tools []chat.Tool
 	if in.Tool.Function.Name != "" {
 		tools = []chat.Tool{in.Tool}

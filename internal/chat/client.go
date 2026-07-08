@@ -49,6 +49,12 @@ type ChatClient interface {
 	// CloseSession discards sessionKey's held history. Safe to call for a
 	// key that never had one (no-op).
 	CloseSession(sessionKey string)
+
+	// SeedSessionHistory sets sessionKey's held history to history, but
+	// only if the session doesn't already exist — used to rehydrate a
+	// persisted conversation into a fresh in-memory session after a
+	// process restart, without clobbering a session that's already live.
+	SeedSessionHistory(sessionKey string, history []Message)
 }
 
 // openAIClient talks to an OpenAI-compatible chat completions endpoint. It
@@ -341,6 +347,16 @@ func (c *openAIClient) CloseSession(sessionKey string) {
 	c.sessionsMu.Lock()
 	delete(c.sessions, sessionKey)
 	c.sessionsMu.Unlock()
+}
+
+// SeedSessionHistory implements ChatClient.
+func (c *openAIClient) SeedSessionHistory(sessionKey string, history []Message) {
+	c.sessionsMu.Lock()
+	defer c.sessionsMu.Unlock()
+	if _, exists := c.sessions[sessionKey]; exists {
+		return
+	}
+	c.sessions[sessionKey] = append([]Message{}, history...)
 }
 
 func (c *openAIClient) setHeaders(req *http.Request) {

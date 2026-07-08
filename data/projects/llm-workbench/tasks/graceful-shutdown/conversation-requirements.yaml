@@ -1,0 +1,62 @@
+stage: requirements
+messages:
+    - role: assistant
+      content: |-
+        I've read the existing draft (`context.yaml`/`plan.yaml` under `tasks/graceful-shutdown`), `cmd/server/main.go`, `internal/utils/env.go`, `internal/agentrunner/claude_runner.go`, and `runner.go`. The draft already captures the core shape well and leaves two open questions — let's resolve those first.
+
+        **Question 1:** Should the shutdown-cleanup hook be added to the `AgentRunner` interface itself (a `CloseAll()`/`Shutdown()` method every implementation must have, including `ChatClientRunner` which owns nothing to close), or should `main.go`'s shutdown path use a type assertion (`if closer, ok := runner.(interface{ CloseAll() }); ok { closer.CloseAll() }`) so only `ClaudeRunner` needs to implement it?
+
+        My recommended default: **type assertion**, not an interface method. Reasons:
+        - `ChatClientRunner` has nothing to clean up (its state is `chat.ChatClient`-held session history, not a subprocess), so a required interface method would force a no-op stub there.
+        - It matches the "optional capability" pattern already common in Go stdlib (`io.Closer` checks via type assertion, e.g. `http.ResponseWriter`'s `Flusher`/`Hijacker`).
+        - The draft's own `open_questions` note already leans this way, only flagging it as worth revisiting once `codex` (a second CLI-backed executor) lands and also needs the same cleanup — at which point a shared named interface (e.g. `interface{ CloseAll() }` reused, not folded into `AgentRunner`) would make sense without touching `AgentRunner` itself.
+
+        Do you want to go with the type-assertion approach, or would you rather add it to the `AgentRunner` interface now?
+      created_at: 2026-07-08T14:20:22.9566851Z
+    - role: user
+      content: type assertion approach is fine
+      created_at: 2026-07-08T22:34:00.5251764Z
+    - role: assistant
+      content: |-
+        Good, matches the draft's understanding. Now onto the second open question.
+
+        **Question 2:** What should `SHUTDOWN_TIMEOUT` default to?No existing references — this is a genuinely new env var. My recommended default:
+
+        **Question 2:** What should `SHUTDOWN_TIMEOUT` default to?
+
+        My recommended default: **10s**. Reasoning:
+        - It's comfortably longer than a typical in-flight HTTP request but short enough that a Windows SCM stop request (which expects responsiveness within tens of seconds) won't appear hung.
+        - It sits well below `LLM_TIMEOUT`'s 30s default, so shutdown won't itself become the long pole — if a request is genuinely stuck on an LLM call, shutdown should cut it loose rather than wait out the full `LLM_TIMEOUT`/`AGENT_TIMEOUT`.
+        - It's a common default in Go's own graceful-shutdown examples and popular frameworks.
+
+        Does 10s work, or would you prefer a different default?
+      created_at: 2026-07-08T22:34:00.5251764Z
+    - role: user
+      content: 10s should be fine
+      created_at: 2026-07-08T22:36:19.5581579Z
+    - role: assistant
+      content: |-
+        Both open questions are now resolved:
+
+        1. **Cleanup hook**: type assertion in `main.go`'s shutdown path — `ClaudeRunner` gets a `CloseAll()` method, no change to the `AgentRunner` interface.
+        2. **`SHUTDOWN_TIMEOUT` default**: 10s, via the existing `GetEnvDefault` pattern.
+
+        That resolves the two open questions in the draft, and the rest of the context (objective, constraints, assumptions, success criteria, files, verification, plan) already reads as coherent to me. Here's the shape as it now stands:
+
+        - **Objective**: extract `main()`'s bootstrap into `run(ctx context.Context) error`; replace `http.ListenAndServe` with an `http.Server{}` + `Shutdown(ctx)` on `ctx.Done()`, bounded by a new `SHUTDOWN_TIMEOUT` (default 10s, `GetEnvDefault` pattern); add `ClaudeRunner.CloseAll()` and call it via type assertion from the shutdown path so no `claude` subprocess is orphaned.
+        - **Constraints**: no change to console/dev-mode behavior beyond clean shutdown-on-Ctrl+C; no new config mechanism.
+        - **Assumptions**: `signal.NotifyContext(os.Interrupt)` works fine on Windows for console mode; `run(ctx)` must accept cancellation from a non-signal source too, since a future Windows Service stop request won't arrive as a POSIX signal.
+        - **Success criteria**: starting a claude-code session then stopping the server leaves no orphaned `claude` process; process exits within `SHUTDOWN_TIMEOUT` under normal conditions.
+
+        Does that match your understanding of what this task should deliver — anything you'd change before I lock this in?
+      created_at: 2026-07-08T22:36:19.5581579Z
+    - role: user
+      content: nope all sounds good
+      created_at: 2026-07-08T22:40:01.0214477Z
+    - role: assistant
+      content: Draft proposed. Let me know if you'd like any changes before finalizing.
+      tool_call:
+        id: toolu_01Dtgs55WKp55JxS6ua3Rtgu
+        name: propose_context
+        arguments: '{"assumptions":["Windows console apps receive Ctrl+C via signal.NotifyContext(os.Interrupt) the same as Unix, so this doesn''t need OS-specific signal code.","A Windows Service''s stop request does not arrive as a POSIX signal (it comes through the service control dispatcher), so run(ctx) must accept cancellation from a source other than os/signal, to be reusable by windows-background-service later.","SHUTDOWN_TIMEOUT default of 10s is appropriate: longer than a typical in-flight HTTP request, comfortably under LLM_TIMEOUT''s 30s default, and in line with common Go graceful-shutdown examples/SCM responsiveness expectations.","A future second CLI-backed executor (e.g. codex) needing the same cleanup would motivate promoting CloseAll() to a shared named interface, but not folding it into AgentRunner itself; out of scope for this task."],"constraints":["Must not change today''s console/dev-mode behaviour (make build \u0026\u0026 run the binary) beyond adding clean shutdown-on-Ctrl+C.","SHUTDOWN_TIMEOUT (or similar) must follow the existing GetEnvDefault pattern used for AGENT_TIMEOUT/LLM_TIMEOUT, not a new config mechanism.","No new runtime dependency without a stated reason (project architectural invariant: prefer open standards).","Follow docs/engineering conventions.md for implementation choices.","Cleanup hook is added via type assertion in main.go''s shutdown path (e.g. interface{ CloseAll() }), not by adding a method to the AgentRunner interface, since ChatClientRunner has nothing to clean up."],"context":{"background":"main.go currently calls http.ListenAndServe directly with no http.Server, no signal handling, and no Shutdown(ctx) — Ctrl+C or a service-stop kills the process hard, with no chance to drain in-flight requests or disconnect any live claude CLI subprocesses held open by ClaudeRunner''s per-session client cache. This is foundational for both windows-background-service and windows-systray-icon, which both need a clean stop path (SCM stop requests and a tray Quit action) rather than relying on OS signals alone.","files":["cmd/server/main.go","internal/agentrunner/claude_runner.go","internal/utils/env.go","internal/agentrunner/runner.go"],"open_questions":[],"summary":"Add graceful shutdown to cmd/server/main.go: a run(ctx) function wrapping an http.Server with bounded Shutdown(ctx), plus a ClaudeRunner.CloseAll() to disconnect cached claude CLI clients on stop, so Ctrl+C (and later, Windows service stop / tray quit) drains cleanly instead of killing the process and any live claude subprocesses hard.","verification":["Start the server, open a claude-code chat session so a real claude CLI subprocess spawns, send Ctrl+C to the server process, and confirm (e.g. via ps/tasklist) that no claude process remains.","Confirm process exit happens within SHUTDOWN_TIMEOUT.","make build \u0026\u0026 run the binary in console mode and confirm unchanged behaviour aside from clean shutdown."]},"objective":"Extract cmd/server/main.go''s bootstrap into a run(ctx context.Context) error function; replace the direct http.ListenAndServe call with an http.Server{} whose Shutdown(ctx) is invoked on ctx.Done(), bounded by a new SHUTDOWN_TIMEOUT env var (default 10s, following the existing GetEnvDefault pattern); add a CloseAll() method to ClaudeRunner (internal/agentrunner/claude_runner.go) that disconnects every cached per-session claude CLI client, and invoke it from main''s shutdown path via a type assertion (not a new AgentRunner interface method) so no claude subprocess is orphaned when the server stops.","success_criteria":["Starting a claude-code chat session (which spawns a real claude CLI subprocess) and then stopping the server (Ctrl+C) leaves no orphaned claude process running afterward.","The process exits within the configured SHUTDOWN_TIMEOUT under normal conditions.","make build \u0026\u0026 running the binary in console/dev mode behaves exactly as before except for clean shutdown on Ctrl+C."]}'
+      created_at: 2026-07-08T22:40:01.0214477Z

@@ -193,6 +193,116 @@ func TestClaudeRunner_CheckHealth_OKWhenReposRootSetAndCLIFound(t *testing.T) {
 	assert.NoError(t, r.CheckHealth(context.Background()))
 }
 
+func TestSystemPromptWithHistory_ReturnsUnchangedWhenEmpty(t *testing.T) {
+	assert.Equal(t, "be nice", systemPromptWithHistory("be nice", nil))
+}
+
+func TestSystemPromptWithHistory_AppendsRenderedTranscript(t *testing.T) {
+	got := systemPromptWithHistory("be nice", []chat.Message{
+		{Role: "user", Content: "let's start"},
+		{Role: "assistant", Content: "sure, tell me more"},
+	})
+	assert.Contains(t, got, "be nice")
+	assert.Contains(t, got, "Prior conversation (restored after restart)")
+	assert.Contains(t, got, "user: let's start")
+	assert.Contains(t, got, "assistant: sure, tell me more")
+}
+
+func TestIsStaleClaudeConnectionError_MatchesKnownDeadPipeMessages(t *testing.T) {
+	cases := []string{
+		`querying claude code agent: failed to write message: write |1: The pipe is being closed.`,
+		"write: broken pipe",
+		"io: read/write on closed pipe",
+		"transport not connected or stdin closed",
+		"write : file already closed",
+	}
+	for _, msg := range cases {
+		assert.True(t, isStaleClaudeConnectionError(errors.New(msg)), "expected %q to be detected as a stale connection", msg)
+	}
+}
+
+func TestIsStaleClaudeConnectionError_IgnoresUnrelatedErrors(t *testing.T) {
+	assert.False(t, isStaleClaudeConnectionError(errors.New("claude code agent run failed: something else entirely")))
+}
+
+// TestClaudeRunner_Run_ReconnectsOnceOnStaleConnectionThenSucceeds locks in
+// the fix for a long idle gap between conversation turns outliving the
+// cached `claude` CLI subprocess (reported live as "querying claude code
+// agent: failed to write message: write |1: The pipe is being closed."):
+// the stale cached client's first Query fails with a dead-pipe error, so
+// Run must evict it (Disconnect + remove from the cache) and retry against
+// a freshly constructed client rather than surfacing the raw pipe error.
+func TestClaudeRunner_Run_ReconnectsOnceOnStaleConnectionThenSucceeds(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, "")
+	key := "task-a:requirements"
+
+	stale := &fakeClaudeClient{queryErr: errors.New("write |1: The pipe is being closed.")}
+	r.clients[key] = stale
+
+	fresh := &fakeClaudeClient{}
+	r.newClient = func(...claudecode.Option) claudecode.Client { return fresh }
+
+	out, err := r.Run(context.Background(), RunInput{SessionKey: key, Workspace: t.TempDir()}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, RunOutput{}, out)
+	assert.Equal(t, 1, stale.queryCalls)
+	assert.True(t, stale.disconnected, "the stale client should have been disconnected when evicted")
+	assert.Equal(t, 1, fresh.queryCalls)
+	assert.Same(t, fresh, r.clients[key], "the fresh client should now be the cached one")
+}
+
+// TestClaudeRunner_Run_SurfacesErrorWhenReconnectAlsoFails ensures the
+// retry is only attempted once — if the freshly reconnected client's Query
+// also fails, that error (not the original stale-pipe one) is what
+// surfaces, and Run doesn't loop forever trying to reconnect.
+func TestClaudeRunner_Run_SurfacesErrorWhenReconnectAlsoFails(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, "")
+	key := "task-a:requirements"
+
+	stale := &fakeClaudeClient{queryErr: errors.New("broken pipe")}
+	r.clients[key] = stale
+
+	fresh := &fakeClaudeClient{queryErr: errors.New("still broken")}
+	r.newClient = func(...claudecode.Option) claudecode.Client { return fresh }
+
+	_, err := r.Run(context.Background(), RunInput{SessionKey: key, Workspace: t.TempDir()}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still broken")
+	assert.Equal(t, 1, stale.queryCalls)
+	assert.Equal(t, 1, fresh.queryCalls)
+}
+
+// TestClaudeRunner_Run_NonStaleQueryErrorIsNotRetried locks in that only
+// the specific dead-pipe failure mode triggers a reconnect — a genuine
+// query failure must surface immediately, not silently retry against a
+// second, unnecessary subprocess.
+func TestClaudeRunner_Run_NonStaleQueryErrorIsNotRetried(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, "")
+	key := "task-a:requirements"
+
+	client := &fakeClaudeClient{queryErr: errors.New("some other failure")}
+	r.clients[key] = client
+	r.newClient = func(...claudecode.Option) claudecode.Client {
+		t.Fatal("newClient must not be called for a non-stale query error")
+		return nil
+	}
+
+	_, err := r.Run(context.Background(), RunInput{SessionKey: key, Workspace: t.TempDir()}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "some other failure")
+	assert.Equal(t, 1, client.queryCalls)
+}
+
+func TestClaudeRunner_ClientFor_ErrorsWhenWorkspaceEmpty(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, "")
+	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: ""})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude-code requires a project repository")
+}
+
 func TestClaudeRunner_ListModels_ReturnsEmptyNotError(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, "")
 	models, err := r.ListModels(context.Background())
@@ -218,20 +328,31 @@ func TestClaudeRunner_CloseSession_OnUnknownKeyIsANoOp(t *testing.T) {
 }
 
 // fakeClaudeClient is a minimal claudecode.Client stub for exercising
-// ClaudeRunner.CloseSession without a live subprocess. Only Disconnect is
-// used by the test above; every other method is an unused stub.
+// ClaudeRunner without a live subprocess. queryErr scripts Query's return
+// value (e.g. a stale-pipe error); ReceiveMessages always returns a
+// real, already-closed channel (not nil, which a for-range would block on
+// forever) so Run's drain loop completes immediately once Query succeeds.
 type fakeClaudeClient struct {
 	disconnected bool
+	queryErr     error
+	queryCalls   int
 }
 
 func (f *fakeClaudeClient) Connect(context.Context, ...claudecode.StreamMessage) error { return nil }
 func (f *fakeClaudeClient) Disconnect() error                                          { f.disconnected = true; return nil }
-func (f *fakeClaudeClient) Query(context.Context, string) error                        { return nil }
-func (f *fakeClaudeClient) QueryWithSession(context.Context, string, string) error     { return nil }
+func (f *fakeClaudeClient) Query(context.Context, string) error {
+	f.queryCalls++
+	return f.queryErr
+}
+func (f *fakeClaudeClient) QueryWithSession(context.Context, string, string) error { return nil }
 func (f *fakeClaudeClient) QueryStream(context.Context, <-chan claudecode.StreamMessage) error {
 	return nil
 }
-func (f *fakeClaudeClient) ReceiveMessages(context.Context) <-chan claudecode.Message { return nil }
+func (f *fakeClaudeClient) ReceiveMessages(context.Context) <-chan claudecode.Message {
+	ch := make(chan claudecode.Message)
+	close(ch)
+	return ch
+}
 func (f *fakeClaudeClient) ReceiveResponse(context.Context) claudecode.MessageIterator {
 	return nil
 }
