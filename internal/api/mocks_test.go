@@ -86,6 +86,15 @@ func (m *mockTaskStore) AppendConversationMessages(id, stage string, msgs ...tas
 	return c, args.Error(1)
 }
 
+func (m *mockTaskStore) ReplaceConversationMessages(id, stage string, msgs []task.ConversationMessage) (task.Conversation, error) {
+	args := m.Called(id, stage, msgs)
+	var c task.Conversation
+	if v := args.Get(0); v != nil {
+		c = v.(task.Conversation)
+	}
+	return c, args.Error(1)
+}
+
 func (m *mockTaskStore) FinalizeRequirements(id string, draft task.RequirementsDraft) (task.Task, error) {
 	args := m.Called(id, draft)
 	var t task.Task

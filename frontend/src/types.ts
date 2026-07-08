@@ -112,6 +112,20 @@ export interface ChatCompletionRequestBody {
   model: string
   executor: string
   session_key: string
+  // history is normally omitted — the server holds this session's history
+  // itself. It's only populated by the frontend immediately after a
+  // delete/edit/regenerate action closes the session (closeChatSession):
+  // sending it right after an eviction is what makes the correction stick,
+  // since the server has no other durable copy of free chat's history.
+  history?: ChatHistoryEntry[]
+}
+
+// ChatHistoryEntry is the minimal wire shape internal/api/chat.go's
+// chatCompletionRequest.History needs — role + content only, no tool-call
+// structure, since free chat never registers tools.
+export interface ChatHistoryEntry {
+  role: string
+  content: string
 }
 
 // ChatStreamEvent mirrors internal/api/chat.go's chatStreamEvent — one
@@ -176,6 +190,10 @@ export interface ConversationMessage {
   content: string
   tool_call?: ConversationToolCall
   tool_call_id?: string
+  // error is set when this turn failed — a reload must still show that a
+  // failure happened, not just an assistant message with empty content and
+  // no explanation (internal/task/conversation.go's ConversationMessage.Error).
+  error?: string
   created_at: string
 }
 

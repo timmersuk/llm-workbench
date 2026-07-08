@@ -139,3 +139,7 @@ func (c defaultModelCompleter) StreamSessionTurn(ctx context.Context, sessionKey
 func (c defaultModelCompleter) CloseSession(sessionKey string) {
 	c.client.CloseSession(sessionKey)
 }
+
+func (c defaultModelCompleter) SeedSessionHistory(sessionKey string, history []chat.Message) {
+	c.client.SeedSessionHistory(sessionKey, history)
+}

@@ -1,6 +1,7 @@
 import type {
   AgentExecutorsListResult,
   ChatCompletionRequestBody,
+  ChatHistoryEntry,
   ChatStreamEvent,
   Conversation,
   CreateProjectRequest,
@@ -189,8 +190,9 @@ export async function streamChatCompletion(
   executor: string,
   sessionKey: string,
   onEvent: (event: ChatStreamEvent) => void,
+  history?: ChatHistoryEntry[],
 ): Promise<void> {
-  const body: ChatCompletionRequestBody = { content, model, executor, session_key: sessionKey }
+  const body: ChatCompletionRequestBody = { content, model, executor, session_key: sessionKey, history }
   const res = await fetch('/api/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -230,6 +232,72 @@ export async function postStageMessage(
   onEvent: (event: ChatStreamEvent) => void,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, model, executor }),
+  })
+  await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
+// startStageConversation begins a brand-new, empty stage Conversation on
+// the agent's own initiative — there is no human reply yet to post via
+// postStageMessage, so this runs one turn seeded server-side
+// (internal/api/stage_conversation.go's kickoffUserMessage, never sent or
+// shown here) and streams the resulting opening question the same way
+// postStageMessage streams a reply. The server rejects this with a 409 once
+// the conversation already has messages (see streamSSE — a non-ok response
+// with no body throws before any events fire), so callers should only
+// invoke this once, when getStageConversation comes back empty.
+export async function startStageConversation(
+  projectId: string,
+  taskId: string,
+  stage: string,
+  model: string,
+  executor: string,
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, executor }),
+  })
+  await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
+// deleteStageMessage removes exactly one message (by its position in the
+// conversation) from a stage's persisted Conversation, and evicts the
+// task+stage's live agent session server-side (internal/api/stage_conversation.go's
+// handleDeleteStageMessage) so the deletion is reflected in what the model
+// sees on its next turn, not just on screen.
+export async function deleteStageMessage(projectId: string, taskId: string, stage: string, index: number): Promise<Conversation> {
+  const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages/${index}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    const message = await res.text().catch(() => '')
+    throw new Error(message || `deleting message returned ${res.status}`)
+  }
+  return res.json() as Promise<Conversation>
+}
+
+// regenerateStageMessage resends the user turn at index — either unchanged
+// (Regenerate: index is the user message preceding the assistant reply
+// being regenerated, content is that message's own existing text) or edited
+// (Edit: index is the user message's own position, content is the new
+// text). Everything from index onward is discarded server-side and
+// replaced by a fresh [user(content), assistant] pair once the stream
+// completes (internal/api/stage_conversation.go's handleRegenerateStageMessage).
+export async function regenerateStageMessage(
+  projectId: string,
+  taskId: string,
+  stage: string,
+  index: number,
+  content: string,
+  model: string,
+  executor: string,
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages/${index}/regenerate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, model, executor }),

@@ -560,6 +560,45 @@ func TestIntegration_StageMessageStreamsProposedDraftAsToolCallEvent(t *testing.
 	assert.Equal(t, proposeContextToolName, conv.Messages[1].ToolCall.Name)
 }
 
+// TestIntegration_StartStageConversation_SeedsFirstQuestionAndRejectsRestart
+// drives the real router/FileStore/chat.ChatClient chain for a brand-new
+// task's empty Conversation: /start must run one turn on the agent's own
+// initiative (no human message exists yet to trigger a reply otherwise),
+// persist only the resulting assistant turn, and refuse a second /start
+// once the conversation is no longer empty.
+func TestIntegration_StartStageConversation_SeedsFirstQuestionAndRejectsRestart(t *testing.T) {
+	upstream := fakeUpstream(t)
+	defer upstream.Close()
+	baseURL, _ := newIntegrationServer(t, upstream)
+
+	body, err := json.Marshal(stageStartRequest{Model: "test-model"})
+	require.NoError(t, err)
+
+	resp, err := http.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/start", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(respBody), "hello ", "fakeUpstream's content should have streamed through as the opening question")
+
+	convResp, err := http.Get(baseURL + "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/conversation")
+	require.NoError(t, err)
+	defer convResp.Body.Close()
+	var conv task.Conversation
+	require.NoError(t, json.NewDecoder(convResp.Body).Decode(&conv))
+	require.Len(t, conv.Messages, 1, "only the assistant's opening question is persisted, no synthetic user turn")
+	assert.Equal(t, "assistant", conv.Messages[0].Role)
+	assert.Equal(t, "hello back", conv.Messages[0].Content)
+
+	// A second /start on the now-non-empty conversation must be rejected.
+	resp2, err := http.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/start", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
+}
+
 // TestIntegration_FullLifecycle_FinalizeAndReviseBothWays drives a task
 // through the full GrillMe -> Planning Mode -> Revise loop against real
 // FileStores, matching the milestone's manual verification walkthrough:

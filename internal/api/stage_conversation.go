@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -22,6 +26,44 @@ const (
 	proposeContextToolName = "propose_context"
 	proposePlanToolName    = "propose_plan"
 )
+
+// grillMeSystemPrompt and planningModeSystemPrompt encode the "grilling"
+// interview discipline (CONTEXT.md's GrillMe/Planning Mode entries) both
+// stages share: one question at a time, a recommended answer with every
+// question, questions resolved in dependency order, and no proposal until
+// the human has confirmed shared understanding. They differ only in what
+// they're interviewing toward and which tool they end with.
+const (
+	grillMeSystemPrompt = `You are GrillMe, interviewing the user to sharpen a task's requirements.
+
+Rules for this interview:
+- If you have tools available (Read/Grep/Glob), explore the project's repository first and answer your own questions from the code wherever you can. Only ask the human what the code cannot tell you.
+- Ask exactly one question per turn. Never batch multiple questions into one message.
+- Every question comes with your recommended answer and a short reason why. Present it as a default the user can accept or redirect, not a decision already made.
+- Walk the design tree: resolve dependent decisions in order, one branch at a time, rather than jumping around.
+- Do not call propose_context until the objective, constraints, assumptions, and success criteria are coherent AND the user has confirmed shared understanding — do not propose on your own initiative just because you have enough to guess.
+- If the user's reply contains a fenced JSON block representing a requested change to a draft you already proposed, treat that block as the authoritative starting point for your revision — refine it, don't discard it and start over.
+
+`
+	planningModeSystemPrompt = `You are Planning Mode, interviewing the user to produce a structured execution plan.
+
+Rules for this interview:
+- If you have tools available (Read/Grep/Glob), explore the project's repository first and answer your own questions from the code wherever you can. Only ask the human what the code cannot tell you.
+- Ask exactly one question per turn. Never batch multiple questions into one message.
+- Every question comes with your recommended answer and a short reason why. Present it as a default the user can accept or redirect, not a decision already made.
+- Walk the design tree: resolve dependent decisions in order (approach, then steps, then risks and complexity), one branch at a time, rather than jumping around.
+- Do not call propose_plan until the approach, steps, risks, and estimated complexity are coherent AND the user has confirmed shared understanding — do not propose on your own initiative just because you have enough to guess.
+- If the user's reply contains a fenced JSON block representing a requested change to a plan you already proposed, treat that block as the authoritative starting point for your revision — refine it, don't discard it and start over.
+
+`
+)
+
+// kickoffUserMessage drives a stage conversation's very first turn
+// (handleStartStageConversation) — chat completion APIs need a user-role
+// message to produce a reply at all, but there is no real human reply yet
+// on a brand-new conversation. This is never shown to the human or
+// persisted; only the assistant's resulting first question is.
+const kickoffUserMessage = "Begin the interview now: use the task/project/knowledge context above (and the repository, if you have tools) to ask your first question."
 
 var proposeContextToolSchema = json.RawMessage(`{
   "type": "object",
@@ -86,6 +128,14 @@ func stageTool(stage string) (chat.Tool, bool) {
 // free-floating chat endpoint's chatCompletionRequest.Executor.
 type stageMessageRequest struct {
 	Content  string `json:"content"`
+	Model    string `json:"model"`
+	Executor string `json:"executor,omitempty"`
+}
+
+// stageStartRequest is the request body for handleStartStageConversation —
+// the same executor/model selection as stageMessageRequest, minus Content:
+// there is no human reply yet on a conversation that hasn't started.
+type stageStartRequest struct {
 	Model    string `json:"model"`
 	Executor string `json:"executor,omitempty"`
 }
@@ -186,41 +236,32 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 			flusher.Flush()
 		}
 
-		var assistantContent strings.Builder
+		var assistantContent string
 		var proposed *chat.ToolCall
 		var streamErr error
 
+		// A project with no configured repository is a normal state (a
+		// pure-planning project with nothing to check out) — only
+		// ErrNoRepository is tolerated as "no workspace to offer", proceeding
+		// with an empty Workspace; any other ResolveWorkspace failure (an
+		// invalid or unresolvable repository identifier) still aborts the
+		// turn, since that signals real misconfiguration rather than an
+		// absent-by-design repository.
 		workspace, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
-		if wsErr != nil {
+		if wsErr != nil && !errors.Is(wsErr, agentrunner.ErrNoRepository) {
 			streamErr = fmt.Errorf("resolving workspace: %w", wsErr)
+		} else if history, convErr := store.GetConversation(taskId, stage); convErr != nil {
+			streamErr = fmt.Errorf("loading conversation history: %w", convErr)
 		} else {
-			out, runErr := runner.Run(r.Context(), agentrunner.RunInput{
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
 				SessionKey:   taskId + ":" + stage,
 				Workspace:    workspace,
 				SystemPrompt: systemPrompt,
 				UserMessage:  req.Content,
 				Model:        req.Model,
 				Tool:         tool,
-			}, func(d chat.Delta) error {
-				writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
-				return nil
-			})
-			streamErr = runErr
-			assistantContent.WriteString(out.Content)
-			proposed = out.ToolCall
-			if proposed != nil && proposed.Function.Name != tool.Function.Name {
-				logrus.WithFields(logrus.Fields{
-					"task": taskId, "stage": stage,
-					"expected_tool": tool.Function.Name, "got_tool": proposed.Function.Name,
-				}).Warn("ignoring tool call that doesn't match the stage's registered tool")
-				proposed = nil
-			}
-			if proposed != nil {
-				writeEvent(chatStreamEvent{ToolCall: &chatToolCallEvent{
-					Name:      proposed.Function.Name,
-					Arguments: proposed.Function.Arguments,
-				}})
-			}
+				History:      conversationHistoryToChatMessages(history),
+			}, writeEvent)
 		}
 		if streamErr != nil {
 			// Headers (200 OK) are already sent, so a failed stream can't
@@ -229,7 +270,10 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent.String()}
+		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
+		if streamErr != nil {
+			assistantMsg.Error = streamErr.Error()
+		}
 		if proposed != nil {
 			assistantMsg.ToolCall = &task.ConversationToolCall{
 				ID:        proposed.ID,
@@ -248,6 +292,389 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 	}
 }
 
+// handleStartStageConversation begins a stage's Conversation on the
+// agent's own initiative: a brand-new task lands the human on an empty
+// GrillMe/Planning Mode panel with nothing to reply to, so this runs one
+// agent turn seeded with kickoffUserMessage (never shown or persisted)
+// instead of waiting for a human message that doesn't exist yet, and
+// persists only the resulting assistant turn — there is no human message to
+// pair it with. Rejects with 409 if the conversation already has messages,
+// since starting is only meaningful once, before any real exchange exists;
+// continuing an already-started conversation is handlePostStageMessage's
+// job.
+func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stage := r.PathValue("stage")
+		tool, ok := stageTool(stage)
+		if !ok {
+			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			return
+		}
+
+		var req stageStartRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		executorKey := req.Executor
+		if executorKey == "" {
+			executorKey = defaultChatExecutor
+		}
+		runner, ok := agentRunners[executorKey]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+			return
+		}
+
+		projectId := r.PathValue("projectId")
+		taskId := r.PathValue("taskId")
+
+		proj, err := projects.Get(projectId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		root, err := projects.TasksRoot(projectId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		store := factory(root)
+
+		t, err := store.Get(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		existing, err := store.GetConversation(taskId, stage)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		if len(existing.Messages) > 0 {
+			http.Error(w, "conversation already started", http.StatusConflict)
+			return
+		}
+
+		systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+
+		writeEvent := func(ev chatStreamEvent) {
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+
+		var assistantContent string
+		var proposed *chat.ToolCall
+		var streamErr error
+
+		workspace, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
+		if wsErr != nil && !errors.Is(wsErr, agentrunner.ErrNoRepository) {
+			streamErr = fmt.Errorf("resolving workspace: %w", wsErr)
+		} else {
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
+				SessionKey:   taskId + ":" + stage,
+				Workspace:    workspace,
+				SystemPrompt: systemPrompt,
+				UserMessage:  kickoffUserMessage,
+				Model:        req.Model,
+				Tool:         tool,
+			}, writeEvent)
+		}
+		if streamErr != nil {
+			writeEvent(chatStreamEvent{Error: streamErr.Error()})
+		}
+
+		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
+		if streamErr != nil {
+			assistantMsg.Error = streamErr.Error()
+		}
+		if proposed != nil {
+			assistantMsg.ToolCall = &task.ConversationToolCall{
+				ID:        proposed.ID,
+				Name:      proposed.Function.Name,
+				Arguments: proposed.Function.Arguments,
+			}
+		}
+
+		if _, err := store.AppendConversationMessages(taskId, stage, assistantMsg); err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting stage conversation kickoff message")
+			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
+		}
+	}
+}
+
+// handleDeleteStageMessage removes exactly one message from a stage's
+// Conversation by index and evicts the live agent session across every
+// registered executor (closeSessions, finalize.go) — a message deleted from
+// the persisted record but left live in a runner's in-memory/subprocess
+// session would mean the deletion never actually reaches what the model
+// sees on its next turn. No new turn runs; the next real message already
+// reloads persisted history from disk (handlePostStageMessage).
+func handleDeleteStageMessage(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stage := r.PathValue("stage")
+		if _, ok := stageTool(stage); !ok {
+			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			return
+		}
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			http.Error(w, "invalid message index", http.StatusBadRequest)
+			return
+		}
+
+		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		if !ok {
+			return
+		}
+
+		taskId := r.PathValue("taskId")
+		existing, err := store.GetConversation(taskId, stage)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		if index < 0 || index >= len(existing.Messages) {
+			http.Error(w, fmt.Sprintf("message index %d out of range", index), http.StatusBadRequest)
+			return
+		}
+
+		updated := append(append([]task.ConversationMessage{}, existing.Messages[:index]...), existing.Messages[index+1:]...)
+		conv, err := store.ReplaceConversationMessages(taskId, stage, updated)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		closeSessions(agentRunners, taskId+":"+stage)
+		writeJSON(w, http.StatusOK, conv)
+	}
+}
+
+// stageRegenerateRequest is the request body for handleRegenerateStageMessage.
+type stageRegenerateRequest struct {
+	Content  string `json:"content"`
+	Model    string `json:"model"`
+	Executor string `json:"executor,omitempty"`
+}
+
+// handleRegenerateStageMessage resends the user turn at index — either
+// unchanged (Regenerate: the frontend targets the user message preceding
+// the assistant reply being regenerated, with that reply's own original
+// content) or edited (Edit: the frontend targets the user message itself,
+// with new content) — both reduce to the same operation: everything from
+// index onward is discarded and replaced by a fresh [user(content),
+// assistant] pair. closeSessions runs before the turn so the truncated
+// History built from what's kept is what the runner actually consults, per
+// RunInput.History's "only consulted when the runner has no live session"
+// contract (agentrunner/runner.go).
+func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stage := r.PathValue("stage")
+		tool, ok := stageTool(stage)
+		if !ok {
+			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			return
+		}
+
+		index, err := strconv.Atoi(r.PathValue("index"))
+		if err != nil {
+			http.Error(w, "invalid message index", http.StatusBadRequest)
+			return
+		}
+
+		var req stageRegenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		executorKey := req.Executor
+		if executorKey == "" {
+			executorKey = defaultChatExecutor
+		}
+		runner, ok := agentRunners[executorKey]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+			return
+		}
+
+		projectId := r.PathValue("projectId")
+		taskId := r.PathValue("taskId")
+
+		proj, err := projects.Get(projectId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		root, err := projects.TasksRoot(projectId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		store := factory(root)
+
+		t, err := store.Get(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		existing, err := store.GetConversation(taskId, stage)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		if index < 0 || index >= len(existing.Messages) {
+			http.Error(w, fmt.Sprintf("message index %d out of range", index), http.StatusBadRequest)
+			return
+		}
+		if existing.Messages[index].Role != "user" {
+			http.Error(w, "can only regenerate/edit from a user message", http.StatusBadRequest)
+			return
+		}
+
+		historyPrefix := append([]task.ConversationMessage{}, existing.Messages[:index]...)
+		systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+
+		writeEvent := func(ev chatStreamEvent) {
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+
+		sessionKey := taskId + ":" + stage
+		closeSessions(agentRunners, sessionKey)
+
+		var assistantContent string
+		var proposed *chat.ToolCall
+		var streamErr error
+
+		workspace, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
+		if wsErr != nil && !errors.Is(wsErr, agentrunner.ErrNoRepository) {
+			streamErr = fmt.Errorf("resolving workspace: %w", wsErr)
+		} else {
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
+				SessionKey:   sessionKey,
+				Workspace:    workspace,
+				SystemPrompt: systemPrompt,
+				UserMessage:  req.Content,
+				Model:        req.Model,
+				Tool:         tool,
+				History:      conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
+			}, writeEvent)
+		}
+		if streamErr != nil {
+			writeEvent(chatStreamEvent{Error: streamErr.Error()})
+		}
+
+		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
+		if streamErr != nil {
+			assistantMsg.Error = streamErr.Error()
+		}
+		if proposed != nil {
+			assistantMsg.ToolCall = &task.ConversationToolCall{
+				ID:        proposed.ID,
+				Name:      proposed.Function.Name,
+				Arguments: proposed.Function.Arguments,
+			}
+		}
+
+		now := time.Now().UTC()
+		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}
+		assistantMsg.CreatedAt = now
+
+		newMessages := append(historyPrefix, userMsg, assistantMsg)
+		if _, err := store.ReplaceConversationMessages(taskId, stage, newMessages); err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting regenerated stage conversation messages")
+			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
+		}
+	}
+}
+
+// runStageTurn runs one agent turn and streams its deltas via writeEvent
+// (the chatStreamEvent shape both stage-conversation endpoints share),
+// returning the assistant's accumulated content and any proposed Draft tool
+// call. Shared by handlePostStageMessage and handleStartStageConversation —
+// they differ in what UserMessage/History they supply and what gets
+// persisted afterward, not in how a turn is actually run and streamed.
+func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, err error) {
+	out, runErr := runner.Run(ctx, in, func(d chat.Delta) error {
+		writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
+		return nil
+	})
+	toolCall := out.ToolCall
+	// A local OpenAI-compatible model can hallucinate a tool_calls delta for
+	// a tool it was never offered (e.g. one primed by the "explore the
+	// repo" instruction in the system prompt but never actually registered
+	// here) — only ever trust a call whose name matches the one tool this
+	// turn actually offered, in.Tool, or a hallucination gets surfaced to
+	// the human as a real Draft proposal and persisted as one.
+	if toolCall != nil && toolCall.Function.Name != in.Tool.Function.Name {
+		logrus.WithFields(logrus.Fields{
+			"session_key": in.SessionKey, "expected_tool": in.Tool.Function.Name, "got_tool": toolCall.Function.Name,
+		}).Warn("ignoring tool call that doesn't match the stage's registered tool")
+		toolCall = nil
+	}
+	if toolCall != nil {
+		writeEvent(chatStreamEvent{ToolCall: &chatToolCallEvent{
+			Name:      toolCall.Function.Name,
+			Arguments: toolCall.Function.Arguments,
+		}})
+	}
+	return out.Content, toolCall, runErr
+}
+
+// conversationHistoryToChatMessages maps a stage's persisted Conversation
+// into the chat.Message shape agentrunner.RunInput.History expects, so an
+// AgentRunner that lost its in-memory session (e.g. a server restart wiped
+// ClaudeRunner's cached clients or ChatClientRunner's held history) can
+// rehydrate from the durable record instead of starting the interview over.
+// A tool-call proposal is flattened into a short annotation on the
+// assistant message's content rather than reconstructed as a structured
+// tool-call turn — this is a best-effort transcript for the model to read,
+// not a protocol-valid replay of the original exchange.
+func conversationHistoryToChatMessages(conv task.Conversation) []chat.Message {
+	if len(conv.Messages) == 0 {
+		return nil
+	}
+	out := make([]chat.Message, 0, len(conv.Messages))
+	for _, m := range conv.Messages {
+		content := m.Content
+		if m.ToolCall != nil {
+			content += fmt.Sprintf("\n(proposed a draft via %s: %s)", m.ToolCall.Name, m.ToolCall.Arguments)
+		}
+		out = append(out, chat.Message{Role: m.Role, Content: content})
+	}
+	return out
+}
+
 // buildStagePrompt seeds the interview's system prompt with the task's own
 // fields, the owning project's fields, and the resolved body text of every
 // knowledge concept either references (CONTEXT.md's GrillMe/Planning Mode
@@ -259,11 +686,9 @@ func buildStagePrompt(t task.Task, proj project.Project, stage string, knowledge
 
 	switch stage {
 	case task.StageRequirements:
-		b.WriteString("You are GrillMe, interviewing the user to sharpen a task's requirements. ")
-		b.WriteString("Ask focused questions until the objective, constraints, assumptions, and success criteria are coherent, then call propose_context with your proposal.\n\n")
+		b.WriteString(grillMeSystemPrompt)
 	case task.StagePlanning:
-		b.WriteString("You are Planning Mode, interviewing the user to produce a structured execution plan. ")
-		b.WriteString("Once the approach is coherent, call propose_plan with your proposal.\n\n")
+		b.WriteString(planningModeSystemPrompt)
 	}
 
 	fmt.Fprintf(&b, "## Task\nObjective: %s\n", t.Objective)

@@ -414,6 +414,49 @@ td button {
   margin-top: 16px;
 }
 
+.stage-conversation-header h4 {
+  margin: 0 0 4px;
+}
+
+.stage-conversation-intro {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.chat-input-hint {
+  margin: -8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* task-summary (read-only Requirements/Context/Plan) and task-interview
+   (GrillMe/Planning Mode) are deliberately styled as two distinct zones —
+   plain background for "what's known so far" vs. a shaded, bordered box
+   for "the interactive tool that changes it" — so the page reads as two
+   different kinds of content, not one continuous scroll. */
+.task-summary {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.task-summary section + section {
+  margin-top: 16px;
+}
+
+.task-summary h4 {
+  margin-top: 0;
+}
+
+.task-interview {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
 .tool-call-chip {
   display: inline-block;
   margin-left: 8px;
@@ -442,3 +485,47 @@ td button {
   gap: 8px;
   margin-top: 12px;
 }
+
+.message-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+.action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.action-btn:hover {
+  background: var(--bg-alt);
+  color: var(--text);
+}
+
+.chat-input-edit-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.action-btn-cancel {
+  padding: 0 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.action-btn-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+

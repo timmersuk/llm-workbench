@@ -25,6 +25,8 @@ type fakeChatClient struct {
 	checkHealthErr                                           error
 	listModelsResult                                         []string
 	listModelsErr                                            error
+	seededSessionKey                                         string
+	seededHistory                                            []chat.Message
 }
 
 func (f *fakeChatClient) CreateChatCompletion(context.Context, chat.CompletionRequest) (chat.CompletionResponse, error) {
@@ -46,6 +48,11 @@ func (f *fakeChatClient) StreamSessionTurn(_ context.Context, sessionKey, system
 
 func (f *fakeChatClient) CloseSession(sessionKey string) {
 	f.closedSessions = append(f.closedSessions, sessionKey)
+}
+
+func (f *fakeChatClient) SeedSessionHistory(sessionKey string, history []chat.Message) {
+	f.seededSessionKey = sessionKey
+	f.seededHistory = history
 }
 
 func (f *fakeChatClient) CheckHealth(context.Context) error { return f.checkHealthErr }
@@ -105,6 +112,36 @@ func TestChatClientRunner_Run_ForwardsToolAndSurfacesToolCall(t *testing.T) {
 	require.Len(t, client.gotTools, 1)
 	assert.Equal(t, tool, client.gotTools[0])
 	assert.Same(t, toolCall, out.ToolCall)
+}
+
+func TestChatClientRunner_Run_SeedsHistoryWhenPresent(t *testing.T) {
+	client := &fakeChatClient{streamTurnContent: "hi back"}
+	runner := NewChatClientRunner(client)
+
+	history := []chat.Message{{Role: "user", Content: "earlier turn"}}
+	_, err := runner.Run(context.Background(), RunInput{
+		SessionKey:  "sess-1",
+		UserMessage: "hello",
+		History:     history,
+	}, func(chat.Delta) error { return nil })
+
+	require.NoError(t, err)
+	assert.Equal(t, "sess-1", client.seededSessionKey)
+	assert.Equal(t, history, client.seededHistory)
+}
+
+func TestChatClientRunner_Run_DoesNotSeedWhenHistoryEmpty(t *testing.T) {
+	client := &fakeChatClient{streamTurnContent: "hi back"}
+	runner := NewChatClientRunner(client)
+
+	_, err := runner.Run(context.Background(), RunInput{
+		SessionKey:  "sess-1",
+		UserMessage: "hello",
+	}, func(chat.Delta) error { return nil })
+
+	require.NoError(t, err)
+	assert.Empty(t, client.seededSessionKey)
+	assert.Nil(t, client.seededHistory)
 }
 
 func TestChatClientRunner_Run_PropagatesUnderlyingError(t *testing.T) {

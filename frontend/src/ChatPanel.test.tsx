@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ChatPanel } from './ChatPanel'
 import * as api from './api'
@@ -9,6 +9,7 @@ vi.mock('./api')
 
 beforeEach(() => {
   vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
+  vi.mocked(api.closeChatSession).mockResolvedValue(undefined)
 })
 
 describe('ChatPanel — executor and model selection', () => {
@@ -44,6 +45,102 @@ describe('ChatPanel — executor and model selection', () => {
 
     expect(await screen.findByText('Could not load models: boom')).toBeInTheDocument()
   })
+})
+
+describe('ChatPanel — message actions', () => {
+  async function sendOneExchange(user: ReturnType<typeof userEvent.setup>, text: string, reply: string) {
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.streamChatCompletion).mockImplementation((_content, _model, _executor, _sessionKey, onEvent) => {
+      onEvent({ content: reply })
+      return Promise.resolve()
+    })
+    const { container } = render(<ChatPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('model-a'))
+
+    await user.type(screen.getByPlaceholderText('Message the local LLM...'), text)
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(screen.getByText(new RegExp(`${reply}$`))).toBeInTheDocument())
+    return container
+  }
+
+  it('Copy writes that specific message content to the clipboard', async () => {
+    const user = userEvent.setup()
+    const container = await sendOneExchange(user, 'hello', 'hi back')
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Copy' }))
+
+    expect(writeText).toHaveBeenCalledWith('hello')
+  })
+
+  it('Delete removes only that message and evicts the session', async () => {
+    const user = userEvent.setup()
+    const container = await sendOneExchange(user, 'hello', 'hi back')
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(screen.queryByText(/hello$/)).not.toBeInTheDocument())
+    expect(screen.getByText(/hi back$/)).toBeInTheDocument()
+    expect(api.closeChatSession).toHaveBeenCalled()
+  })
+
+  it('Edit populates the input, and Save evicts the session and resends with truncated history', async () => {
+    const user = userEvent.setup()
+    const container = await sendOneExchange(user, 'hello', 'hi back')
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Edit' }))
+
+    expect(screen.getByDisplayValue('hello')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Editing message...')).toBeInTheDocument()
+
+    await user.clear(screen.getByPlaceholderText('Editing message...'))
+    await user.type(screen.getByPlaceholderText('Editing message...'), 'edited hello')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.closeChatSession).toHaveBeenCalled())
+    const call = vi.mocked(api.streamChatCompletion).mock.calls.at(-1)!
+    expect(call[0]).toBe('edited hello')
+    expect(call[5]).toEqual([])
+    expect(screen.getByText(/edited hello$/)).toBeInTheDocument()
+    expect(screen.queryByText(/^hello$/)).not.toBeInTheDocument()
+  })
+
+  it('Cancel exits edit mode without sending anything', async () => {
+    const user = userEvent.setup()
+    const container = await sendOneExchange(user, 'hello', 'hi back')
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[0] as HTMLElement).getByRole('button', { name: 'Edit' }))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.getByPlaceholderText('Message the local LLM...')).toHaveValue('')
+    expect(api.closeChatSession).not.toHaveBeenCalled()
+  })
+
+  it('Regenerate resends the preceding user message unchanged, truncating the stale reply', async () => {
+    const user = userEvent.setup()
+    const container = await sendOneExchange(user, 'hello', 'hi back')
+
+    const messages = container.querySelectorAll('.chat-message')
+    vi.mocked(api.streamChatCompletion).mockImplementation((_content, _model, _executor, _sessionKey, onEvent) => {
+      onEvent({ content: 'a fresh reply' })
+      return Promise.resolve()
+    })
+    await user.click(within(messages[1] as HTMLElement).getByRole('button', { name: 'Regenerate' }))
+
+    await waitFor(() => expect(api.closeChatSession).toHaveBeenCalled())
+    const call = vi.mocked(api.streamChatCompletion).mock.calls.at(-1)!
+    expect(call[0]).toBe('hello')
+    expect(call[5]).toEqual([])
+    expect(screen.getByText(/a fresh reply$/)).toBeInTheDocument()
+    expect(screen.queryByText(/hi back$/)).not.toBeInTheDocument()
+  })
+
 })
 
 describe('ChatPanel — streaming', () => {

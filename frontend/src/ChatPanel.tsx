@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { closeChatSession, listAgentExecutors, listModels, streamChatCompletion } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
+import type { ChatHistoryEntry, ChatStreamEvent } from './types'
 
 interface DisplayMessage {
   role: string
@@ -26,6 +27,10 @@ export function ChatPanel() {
   const [executor, setExecutor] = useState('')
   const [executorOptions, setExecutorOptions] = useState<Array<{ value: string; label: string }>>([])
   const [sessionKey, setSessionKey] = useState(() => crypto.randomUUID())
+  // editingIndex is the position of the user message currently being
+  // edited (draft holds its in-progress edited text), or null when not
+  // editing.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
 
   useEffect(() => {
     listModels()
@@ -54,41 +59,162 @@ export function ChatPanel() {
     })
   }
 
-  async function handleSend() {
-    const text = draft.trim()
-    if (!text || sending || !executor) {
+  // updateMessageAt is updateLastMessage's general form, for surfacing a
+  // delete failure inline on the specific message that failed to delete
+  // (not necessarily the last one).
+  function updateMessageAt(index: number, update: (msg: DisplayMessage) => DisplayMessage) {
+    setMessages((prev) => {
+      if (index < 0 || index >= prev.length) {
+        return prev
+      }
+      const next = prev.slice()
+      next[index] = update(next[index])
+      return next
+    })
+  }
+
+  function handleStreamEvent(event: ChatStreamEvent) {
+    if (event.error) {
+      updateLastMessage((msg) => ({ ...msg, error: event.error! }))
+      return
+    }
+    if (event.reasoning_content) {
+      updateLastMessage((msg) => ({ ...msg, reasoningContent: msg.reasoningContent + event.reasoning_content }))
+    }
+    if (event.content) {
+      updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
+    }
+  }
+
+  // sendText appends a fresh [user, assistant] pair and streams the reply.
+  // The server holds this session's history itself in the normal case, but
+  // the current local list is sent as history alongside every turn anyway
+  // (cheap, already in memory) — it's a no-op whenever the session is
+  // still live, and it's exactly what makes a prior delete/edit/regenerate
+  // (which evicts the session) actually stick once the human's next
+  // message reconnects it.
+  async function sendText(text: string) {
+    const trimmedText = text.trim()
+    if (!trimmedText || sending || !executor) {
       return
     }
 
+    const historyForResend: ChatHistoryEntry[] = messages.map((m) => ({ role: m.role, content: m.content }))
+
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text, reasoningContent: '', error: null, thinkingCollapsed: true },
+      { role: 'user', content: trimmedText, reasoningContent: '', error: null, thinkingCollapsed: true },
       { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
     ])
-    setDraft('')
     setSending(true)
 
     try {
-      await streamChatCompletion(text, selectedModel, executor, sessionKey, (event) => {
-        if (event.error) {
-          updateLastMessage((msg) => ({ ...msg, error: event.error! }))
-          return
-        }
-        if (event.reasoning_content) {
-          updateLastMessage((msg) => ({ ...msg, reasoningContent: msg.reasoningContent + event.reasoning_content }))
-        }
-        if (event.content) {
-          updateLastMessage((msg) => ({
-            ...msg,
-            content: msg.content + event.content,
-            thinkingCollapsed: true,
-          }))
-        }
-      })
+      await streamChatCompletion(trimmedText, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend)
     } catch (err) {
       updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
     } finally {
       setSending(false)
+    }
+  }
+
+  async function handleSend() {
+    if (editingIndex !== null) {
+      const text = draft.trim()
+      if (!text) {
+        return
+      }
+      const index = editingIndex
+      setEditingIndex(null)
+      setDraft('')
+      await truncateAndResend(index, text)
+      return
+    }
+    const text = draft
+    setDraft('')
+    await sendText(text)
+  }
+
+  // truncateAndResend discards everything from index onward locally, evicts
+  // the server-held session (closeChatSession — free chat has no durable
+  // copy, so eviction plus the truncated history sent alongside the resend
+  // is the only way a correction reaches what the model sees), and resends
+  // content as a fresh [user, assistant] pair. Shared by Edit (index is the
+  // edited message's own position, content is the new text) and Regenerate
+  // (index is the preceding user message, content is its existing text
+  // unchanged).
+  async function truncateAndResend(index: number, content: string) {
+    if (sending || !executor) {
+      return
+    }
+    const historyForResend: ChatHistoryEntry[] = messages.slice(0, index).map((m) => ({ role: m.role, content: m.content }))
+
+    setMessages((prev) => [
+      ...prev.slice(0, index),
+      { role: 'user', content, reasoningContent: '', error: null, thinkingCollapsed: true },
+      { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
+    ])
+    setSending(true)
+
+    try {
+      await closeChatSession(sessionKey)
+    } catch {
+      // Best-effort, same as handleNewChat — if this fails the resend
+      // below still sends the corrected history, it just won't take effect
+      // until the (still-live) session eventually gets evicted some other way.
+    }
+
+    try {
+      await streamChatCompletion(content, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend)
+    } catch (err) {
+      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  function handleCopyMessage(content: string) {
+    void navigator.clipboard.writeText(content)
+  }
+
+  function handleEditMessage(index: number) {
+    setEditingIndex(index)
+    setDraft(messages[index].content)
+  }
+
+  function handleCancelEdit() {
+    setEditingIndex(null)
+    setDraft('')
+  }
+
+  // handleRegenerateMessage targets assistantIndex's preceding user message
+  // (a well-formed conversation always alternates user/assistant, so
+  // assistantIndex - 1 is that user turn) and resends its existing content
+  // unchanged.
+  function handleRegenerateMessage(assistantIndex: number) {
+    const userIndex = assistantIndex - 1
+    if (userIndex < 0 || sending) {
+      return
+    }
+    void truncateAndResend(userIndex, messages[userIndex].content)
+  }
+
+  // handleDeleteMessage removes a message locally and evicts the
+  // server-held session immediately (rather than deferring to the next
+  // resend) — otherwise a still-live session would keep the deleted
+  // message in context regardless of what the frontend displays.
+  async function handleDeleteMessage(index: number) {
+    if (sending) {
+      return
+    }
+    try {
+      await closeChatSession(sessionKey)
+      setMessages((prev) => prev.filter((_, i) => i !== index))
+      if (editingIndex === index) {
+        setEditingIndex(null)
+        setDraft('')
+      }
+    } catch (err) {
+      updateMessageAt(index, (msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
@@ -102,6 +228,7 @@ export function ChatPanel() {
     setSessionKey(crypto.randomUUID())
     setMessages([])
     setDraft('')
+    setEditingIndex(null)
   }
 
   return (
@@ -166,6 +293,24 @@ export function ChatPanel() {
             )}
             <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
             {message.error && <p className="error">{message.error}</p>}
+            <div className="message-actions">
+              <button type="button" className="action-btn" onClick={() => handleCopyMessage(message.content)}>
+                Copy
+              </button>
+              {message.role === 'user' && (
+                <button type="button" className="action-btn" onClick={() => handleEditMessage(index)} disabled={sending}>
+                  Edit
+                </button>
+              )}
+              {message.role === 'assistant' && index > 0 && (
+                <button type="button" className="action-btn" onClick={() => handleRegenerateMessage(index)} disabled={sending}>
+                  Regenerate
+                </button>
+              )}
+              <button type="button" className="action-btn" onClick={() => handleDeleteMessage(index)} disabled={sending}>
+                Delete
+              </button>
+            </div>
           </div>
         ))}
       </div>
@@ -173,12 +318,23 @@ export function ChatPanel() {
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="Message the local LLM..."
+          placeholder={editingIndex !== null ? 'Editing message...' : 'Message the local LLM...'}
           rows={3}
         />
-        <button onClick={handleSend} disabled={sending || !draft.trim() || !executor}>
-          {sending ? 'Sending...' : 'Send'}
-        </button>
+        {editingIndex !== null ? (
+          <div className="chat-input-edit-controls">
+            <button type="button" className="action-btn-cancel" onClick={handleCancelEdit} disabled={sending}>
+              Cancel
+            </button>
+            <button type="button" onClick={handleSend} disabled={sending || !draft.trim() || !executor}>
+              {sending ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        ) : (
+          <button onClick={handleSend} disabled={sending || !draft.trim() || !executor}>
+            {sending ? 'Sending...' : 'Send'}
+          </button>
+        )}
       </div>
     </div>
   )

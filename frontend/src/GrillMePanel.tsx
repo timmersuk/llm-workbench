@@ -34,6 +34,8 @@ export function GrillMePanel({ projectId, taskId, onFinalized }: GrillMePanelPro
       projectId={projectId}
       taskId={taskId}
       stage="requirements"
+      title="GrillMe"
+      description="Reply below to answer GrillMe's questions — its proposal will become this task's requirements once you finalize it."
       emptyDraft={EMPTY_DRAFT}
       renderDraft={(draft, onChange) => <RequirementsDraftForm draft={draft} onChange={onChange} />}
       onFinalize={async (draft) => {
