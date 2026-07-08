@@ -208,6 +208,13 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 			streamErr = runErr
 			assistantContent.WriteString(out.Content)
 			proposed = out.ToolCall
+			if proposed != nil && proposed.Function.Name != tool.Function.Name {
+				logrus.WithFields(logrus.Fields{
+					"task": taskId, "stage": stage,
+					"expected_tool": tool.Function.Name, "got_tool": proposed.Function.Name,
+				}).Warn("ignoring tool call that doesn't match the stage's registered tool")
+				proposed = nil
+			}
 			if proposed != nil {
 				writeEvent(chatStreamEvent{ToolCall: &chatToolCallEvent{
 					Name:      proposed.Function.Name,
