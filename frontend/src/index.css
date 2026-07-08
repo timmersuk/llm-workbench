@@ -246,6 +246,11 @@ th {
   resize: vertical;
 }
 
+.chat-input textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .chat-input button {
   padding: 0 20px;
   border: none;
@@ -527,5 +532,13 @@ td button {
 .action-btn-cancel:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.action-btn-stop {
+  background: var(--error);
+}
+
+.action-btn-stop:hover {
+  opacity: 0.85;
 }
 

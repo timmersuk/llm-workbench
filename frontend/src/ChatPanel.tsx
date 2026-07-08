@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { closeChatSession, listAgentExecutors, listModels, streamChatCompletion } from './api'
+import { useEffect, useRef, useState } from 'react'
+import { closeChatSession, isAbortError, listAgentExecutors, listModels, streamChatCompletion } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { ChatHistoryEntry, ChatStreamEvent } from './types'
 
@@ -31,6 +31,11 @@ export function ChatPanel() {
   // edited (draft holds its in-progress edited text), or null when not
   // editing.
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  // abortControllerRef tracks the in-flight stream's controller so the
+  // Stop button can cancel it — a ref rather than state since aborting
+  // never needs to trigger a re-render itself (setSending's finally
+  // already does that).
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     listModels()
@@ -75,6 +80,15 @@ export function ChatPanel() {
 
   function handleStreamEvent(event: ChatStreamEvent) {
     if (event.error) {
+      // A user-initiated Stop cancels the request context, which the
+      // backend surfaces as a normal SSE error event (e.g. "context
+      // canceled") rather than a thrown exception — isAbortError's catch-
+      // block check never sees it. Checking the controller's own signal
+      // here is what actually distinguishes "stopped on purpose" from a
+      // real failure, so a deliberate stop doesn't read as an error.
+      if (abortControllerRef.current?.signal.aborted) {
+        return
+      }
       updateLastMessage((msg) => ({ ...msg, error: event.error! }))
       return
     }
@@ -107,14 +121,27 @@ export function ChatPanel() {
       { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
     try {
-      await streamChatCompletion(trimmedText, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend)
+      await streamChatCompletion(trimmedText, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend, controller.signal)
     } catch (err) {
-      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      if (!isAbortError(err)) {
+        updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      }
     } finally {
+      abortControllerRef.current = null
       setSending(false)
     }
+  }
+
+  // handleStop aborts the in-flight stream (Stop button) — Go's net/http
+  // cancels the handler's request context when the client aborts the
+  // connection, so this actually interrupts the backend run, not just the
+  // frontend's rendering of it.
+  function handleStop() {
+    abortControllerRef.current?.abort()
   }
 
   async function handleSend() {
@@ -154,6 +181,8 @@ export function ChatPanel() {
       { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
     try {
       await closeChatSession(sessionKey)
@@ -164,10 +193,13 @@ export function ChatPanel() {
     }
 
     try {
-      await streamChatCompletion(content, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend)
+      await streamChatCompletion(content, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend, controller.signal)
     } catch (err) {
-      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      if (!isAbortError(err)) {
+        updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      }
     } finally {
+      abortControllerRef.current = null
       setSending(false)
     }
   }
@@ -320,6 +352,7 @@ export function ChatPanel() {
           onChange={(e) => setDraft(e.target.value)}
           placeholder={editingIndex !== null ? 'Editing message...' : 'Message the local LLM...'}
           rows={3}
+          disabled={sending}
         />
         {editingIndex !== null ? (
           <div className="chat-input-edit-controls">
@@ -330,9 +363,13 @@ export function ChatPanel() {
               {sending ? 'Saving...' : 'Save'}
             </button>
           </div>
+        ) : sending ? (
+          <button type="button" className="action-btn-stop" onClick={handleStop}>
+            Stop
+          </button>
         ) : (
-          <button onClick={handleSend} disabled={sending || !draft.trim() || !executor}>
-            {sending ? 'Sending...' : 'Send'}
+          <button onClick={handleSend} disabled={!draft.trim() || !executor}>
+            Send
           </button>
         )}
       </div>

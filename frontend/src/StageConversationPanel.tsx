@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import {
   deleteStageMessage,
   getStageConversation,
+  isAbortError,
   listAgentExecutors,
   listModels,
   postStageMessage,
@@ -112,6 +113,11 @@ export function StageConversationPanel<D>({
   // edited (draft holds its in-progress edited text), or null when not
   // editing — mutually exclusive with normal sending.
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  // abortControllerRef tracks the in-flight stream's controller so the
+  // Stop button can cancel it — a ref rather than state since aborting
+  // never needs to trigger a re-render itself (setSending's finally
+  // already does that).
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -235,6 +241,15 @@ export function StageConversationPanel<D>({
   // already been appended by their respective callers.
   function handleStreamEvent(event: ChatStreamEvent) {
     if (event.error) {
+      // A user-initiated Stop cancels the request context, which the
+      // backend surfaces as a normal SSE error event (e.g. "context
+      // canceled") rather than a thrown exception — isAbortError's catch-
+      // block check never sees it. Checking the controller's own signal
+      // here is what actually distinguishes "stopped on purpose" from a
+      // real failure, so a deliberate stop doesn't read as an error.
+      if (abortControllerRef.current?.signal.aborted) {
+        return
+      }
       updateLastMessage((msg) => ({ ...msg, error: event.error! }))
       return
     }
@@ -267,14 +282,27 @@ export function StageConversationPanel<D>({
       { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
     try {
-      await postStageMessage(projectId, taskId, stage, text, selectedModel, executor, handleStreamEvent)
+      await postStageMessage(projectId, taskId, stage, text, selectedModel, executor, handleStreamEvent, controller.signal)
     } catch (err) {
-      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      if (!isAbortError(err)) {
+        updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      }
     } finally {
+      abortControllerRef.current = null
       setSending(false)
     }
+  }
+
+  // handleStop aborts the in-flight stream (Stop button) — Go's net/http
+  // cancels the handler's request context when the client aborts the
+  // connection, so this actually interrupts the backend run, not just the
+  // frontend's rendering of it.
+  function handleStop() {
+    abortControllerRef.current?.abort()
   }
 
   // startConversation kicks off a brand-new, empty stage Conversation on
@@ -290,12 +318,17 @@ export function StageConversationPanel<D>({
       { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
     try {
-      await startStageConversation(projectId, taskId, stage, model, executorKey, handleStreamEvent)
+      await startStageConversation(projectId, taskId, stage, model, executorKey, handleStreamEvent, controller.signal)
     } catch (err) {
-      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      if (!isAbortError(err)) {
+        updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      }
     } finally {
+      abortControllerRef.current = null
       setSending(false)
     }
   }
@@ -334,12 +367,17 @@ export function StageConversationPanel<D>({
     ])
     setPendingDraft(null)
     setSending(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
     try {
-      await regenerateStageMessage(projectId, taskId, stage, index, content, selectedModel, executor, handleStreamEvent)
+      await regenerateStageMessage(projectId, taskId, stage, index, content, selectedModel, executor, handleStreamEvent, controller.signal)
     } catch (err) {
-      updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      if (!isAbortError(err)) {
+        updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+      }
     } finally {
+      abortControllerRef.current = null
       setSending(false)
     }
   }
@@ -392,6 +430,7 @@ export function StageConversationPanel<D>({
   // default handling) so the cursor lands in the right place regardless of
   // modifier keys, since a plain, unmodified Enter is the one case a
   // browser textarea inserts a newline for by default — Alt+Enter isn't.
+  // The textarea is disabled while sending, so this never fires mid-stream.
   function handleDraftKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key !== 'Enter') {
       return
@@ -405,14 +444,6 @@ export function StageConversationPanel<D>({
       el.value = next
       el.selectionStart = el.selectionEnd = start + 1
       setDraft(next)
-      return
-    }
-    if (sending) {
-      // A reply is already streaming — handleSend would silently no-op
-      // here (its own guard), which from the keyboard alone looks like
-      // Enter just swallowed the keystroke and did nothing. Let it insert
-      // a normal newline instead, same as it would with nothing handling
-      // Enter at all, so typing ahead still works while busy.
       return
     }
     e.preventDefault()
@@ -529,6 +560,7 @@ export function StageConversationPanel<D>({
           onKeyDown={handleDraftKeyDown}
           placeholder={editingIndex !== null ? 'Editing message...' : 'Reply...'}
           rows={3}
+          disabled={sending}
         />
         {editingIndex !== null ? (
           <div className="chat-input-edit-controls">
@@ -539,9 +571,13 @@ export function StageConversationPanel<D>({
               {sending ? 'Saving...' : 'Save'}
             </button>
           </div>
+        ) : sending ? (
+          <button type="button" className="action-btn-stop" onClick={handleStop}>
+            Stop
+          </button>
         ) : (
-          <button type="button" onClick={handleSend} disabled={sending || !draft.trim()}>
-            {sending ? 'Sending...' : 'Send'}
+          <button type="button" onClick={handleSend} disabled={!draft.trim()}>
+            Send
           </button>
         )}
       </div>

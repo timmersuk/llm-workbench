@@ -18,6 +18,15 @@ import type {
   UpdateTaskRequest,
 } from './types'
 
+// isAbortError reports whether err is the DOMException fetch/streamSSE
+// throws when an AbortController tied to the request's signal was aborted
+// (e.g. the user clicked Stop mid-stream) — callers use this to distinguish
+// a deliberate cancellation from a real network/server failure so they
+// don't surface it as an error message.
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path)
   if (!res.ok) {
@@ -191,12 +200,14 @@ export async function streamChatCompletion(
   sessionKey: string,
   onEvent: (event: ChatStreamEvent) => void,
   history?: ChatHistoryEntry[],
+  signal?: AbortSignal,
 ): Promise<void> {
   const body: ChatCompletionRequestBody = { content, model, executor, session_key: sessionKey, history }
   const res = await fetch('/api/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
 }
@@ -230,11 +241,13 @@ export async function postStageMessage(
   model: string,
   executor: string,
   onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, model, executor }),
+    signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
 }
@@ -255,11 +268,13 @@ export async function startStageConversation(
   model: string,
   executor: string,
   onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, executor }),
+    signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
 }
@@ -296,11 +311,13 @@ export async function regenerateStageMessage(
   model: string,
   executor: string,
   onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages/${index}/regenerate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, model, executor }),
+    signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
 }
