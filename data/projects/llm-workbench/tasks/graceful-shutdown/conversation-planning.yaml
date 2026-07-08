@@ -1,0 +1,50 @@
+stage: planning
+messages:
+    - role: assistant
+      content: |-
+        Let me check a couple more things — the Makefile's run/build targets and go.mod's Go version — before proposing the control-flow shape.Good — this confirms Go 1.24 (so `signal.NotifyContext` and `http.Server.Shutdown` are both available with no new dependency), and that "run the binary" just means executing the built binary directly (no separate Makefile `run` target to worry about).
+
+        Now for the first design question.
+
+        **Q1: Overall shape of `main()`/`run(ctx)` and how the server is started/stopped.**
+
+        My recommendation:
+
+        ```go
+        func main() {
+            ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+            defer stop()
+            if err := run(ctx); err != nil {
+                logrus.WithError(err).Fatal("server exited")
+            }
+        }
+
+        func run(ctx context.Context) error {
+            // ...all of today's bootstrap (env reads, stores, agentRunners, router)...
+            srv := &http.Server{Addr: httpAddr, Handler: router}
+
+            serveErr := make(chan error, 1)
+            go func() { serveErr <- srv.ListenAndServe() }()
+
+            select {
+            case err := <-serveErr:
+                if err != nil && !errors.Is(err, http.ErrServerClosed) {
+                    return fmt.Errorf("server exited: %w", err)
+                }
+                return nil
+            case <-ctx.Done():
+                shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+                defer cancel()
+                if err := srv.Shutdown(shutdownCtx); err != nil {
+                    return fmt.Errorf("shutting down server: %w", err)
+                }
+                // CloseAll-style cleanup (type assertion) goes here.
+                return nil
+            }
+        }
+        ```
+
+        Reasoning: `signal.NotifyContext(os.Interrupt)` matches your stated assumption (portable, no OS-specific code, works for Ctrl+C on both platforms). `run(ctx)` returns `error` instead of calling `logrus.Fatalf` internally for the serve/shutdown failure paths, so `main()` is the single place that decides the process exit path — this is what makes `run(ctx)` reusable later by a Windows-service host that supplies its own cancellable `ctx` and wants to inspect the error itself rather than have the process call `os.Exit` for it. The two *startup* Fatal call sites you already have (`utils.MustGetEnv`, the frontend-mount fs.Sub failure) are a separate question I'll ask next — this question is just about the serve-loop/shutdown shape itself.
+
+        Does this control-flow shape match what you had in mind, or would you rather keep `logrus.Fatalf` calls inside `run()` itself (i.e. `run()` still exits the process directly on some failures, and its `error` return is only used for the graceful-shutdown-vs-timeout outcome)?
+      created_at: 2026-07-08T23:07:14.5443073Z
