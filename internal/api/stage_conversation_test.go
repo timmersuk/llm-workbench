@@ -240,6 +240,57 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 	assert.Equal(t, `{"objective":"ship login"}`, persistedMsgs[1].ToolCall.Arguments)
 }
 
+// TestHandlePostStageMessage_IgnoresMismatchedToolCallName covers a model
+// hallucinating a tool call for a tool that was never offered (e.g. a local
+// OpenAI-compatible model emitting a "Glob" tool_calls delta when only
+// propose_context was in the request's Tools array) — it must not be
+// surfaced as a Draft proposal or persisted.
+func TestHandlePostStageMessage_IgnoresMismatchedToolCallName(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+
+	var persistedMsgs []task.ConversationMessage
+	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+		persistedMsgs = msgs
+		return true
+	})).Return(task.Conversation{}, nil)
+
+	knowledgeReader := new(mockKnowledgeReader)
+
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).Return([]chat.Delta{
+		{Content: "Here's my proposal: "},
+	}, agentrunner.RunOutput{
+		Content: "Here's my proposal: ",
+		ToolCall: &chat.ToolCall{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{
+			Name: "Glob", Arguments: `{"pattern":"**/*.go"}`,
+		}},
+	}, nil)
+
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "let's start"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	handlePostStageMessage(projects, factory, knowledgeReader,
+		map[string]agentrunner.AgentRunner{"local": runner}, reposRoot)(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := parseSSEEvents(t, w.Body.String())
+	require.Len(t, events, 1)
+	assert.Equal(t, "Here's my proposal: ", events[0].Content)
+	assert.Nil(t, events[0].ToolCall)
+
+	require.Len(t, persistedMsgs, 2)
+	assert.Equal(t, "assistant", persistedMsgs[1].Role)
+	assert.Equal(t, "Here's my proposal: ", persistedMsgs[1].Content)
+	assert.Nil(t, persistedMsgs[1].ToolCall)
+}
+
 func TestHandlePostStageMessage_UnknownExecutor(t *testing.T) {
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "hi", Executor: "does-not-exist"})
 	req.SetPathValue("projectId", "demo-project")
