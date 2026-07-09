@@ -7,7 +7,9 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -38,9 +40,13 @@ func main() {
 	llmTimeout := utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second)
 	agentTimeout := utils.GetEnvDefault("AGENT_TIMEOUT", 5*time.Minute)
 	// Required: any agent runner that can introspect a task's reference
-	// repository (claude-code today; codex/others later) needs to know
-	// where to find/clone it, so the server refuses to start without one.
+	// repository (claude-code, codex) needs to know where to find/clone
+	// it, so the server refuses to start without one.
 	agentReposRoot := utils.MustGetEnv("AGENT_REPOS_ROOT")
+	// draftmcp is built as a sibling binary alongside this one (see
+	// Makefile's build-go-local) — defaults to that convention, override
+	// via DRAFTMCP_PATH for a non-standard layout (e.g. local `go run`).
+	draftMCPPath := utils.GetEnvDefault("DRAFTMCP_PATH", defaultDraftMCPPath())
 
 	configureLogging(logLevel, logFormat)
 
@@ -55,6 +61,7 @@ func main() {
 	// (chat.ChatClient.StreamSessionTurn) exactly like "claude-code".
 	agentRunners := map[string]agentrunner.AgentRunner{
 		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentReposRoot),
+		"codex":       agentrunner.NewCodexRunner(agentTimeout, agentReposRoot, draftMCPPath),
 		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
 			client: chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout),
 			model:  llmModel,
@@ -81,6 +88,24 @@ func main() {
 	if err := http.ListenAndServe(httpAddr, router); err != nil {
 		logrus.Fatalf("server exited: %v", err)
 	}
+}
+
+// defaultDraftMCPPath returns the expected path of cmd/draftmcp's compiled
+// binary, sitting alongside this server binary (see Makefile's
+// build-go-local). Falls back to a bare "draftmcp" (PATH-resolved by the
+// codex CLI) if the server's own executable path can't be determined —
+// CodexRunner.CheckHealth surfaces a clear error rather than this silently
+// producing an unusable path.
+func defaultDraftMCPPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "draftmcp"
+	}
+	name := "draftmcp"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(filepath.Dir(exe), name)
 }
 
 func configureLogging(level, format string) {

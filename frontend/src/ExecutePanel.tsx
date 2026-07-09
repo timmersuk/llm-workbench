@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { isAbortError, listExecutions, startExecution } from './api'
+import { isAbortError, listAgentExecutors, listExecutions, startExecution } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { Execution, ExecuteStreamEvent } from './types'
 
@@ -24,12 +24,11 @@ interface ExecutePanelProps {
   onExecuted: (execution: Execution) => void
 }
 
-// executeExecutor is the only executor offered here — claude-code is the
-// only AgentRunner implementation with a real Execute in this milestone
-// (ChatClientRunner.Execute returns "not supported" until
-// chatclient-tool-loop lands), so there's no picker, unlike
-// StageConversationPanel's.
-const executeExecutor = 'claude-code'
+// executorLabels maps an agent executor key to its display label — "local"
+// is never offered here since ChatClientRunner.Execute returns "not
+// supported" until chatclient-tool-loop lands (same exclusion
+// StageConversationPanel applies for stage conversations).
+const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex CLI' }
 
 // ExecutePanel is the Implementation stage's autonomous run: a "Run
 // Execution" action that streams live tool activity (files written,
@@ -42,6 +41,8 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   const [trace, setTrace] = useState<TraceEntry[]>([])
   const [running, setRunning] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
+  const [executor, setExecutor] = useState('')
+  const [executorOptions, setExecutorOptions] = useState<string[]>([])
   // abortControllerRef tracks the in-flight run's controller so Stop can
   // cancel it — same pattern as StageConversationPanel's.
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -55,6 +56,21 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         }
       })
       .catch(() => undefined) // no prior attempts, or the list failed to load — either way, nothing to show yet
+
+    // "local" is excluded — ChatClientRunner.Execute has no real
+    // implementation yet (see chatclient-tool-loop), so offering it here
+    // would just 400 on Run.
+    listAgentExecutors()
+      .then((result) => {
+        if (cancelled) {
+          return
+        }
+        const executors = result.executors.filter((key) => key !== 'local')
+        setExecutorOptions(executors)
+        setExecutor((current) => current || executors[0] || '')
+      })
+      .catch(() => undefined) // no executors healthy — Run Execution stays disabled below
+
     return () => {
       cancelled = true
     }
@@ -109,7 +125,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   }
 
   async function handleRun() {
-    if (running) {
+    if (running || !executor) {
       return
     }
     setTrace([])
@@ -119,7 +135,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
     abortControllerRef.current = controller
 
     try {
-      await startExecution(projectId, taskId, executeExecutor, handleStreamEvent, controller.signal)
+      await startExecution(projectId, taskId, executor, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         setRunError(err instanceof Error ? err.message : String(err))
@@ -143,9 +159,26 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
       <div className="stage-conversation-header">
         <h4>Execute</h4>
         <p className="stage-conversation-intro">
-          Runs Claude Code autonomously, on an isolated git branch, to implement the approved plan — no approval
+          Runs an agent autonomously, on an isolated git branch, to implement the approved plan — no approval
           checkpoints mid-run; review the result afterward.
         </p>
+      </div>
+
+      <div className="chat-model-row">
+        <label htmlFor="execute-executor">Executor</label>
+        <select
+          id="execute-executor"
+          value={executor}
+          onChange={(e) => setExecutor(e.target.value)}
+          disabled={running || executorOptions.length === 0}
+        >
+          {executorOptions.length === 0 && <option value="">No executor available</option>}
+          {executorOptions.map((key) => (
+            <option key={key} value={key}>
+              {executorLabels[key] ?? key}
+            </option>
+          ))}
+        </select>
       </div>
 
       {pastExecutions.length > 0 && (
@@ -193,7 +226,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
             Stop
           </button>
         ) : (
-          <button type="button" onClick={handleRun}>
+          <button type="button" onClick={handleRun} disabled={!executor}>
             Run Execution
           </button>
         )}

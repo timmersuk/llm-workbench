@@ -80,7 +80,7 @@ const localChatOption = { value: '', label: 'Local LLM chat' }
 // display label, for whichever keys listAgentExecutors currently reports
 // healthy — an executor that isn't live right now is never offered, so
 // selecting one can't 400.
-const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code' }
+const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex CLI' }
 
 // StageConversationPanel is the mechanism shared by GrillMe and Planning
 // Mode (CONTEXT.md): a persisted Conversation transcript, a message input

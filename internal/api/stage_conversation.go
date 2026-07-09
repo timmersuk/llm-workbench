@@ -14,17 +14,19 @@ import (
 
 	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/drafttool"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
-// Tool names/schemas for the Draft mechanism (CONTEXT.md): GrillMe
-// registers propose_context, Planning Mode registers propose_plan. Plain Go
-// constants/vars, not Knowledge documents — these are prompt-engineering
-// scaffolding, not durable domain content.
+// Tool names for the Draft mechanism (CONTEXT.md): GrillMe registers
+// propose_context, Planning Mode registers propose_plan. The actual
+// name/description/schema live in internal/drafttool, shared with
+// cmd/draftmcp's static MCP server (CodexRunner's Draft-tool mechanism) so
+// both call sites see the same tool shape by construction.
 const (
-	proposeContextToolName = "propose_context"
-	proposePlanToolName    = "propose_plan"
+	proposeContextToolName = drafttool.ProposeContextName
+	proposePlanToolName    = drafttool.ProposePlanName
 )
 
 // grillMeSystemPrompt and planningModeSystemPrompt encode the "grilling"
@@ -65,57 +67,23 @@ Rules for this interview:
 // persisted; only the assistant's resulting first question is.
 const kickoffUserMessage = "Begin the interview now: use the task/project/knowledge context above (and the repository, if you have tools) to ask your first question."
 
-var proposeContextToolSchema = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "objective": {"type": "string"},
-    "constraints": {"type": "array", "items": {"type": "string"}},
-    "assumptions": {"type": "array", "items": {"type": "string"}},
-    "success_criteria": {"type": "array", "items": {"type": "string"}},
-    "context": {
-      "type": "object",
-      "properties": {
-        "summary": {"type": "string"},
-        "background": {"type": "string"},
-        "files": {"type": "array", "items": {"type": "string"}},
-        "detail": {"type": "string"},
-        "verification": {"type": "array", "items": {"type": "string"}},
-        "open_questions": {"type": "array", "items": {"type": "string"}}
-      },
-      "required": ["summary"]
-    }
-  },
-  "required": ["objective", "context"]
-}`)
-
-var proposePlanToolSchema = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "approach": {"type": "string"},
-    "steps": {"type": "array", "items": {"type": "string"}},
-    "risks": {"type": "array", "items": {"type": "string"}},
-    "estimated_complexity": {"type": "string", "enum": ["low", "medium", "high"]},
-    "recommended_executor": {"type": "string"}
-  },
-  "required": ["approach", "steps", "estimated_complexity"]
-}`)
-
 // stageTool returns the Draft-proposing tool registered for stage, and
 // whether stage is a valid Conversation stage at all (requirements or
-// planning — see task.ErrInvalidStage).
+// planning — see task.ErrInvalidStage). Name/description/schema come from
+// internal/drafttool, shared with cmd/draftmcp.
 func stageTool(stage string) (chat.Tool, bool) {
 	switch stage {
 	case task.StageRequirements:
 		return chat.Tool{Type: "function", Function: chat.ToolSchema{
-			Name:        proposeContextToolName,
-			Description: "Propose the task's requirements (objective, constraints, assumptions, success criteria) and narrative context for the human to review before Finalize.",
-			Parameters:  proposeContextToolSchema,
+			Name:        drafttool.ProposeContext.Name,
+			Description: drafttool.ProposeContext.Description,
+			Parameters:  drafttool.ProposeContext.Schema,
 		}}, true
 	case task.StagePlanning:
 		return chat.Tool{Type: "function", Function: chat.ToolSchema{
-			Name:        proposePlanToolName,
-			Description: "Propose a structured execution plan for the human to review before Finalize.",
-			Parameters:  proposePlanToolSchema,
+			Name:        drafttool.ProposePlan.Name,
+			Description: drafttool.ProposePlan.Description,
+			Parameters:  drafttool.ProposePlan.Schema,
 		}}, true
 	default:
 		return chat.Tool{}, false
