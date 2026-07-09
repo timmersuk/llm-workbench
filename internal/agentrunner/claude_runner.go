@@ -27,10 +27,30 @@ var lookPath = exec.LookPath
 // can read files in the reference repo, not can modify" framing.
 var readOnlyTools = []string{"Read", "Grep", "Glob"}
 
+// executionTools is the allow-list for Execute — the Implementation stage
+// is the one place this trust boundary deliberately widens beyond
+// readOnlyTools, because Execute always runs against an isolated git
+// worktree (see ResolveExecutionWorkspace), never the shared checkout Run
+// uses, so Write/Edit/Bash here can't touch anything a human or another
+// stage's read-only agent has open.
+var executionTools = append(append([]string{}, readOnlyTools...), "Write", "Edit", "Bash")
+
 // claudeRunnerMaxTurns bounds how many internal tool-call round-trips a
 // single Run call may make, as a defense-in-depth cap independent of the
 // Write/Edit/Bash denial above.
 const claudeRunnerMaxTurns = 30
+
+// claudeExecutionMaxTurns bounds Execute's round-trips — higher than
+// claudeRunnerMaxTurns because an actual implementation run (write code,
+// run tests, fix failures, commit) legitimately needs far more turns than
+// an interview question does.
+const claudeExecutionMaxTurns = 100
+
+// executionKickoffMessage is the fixed user turn Execute sends to start an
+// autonomous run — all real instructions live in the system prompt
+// (agentrunner.ExecuteInput.SystemPrompt, built by the caller), the same
+// split stage conversations already use for their own kickoffUserMessage.
+const executionKickoffMessage = "Begin executing the plan."
 
 // mcpServerName is the in-process MCP server name Draft tools are
 // registered under (mcp__<mcpServerName>__<tool name> in WithAllowedTools).
@@ -149,6 +169,59 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 	var content strings.Builder
 	for msg := range client.ReceiveMessages(runCtx) {
 		done, err := processMessage(msg, in.Tool.Function.Name, &content, &out, onDelta)
+		if err != nil {
+			return out, err
+		}
+		if done {
+			return out, nil
+		}
+	}
+	return out, runCtx.Err()
+}
+
+// Execute implements AgentRunner. Unlike Run, it never reuses or caches a
+// claudecode.Client across calls — Run's client cache exists to resume a
+// multi-turn human conversation across separate HTTP requests, but an
+// execution is one autonomous run to completion with no further turns, so
+// a fresh client connected and disconnected within this call is simpler
+// and can't accidentally leak a write-enabled session into some other
+// SessionKey. Still guarded by the same tryLock/unlock(key) pair Run uses,
+// so two overlapping Execute (or Execute+Run) calls for the same
+// SessionKey still can't race.
+func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func(ExecuteEvent) error) (ExecuteOutput, error) {
+	key := in.SessionKey
+	if !r.tryLock(key) {
+		return ExecuteOutput{}, ErrRunInProgress
+	}
+	defer r.unlock(key)
+
+	if in.Workspace == "" {
+		return ExecuteOutput{}, errors.New("claude-code requires a resolved execution workspace")
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	client := r.newClient(
+		claudecode.WithCwd(in.Workspace),
+		claudecode.WithSystemPrompt(in.SystemPrompt),
+		claudecode.WithPartialStreaming(),
+		claudecode.WithMaxTurns(claudeExecutionMaxTurns),
+		claudecode.WithAllowedTools(executionTools...),
+	)
+	if err := client.Connect(runCtx); err != nil {
+		return ExecuteOutput{}, fmt.Errorf("connecting claude code agent for execution %s: %w", key, err)
+	}
+	defer func() { _ = client.Disconnect() }()
+
+	if err := client.Query(runCtx, executionKickoffMessage); err != nil {
+		return ExecuteOutput{}, fmt.Errorf("starting claude code execution: %w", err)
+	}
+
+	var out ExecuteOutput
+	var content strings.Builder
+	for msg := range client.ReceiveMessages(runCtx) {
+		done, err := processExecuteMessage(msg, &content, &out, onEvent)
 		if err != nil {
 			return out, err
 		}
@@ -345,6 +418,110 @@ func processMessage(msg claudecode.Message, toolName string, content *strings.Bu
 		return true, nil
 	}
 	return false, nil
+}
+
+// processExecuteMessage folds one message from a claudecode.Client's
+// message stream into content/out for an Execute call, emitting an
+// ExecuteEvent for every meaningful thing that happens along the way, and
+// reporting whether the run is complete (msg was a ResultMessage). Unlike
+// processMessage (which only surfaces one Draft-matching ToolUseBlock and
+// silently drops everything else), this surfaces every tool call and its
+// result — an Execute run's real actions (files written, commands run) are
+// the point, not incidental.
+func processExecuteMessage(msg claudecode.Message, content *strings.Builder, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (done bool, err error) {
+	switch m := msg.(type) {
+	case *claudecode.StreamEvent:
+		if text, ok := streamDeltaText(m); ok && onEvent != nil {
+			if err := onEvent(ExecuteEvent{Kind: "text", Text: text}); err != nil {
+				return true, err
+			}
+		}
+	case *claudecode.AssistantMessage:
+		for _, block := range m.Content {
+			switch b := block.(type) {
+			case *claudecode.TextBlock:
+				content.WriteString(b.Text)
+			case *claudecode.ToolUseBlock:
+				if onEvent == nil {
+					continue
+				}
+				input, err := json.Marshal(b.Input)
+				if err != nil {
+					return true, fmt.Errorf("encoding tool call input: %w", err)
+				}
+				if err := onEvent(ExecuteEvent{Kind: "tool_call", ToolName: b.Name, ToolInput: string(input)}); err != nil {
+					return true, err
+				}
+			}
+		}
+	case *claudecode.UserMessage:
+		blocks, ok := m.Content.([]claudecode.ContentBlock)
+		if !ok || onEvent == nil {
+			break
+		}
+		for _, block := range blocks {
+			b, ok := block.(*claudecode.ToolResultBlock)
+			if !ok {
+				continue
+			}
+			isError := b.IsError != nil && *b.IsError
+			if err := onEvent(ExecuteEvent{Kind: "tool_result", ToolResult: toolResultText(b.Content), IsError: isError}); err != nil {
+				return true, err
+			}
+		}
+	case *claudecode.ResultMessage:
+		out.Content = content.String()
+		out.DurationSeconds = float64(m.DurationMs) / 1000
+		out.NumTurns = m.NumTurns
+		if m.TotalCostUSD != nil {
+			out.CostEstimate = *m.TotalCostUSD
+		}
+		out.TokensUsed = sumUsageTokens(m.Usage)
+		if m.IsError {
+			return true, fmt.Errorf("claude code execution failed: %s", strings.Join(m.Errors, "; "))
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// toolResultText renders a ToolResultBlock's Content (documented as
+// "string or structured data") as a string for ExecuteEvent.ToolResult —
+// the common case is already a string; anything else is JSON-encoded
+// best-effort rather than dropped.
+func toolResultText(content any) string {
+	if s, ok := content.(string); ok {
+		return s
+	}
+	data, err := json.Marshal(content)
+	if err != nil {
+		return fmt.Sprintf("%v", content)
+	}
+	return string(data)
+}
+
+// sumUsageTokens adds up every numeric token-count field in a
+// ResultMessage's Usage map (e.g. "input_tokens", "output_tokens",
+// "cache_read_input_tokens") — the SDK models Usage as an untyped
+// map[string]any (it mirrors the CLI's own JSON verbatim rather than
+// defining a fixed struct), so this sums whatever numeric fields are
+// actually present rather than assuming specific key names. Returns 0 for
+// a nil map rather than erroring, per ExecuteOutput's "leave unreported
+// metrics at zero" convention.
+func sumUsageTokens(usage *map[string]any) int {
+	if usage == nil {
+		return 0
+	}
+	total := 0
+	for _, v := range *usage {
+		switch n := v.(type) {
+		case float64:
+			total += int(n)
+		case int:
+			total += n
+		}
+	}
+	return total
 }
 
 // streamDeltaText extracts incremental assistant text from a partial

@@ -79,6 +79,70 @@ type RunOutput struct {
 	ToolCall *chat.ToolCall
 }
 
+// ErrExecuteNotSupported is returned by an AgentRunner.Execute
+// implementation that has no real execution capability (e.g.
+// ChatClientRunner, until a tool loop exists for it — see
+// data/projects/llm-workbench/tasks/chatclient-tool-loop/). Callers use
+// this to distinguish "this executor can't run Execute at all" from a
+// genuine execution failure.
+var ErrExecuteNotSupported = errors.New("execution not supported by this executor")
+
+// ExecuteInput carries everything an AgentRunner needs for one autonomous
+// Implementation-stage execution attempt — distinct from RunInput, which is
+// shaped for one turn of a human-paced, read-only conversation. Unlike
+// Run, there is no History to rehydrate and no Draft Tool to register: an
+// execution runs to completion unattended and is never resumed after a
+// restart (see docs/milestones/milestone5.md's resolved decisions).
+type ExecuteInput struct {
+	// SessionKey guards against two overlapping executions of the same
+	// task via the same tryLock/inFlight mechanism Run already uses.
+	// Stage-conversation callers use taskID+":"+stage; execution callers
+	// use taskID+":execute", which never collides with those.
+	SessionKey string
+	// Workspace is the isolated git worktree resolved by
+	// ResolveExecutionWorkspace — never the shared checkout ResolveWorkspace
+	// returns for Run, since Execute writes to disk and commits.
+	Workspace    string
+	SystemPrompt string
+	// Model is honored only by AgentRunner implementations backed by a
+	// model-selectable provider, same convention as RunInput.Model.
+	Model string
+}
+
+// ExecuteEvent is one incremental unit of progress from an AgentRunner.Execute
+// call, streamed via onEvent as the run proceeds. Unlike Run's onDelta
+// (text only, one optional ToolCall returned at the end), Execute needs to
+// surface every tool call and its result as they happen — a write-enabled
+// agent's real actions (files written, commands run), not just its prose.
+type ExecuteEvent struct {
+	Kind string // "text" | "tool_call" | "tool_result"
+
+	// Text is set when Kind == "text".
+	Text string
+
+	// ToolName/ToolInput are set when Kind == "tool_call". ToolInput is the
+	// tool's raw JSON input.
+	ToolName  string
+	ToolInput string
+
+	// ToolResult/IsError are set when Kind == "tool_result".
+	ToolResult string
+	IsError    bool
+}
+
+// ExecuteOutput is the result of one AgentRunner.Execute call: the
+// assistant's final text content plus whatever run metrics the underlying
+// executor actually reports. Fields an executor can't report (e.g. the
+// claude CLI offering no token/cost figures) are left at zero rather than
+// fabricated — see docs/task schema v0.md's execution.yaml.metrics.
+type ExecuteOutput struct {
+	Content         string
+	DurationSeconds float64
+	TokensUsed      int
+	CostEstimate    float64
+	NumTurns        int
+}
+
 // AgentRunner runs one turn of an agentic conversation against a
 // tool-equipped coding agent or chat provider, isolated per
 // RunInput.SessionKey, streaming assistant deltas via onDelta as they
@@ -86,6 +150,13 @@ type RunOutput struct {
 // codex_runner.go implementation is expected to follow the same interface.
 type AgentRunner interface {
 	Run(ctx context.Context, in RunInput, onDelta func(chat.Delta) error) (RunOutput, error)
+
+	// Execute runs one autonomous Implementation-stage execution attempt to
+	// completion, streaming tool activity via onEvent as it happens.
+	// Implementations with no real execution capability (see
+	// ErrExecuteNotSupported) return that error immediately rather than
+	// silently no-oping.
+	Execute(ctx context.Context, in ExecuteInput, onEvent func(ExecuteEvent) error) (ExecuteOutput, error)
 
 	// CheckHealth reports whether this runner can actually be used right
 	// now — a live probe, not a static configuration check (mirrors

@@ -131,6 +131,29 @@ func (m *mockTaskStore) ReviseToPlanning(id string) (task.Task, error) {
 	return t, args.Error(1)
 }
 
+func (m *mockTaskStore) NextExecutionID(id string) (string, error) {
+	args := m.Called(id)
+	return args.String(0), args.Error(1)
+}
+
+func (m *mockTaskStore) RecordExecution(id string, exec task.Execution) (task.Execution, error) {
+	args := m.Called(id, exec)
+	var recorded task.Execution
+	if v := args.Get(0); v != nil {
+		recorded = v.(task.Execution)
+	}
+	return recorded, args.Error(1)
+}
+
+func (m *mockTaskStore) ListExecutions(id string) ([]task.Execution, error) {
+	args := m.Called(id)
+	var executions []task.Execution
+	if v := args.Get(0); v != nil {
+		executions = v.([]task.Execution)
+	}
+	return executions, args.Error(1)
+}
+
 type mockKnowledgeReader struct{ mock.Mock }
 
 func (m *mockKnowledgeReader) Get(conceptID string) (knowledge.Concept, error) {
@@ -210,6 +233,25 @@ func (m *mockAgentRunner) Run(ctx context.Context, in agentrunner.RunInput, onDe
 	var out agentrunner.RunOutput
 	if v := args.Get(1); v != nil {
 		out = v.(agentrunner.RunOutput)
+	}
+	return out, args.Error(2)
+}
+
+// Execute's test double is configured with .Return(events, out, err):
+// events ([]agentrunner.ExecuteEvent) are fed through onEvent in order
+// before out/err are returned — same shape as Run's mock above.
+func (m *mockAgentRunner) Execute(ctx context.Context, in agentrunner.ExecuteInput, onEvent func(agentrunner.ExecuteEvent) error) (agentrunner.ExecuteOutput, error) {
+	args := m.Called(ctx, in, onEvent)
+	if events, ok := args.Get(0).([]agentrunner.ExecuteEvent); ok {
+		for _, e := range events {
+			if err := onEvent(e); err != nil {
+				return agentrunner.ExecuteOutput{}, err
+			}
+		}
+	}
+	var out agentrunner.ExecuteOutput
+	if v := args.Get(1); v != nil {
+		out = v.(agentrunner.ExecuteOutput)
 	}
 	return out, args.Error(2)
 }

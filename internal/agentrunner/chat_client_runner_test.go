@@ -151,6 +151,12 @@ func TestChatClientRunner_Run_PropagatesUnderlyingError(t *testing.T) {
 	assert.ErrorIs(t, err, wantErr)
 }
 
+func TestChatClientRunner_Execute_ReturnsNotSupported(t *testing.T) {
+	runner := NewChatClientRunner(&fakeChatClient{})
+	_, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute"}, func(ExecuteEvent) error { return nil })
+	assert.ErrorIs(t, err, ErrExecuteNotSupported)
+}
+
 func TestChatClientRunner_CheckHealth_DelegatesToWrappedClient(t *testing.T) {
 	wantErr := errors.New("down")
 	runner := NewChatClientRunner(&fakeChatClient{checkHealthErr: wantErr})

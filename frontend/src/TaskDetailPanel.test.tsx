@@ -20,6 +20,13 @@ vi.mock('./PlanningModePanel', () => ({
     </div>
   ),
 }))
+vi.mock('./ExecutePanel', () => ({
+  ExecutePanel: (props: { projectId: string; taskId: string }) => (
+    <div data-testid="execute-panel">
+      execute:{props.projectId}:{props.taskId}
+    </div>
+  ),
+}))
 
 const projectId = 'demo'
 
@@ -88,7 +95,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(await screen.findByText('task is not in the expected stage')).toBeInTheDocument()
   })
 
-  it.each(['implementation', 'review'] as const)('%s stage renders only a Revise Plan button', async (stage) => {
+  it.each(['implementation', 'review'] as const)('%s stage renders a Revise Plan button', async (stage) => {
     stubNoContextOrPlan()
     render(<TaskDetailPanel projectId={projectId} task={makeTask(stage)} onBack={vi.fn()} />)
 
@@ -96,6 +103,17 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
     expect(screen.queryByTestId('planningmode-panel')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Revise Plan' })).toBeInTheDocument()
+  })
+
+  it('implementation stage renders ExecutePanel; review stage does not', async () => {
+    stubNoContextOrPlan()
+    const { unmount } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+    expect(await screen.findByTestId('execute-panel')).toHaveTextContent('execute:demo:task-a')
+    unmount()
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('review')} onBack={vi.fn()} />)
+    await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
+    expect(screen.queryByTestId('execute-panel')).not.toBeInTheDocument()
   })
 
   it('complete stage renders neither stage panel nor any Revise button', async () => {

@@ -6,6 +6,8 @@ import type {
   Conversation,
   CreateProjectRequest,
   CreateTaskRequest,
+  ExecuteStreamEvent,
+  ExecutionsListResult,
   ModelsListResult,
   Project,
   ProjectListResult,
@@ -151,9 +153,10 @@ export function listAgentExecutors(): Promise<AgentExecutorsListResult> {
 
 // streamSSE reads res's body as a "data: {...}\n\n"-per-line Server-Sent-
 // Events stream, invoking onEvent once per line until the stream ends.
-// Shared by streamChatCompletion (the free-floating chat tab) and
-// postStageMessage (GrillMe/Planning Mode) — both endpoints emit the same
-// ChatStreamEvent wire shape (internal/api/chat.go).
+// Shared by every SSE-streaming endpoint this client calls — the chat/
+// stage-conversation ones (all emitting ChatStreamEvent, internal/api/chat.go)
+// and startExecution (emitting ExecuteStreamEvent, internal/api/execution.go)
+// — generic over T since the wire shape differs per endpoint.
 async function streamSSE<T>(res: Response, onEvent: (event: T) => void): Promise<void> {
   if (!res.ok || !res.body) {
     throw new Error(`request failed with status ${res.status}`)
@@ -320,4 +323,34 @@ export async function regenerateStageMessage(
     signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
+// startExecution runs one autonomous Implementation-stage execution
+// attempt to completion, streaming the agent's live text/tool_call/
+// tool_result activity via onEvent (internal/api/execution.go). The final
+// event has type "done" and carries the recorded Execution outcome — the
+// caller should reload the task afterward, since a successful run
+// auto-advances task.stage to "review" server-side. executor is currently
+// only meaningfully "claude-code" — no picker is offered client-side (see
+// ExecutePanel).
+export async function startExecution(
+  projectId: string,
+  taskId: string,
+  executor: string,
+  onEvent: (event: ExecuteStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${taskPath(projectId, taskId)}/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ executor }),
+    signal,
+  })
+  await streamSSE<ExecuteStreamEvent>(res, onEvent)
+}
+
+// listExecutions returns every recorded execution attempt for a task,
+// oldest first (internal/api/execution.go's handleListExecutions).
+export function listExecutions(projectId: string, taskId: string): Promise<ExecutionsListResult> {
+  return getJSON<ExecutionsListResult>(`${taskPath(projectId, taskId)}/executions`)
 }

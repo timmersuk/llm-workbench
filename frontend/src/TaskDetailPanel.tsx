@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { getTaskContext, getTaskPlan, reviseRequirements, revisePlan, updateProjectTask } from './api'
+import { getProjectTask, getTaskContext, getTaskPlan, reviseRequirements, revisePlan, updateProjectTask } from './api'
+import { ExecutePanel } from './ExecutePanel'
 import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
 import type { Task, TaskContext, TaskPlan, TaskStatus } from './types'
@@ -188,6 +189,22 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
               Revise Requirements
             </button>
           </div>
+        </div>
+      )}
+
+      {task.stage === 'implementation' && (
+        <div className="task-interview">
+          <ExecutePanel
+            projectId={projectId}
+            taskId={task.id}
+            onExecuted={() => {
+              // The "done" event only carries the Execution record, not the
+              // task — a successful run advances stage server-side, so
+              // reload the task to pick that up (and to no-op harmlessly on
+              // a failed run, where stage is unchanged).
+              getProjectTask(projectId, task.id).then(setTask).catch(() => undefined)
+            }}
+          />
         </div>
       )}
 
