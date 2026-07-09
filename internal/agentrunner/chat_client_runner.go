@@ -41,6 +41,15 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	return RunOutput{Content: content, ToolCall: toolCall}, err
 }
 
+// Execute implements AgentRunner. The wrapped chat.ChatClient has no tool
+// loop (see data/projects/llm-workbench/tasks/chatclient-tool-loop/), so
+// there is nothing here that could actually write code or run commands —
+// this returns ErrExecuteNotSupported immediately rather than pretending
+// to run.
+func (r *ChatClientRunner) Execute(_ context.Context, _ ExecuteInput, _ func(ExecuteEvent) error) (ExecuteOutput, error) {
+	return ExecuteOutput{}, ErrExecuteNotSupported
+}
+
 // CheckHealth implements AgentRunner.
 func (r *ChatClientRunner) CheckHealth(ctx context.Context) error {
 	return r.client.CheckHealth(ctx)

@@ -1,0 +1,276 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
+	"github.com/timmersuk/llm-workbench/internal/task"
+)
+
+// defaultExecutionExecutor is the agentRunners key handleStartExecution
+// falls back to when the request doesn't name one. Only claude-code
+// implements real Execute behavior in this milestone —
+// ChatClientRunner.Execute returns agentrunner.ErrExecuteNotSupported
+// until chatclient-tool-loop lands (see data/projects/llm-workbench/tasks/
+// chatclient-tool-loop/) — so this is also, for now, the only executor
+// worth selecting at all.
+const defaultExecutionExecutor = "claude-code"
+
+// executionStartRequest is the request body for handleStartExecution.
+type executionStartRequest struct {
+	Model    string `json:"model"`
+	Executor string `json:"executor,omitempty"`
+}
+
+// executeStreamEvent is the SSE wire shape for a running execution — a
+// discriminated union (Type names which of the optional fields is set),
+// unlike chatStreamEvent's flat "at most one field ever set" shape
+// (chat.go), because a single execution run legitimately produces many
+// tool_call/tool_result events, not at most one tool call per turn.
+type executeStreamEvent struct {
+	Type string `json:"type"` // "text" | "tool_call" | "tool_result" | "error" | "done"
+
+	Content string `json:"content,omitempty"`
+
+	ToolName  string `json:"tool_name,omitempty"`
+	ToolInput string `json:"tool_input,omitempty"`
+
+	ToolResult string `json:"tool_result,omitempty"`
+	IsError    bool   `json:"is_error,omitempty"`
+
+	Error string `json:"error,omitempty"`
+
+	// Execution is set only on the final "done" event, so the frontend
+	// doesn't need a second round-trip to learn the outcome.
+	Execution *task.Execution `json:"execution,omitempty"`
+}
+
+// executeEventToWire maps one agentrunner.ExecuteEvent onto its SSE wire
+// shape.
+func executeEventToWire(ev agentrunner.ExecuteEvent) executeStreamEvent {
+	return executeStreamEvent{
+		Type: ev.Kind, Content: ev.Text,
+		ToolName: ev.ToolName, ToolInput: ev.ToolInput,
+		ToolResult: ev.ToolResult, IsError: ev.IsError,
+	}
+}
+
+// handleStartExecution runs one autonomous Implementation-stage execution
+// attempt to completion: resolves an isolated git worktree
+// (agentrunner.ResolveExecutionWorkspace) so the run can never touch the
+// project's shared checkout, streams the agent's live tool activity as SSE,
+// then persists a structured task.Execution (store.RecordExecution) —
+// which itself advances the task's stage to review on success. 409s if the
+// task isn't currently at StageImplementation.
+//
+// No restart-resume logic: if the server process exits mid-run, nothing
+// survives to write a record — the worktree/branch is left for manual
+// inspection and Stage simply never advances (docs/milestones/milestone5.md's
+// resolved decisions).
+func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req executionStartRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		executorKey := req.Executor
+		if executorKey == "" {
+			executorKey = defaultExecutionExecutor
+		}
+		runner, ok := agentRunners[executorKey]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+			return
+		}
+
+		projectId := r.PathValue("projectId")
+		taskId := r.PathValue("taskId")
+
+		proj, err := projects.Get(projectId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		root, err := projects.TasksRoot(projectId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		store := factory(root)
+
+		t, err := store.Get(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		if t.Stage != task.StageImplementation {
+			http.Error(w, fmt.Sprintf("task is not in implementation stage (currently %q)", t.Stage), http.StatusConflict)
+			return
+		}
+
+		plan, err := store.GetPlan(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		executionID, err := store.NextExecutionID(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+
+		writeEvent := func(ev executeStreamEvent) {
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+
+		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), reposRoot, proj.Repositories, taskId, executionID)
+		if wsErr != nil {
+			writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("resolving execution workspace: %v", wsErr)})
+			return
+		}
+
+		systemPrompt := buildExecutionPrompt(t, plan)
+
+		start := time.Now()
+		out, execErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
+			SessionKey:   taskId + ":execute",
+			Workspace:    ws.Path,
+			SystemPrompt: systemPrompt,
+			Model:        req.Model,
+		}, func(ev agentrunner.ExecuteEvent) error {
+			writeEvent(executeEventToWire(ev))
+			return nil
+		})
+
+		// Best-effort: the execution itself already succeeded or failed
+		// independently of whether this inspection works, so a failure here
+		// is logged, not fatal to the response.
+		commits, artifacts, collectErr := agentrunner.CollectExecutionOutput(context.Background(), ws)
+		if collectErr != nil {
+			logrus.WithError(collectErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Warn("collecting execution output")
+		}
+
+		durationSeconds := out.DurationSeconds
+		if durationSeconds == 0 {
+			durationSeconds = time.Since(start).Seconds()
+		}
+
+		exec := task.Execution{
+			ExecutionID: executionID,
+			Executor:    task.ExecutionExecutor{Type: executorKey},
+			Input:       task.ExecutionInput{PlanRef: "plan.yaml"},
+			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits},
+			Metrics: task.ExecutionMetrics{
+				DurationSeconds: durationSeconds,
+				TokensUsed:      out.TokensUsed,
+				CostEstimate:    out.CostEstimate,
+			},
+		}
+		classifyExecutionOutcome(&exec, execErr, r.Context())
+
+		recorded, recordErr := store.RecordExecution(taskId, exec)
+		if recordErr != nil {
+			logrus.WithError(recordErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Error("persisting execution record")
+			writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("saving execution record: %v", recordErr)})
+			return
+		}
+
+		writeEvent(executeStreamEvent{Type: "done", Execution: &recorded})
+	}
+}
+
+// classifyExecutionOutcome sets exec.Status/Failure from err, the
+// deterministic classifier the resolved milestone-5 decisions call for
+// (wrapper code, not agent self-reporting): no error -> success; ctx
+// already done (deadline exceeded, or canceled — which covers a
+// human-triggered Stop the same way, since context.Context can't tell
+// those apart) -> failure.type "resource"; any other error -> failure.type
+// "execution". "specification"/"infeasible"/"quality" are deliberately
+// never set here — those are judgment calls left for a human to make
+// later, not something wrapper code can detect mechanically.
+func classifyExecutionOutcome(exec *task.Execution, err error, ctx context.Context) {
+	if err == nil {
+		exec.Status = task.ExecutionStatusSuccess
+		return
+	}
+
+	failureType := task.FailureTypeExecution
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+		failureType = task.FailureTypeResource
+	}
+	exec.Status = task.ExecutionStatusFailure
+	exec.Failure = &task.ExecutionFailure{Type: failureType, Message: err.Error()}
+}
+
+// handleListExecutions returns every recorded execution attempt for a
+// task, oldest first — used by the frontend's Execute panel to show past
+// attempts' status without reaching into Review-stage diff territory
+// (out of scope for this milestone).
+func handleListExecutions(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		if !ok {
+			return
+		}
+
+		executions, err := store.ListExecutions(r.PathValue("taskId"))
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string][]task.Execution{"executions": executions})
+	}
+}
+
+// buildExecutionPrompt seeds an execution's system prompt with the task's
+// own fields and its finalized plan — the Implementation-stage analog of
+// buildStagePrompt (stage_conversation.go), but for an autonomous run
+// rather than an interview: explicit instructions to implement the plan,
+// verify it, and commit, since there is no human turn-by-turn to steer it.
+func buildExecutionPrompt(t task.Task, plan task.Plan) string {
+	var b strings.Builder
+
+	b.WriteString("You are executing an already-approved implementation plan for this task, autonomously and to completion. You are already on an isolated git branch inside the target repository — implement the plan, run relevant tests, and commit your work as you go. Do not ask questions; make reasonable decisions and proceed.\n\n")
+
+	fmt.Fprintf(&b, "## Task\nObjective: %s\n", t.Objective)
+	if len(t.Constraints) > 0 {
+		fmt.Fprintf(&b, "Constraints:\n- %s\n", strings.Join(t.Constraints, "\n- "))
+	}
+	if len(t.SuccessCriteria) > 0 {
+		fmt.Fprintf(&b, "Success criteria:\n- %s\n", strings.Join(t.SuccessCriteria, "\n- "))
+	}
+
+	fmt.Fprintf(&b, "\n## Plan\nApproach: %s\n", plan.Approach)
+	if len(plan.Steps) > 0 {
+		fmt.Fprintf(&b, "Steps:\n- %s\n", strings.Join(plan.Steps, "\n- "))
+	}
+	if len(plan.Risks) > 0 {
+		fmt.Fprintf(&b, "Known risks:\n- %s\n", strings.Join(plan.Risks, "\n- "))
+	}
+
+	return b.String()
+}

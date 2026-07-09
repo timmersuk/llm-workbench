@@ -542,3 +542,22 @@ td button {
   opacity: 0.85;
 }
 
+.execution-history {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.execution-status-success {
+  color: var(--accent);
+}
+
+.execution-status-failure,
+.execution-status-partial {
+  color: var(--error);
+}
+

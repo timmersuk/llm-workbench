@@ -46,6 +46,10 @@ type TaskStore interface {
 	FinalizePlan(id string, plan task.Plan) (task.Task, error)
 	ReviseToRequirements(id string) (task.Task, error)
 	ReviseToPlanning(id string) (task.Task, error)
+
+	NextExecutionID(id string) (string, error)
+	RecordExecution(id string, exec task.Execution) (task.Execution, error)
+	ListExecutions(id string) ([]task.Execution, error)
 }
 
 // KnowledgeReader resolves a knowledge concept id (e.g.
@@ -100,6 +104,8 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeRead
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", handleFinalizePlan(projects, taskStores, agentRunners))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/revise", handleReviseRequirements(projects, taskStores))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", handleRevisePlan(projects, taskStores))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", handleStartExecution(projects, taskStores, agentRunners, reposRoot))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", handleListExecutions(projects, taskStores))
 
 	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(agentRunners, reposRoot))
 	mux.HandleFunc("POST /api/v1/chat/sessions/close", handleCloseChatSession(agentRunners))

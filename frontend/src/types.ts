@@ -205,3 +205,72 @@ export interface Conversation {
   stage: string
   messages: ConversationMessage[] | null
 }
+
+// ExecutionExecutor/ExecutionInput/ExecutionOutput/ExecutionMetrics/
+// ExecutionFailure/Execution mirror internal/task/execution.go — one
+// Implementation-stage execution attempt, stored as
+// executions/<execution_id>.yaml. tokens_used/cost_estimate are 0 when the
+// executor didn't report them, not fabricated.
+export interface ExecutionExecutor {
+  type: string
+  version: string
+}
+
+export interface ExecutionInput {
+  plan_ref: string
+  context_refs: string[]
+}
+
+export interface ExecutionOutput {
+  artifacts: string[]
+  git_branch: string
+  commits: string[]
+}
+
+export interface ExecutionMetrics {
+  duration_seconds: number
+  tokens_used: number
+  cost_estimate: number
+}
+
+export interface ExecutionFailure {
+  type: string
+  message: string
+}
+
+export interface Execution {
+  execution_id: string
+  task_id: string
+  executor: ExecutionExecutor
+  input: ExecutionInput
+  output: ExecutionOutput
+  metrics: ExecutionMetrics
+  status: 'success' | 'failure' | 'partial'
+  failure?: ExecutionFailure
+  created_at: string
+}
+
+// ExecutionsListResult mirrors handleListExecutions' response
+// (internal/api/execution.go) — every recorded attempt for a task, oldest
+// first. executions is nullable for the same reason Conversation.messages
+// is: a task with no attempts yet has no executions/ directory at all.
+export interface ExecutionsListResult {
+  executions: Execution[] | null
+}
+
+// ExecuteStreamEvent mirrors internal/api/execution.go's
+// executeStreamEvent — unlike ChatStreamEvent's flat "at most one field
+// set" shape, this is a discriminated union on `type`: a single execution
+// run can produce many tool_call/tool_result events, not at most one tool
+// call per turn. `execution` is set only on the final "done" event, so the
+// frontend learns the outcome without a second request.
+export interface ExecuteStreamEvent {
+  type: 'text' | 'tool_call' | 'tool_result' | 'error' | 'done'
+  content?: string
+  tool_name?: string
+  tool_input?: string
+  tool_result?: string
+  is_error?: boolean
+  error?: string
+  execution?: Execution
+}

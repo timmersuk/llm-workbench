@@ -166,6 +166,164 @@ func TestStreamDeltaText_IgnoresNonDeltaEvents(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestProcessExecuteMessage_AccumulatesText(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "implementing... "}},
+	}
+	done, err := processExecuteMessage(msg, &content, &out, nil)
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Equal(t, "implementing... ", content.String())
+}
+
+// TestProcessExecuteMessage_EmitsEveryToolCall locks in the behavior that
+// makes Execute different from Run's processMessage: every ToolUseBlock
+// becomes a tool_call event, not just one matching a registered Draft
+// tool — Execute has no Draft tool at all, and dropping Write/Edit/Bash
+// calls would defeat the point of streaming a live execution trace.
+func TestProcessExecuteMessage_EmitsEveryToolCall(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+	var events []ExecuteEvent
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{
+			&claudecode.ToolUseBlock{Name: "Write", Input: map[string]any{"path": "a.go"}},
+			&claudecode.ToolUseBlock{Name: "Bash", Input: map[string]any{"command": "go test ./..."}},
+		},
+	}
+	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
+		events = append(events, e)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.Len(t, events, 2)
+	assert.Equal(t, "tool_call", events[0].Kind)
+	assert.Equal(t, "Write", events[0].ToolName)
+	assert.JSONEq(t, `{"path":"a.go"}`, events[0].ToolInput)
+	assert.Equal(t, "Bash", events[1].ToolName)
+}
+
+func TestProcessExecuteMessage_EmitsToolResultFromUserMessage(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+	var events []ExecuteEvent
+
+	isError := true
+	msg := &claudecode.UserMessage{
+		Content: []claudecode.ContentBlock{
+			&claudecode.ToolResultBlock{ToolUseID: "call-1", Content: "test failed: exit status 1", IsError: &isError},
+		},
+	}
+	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
+		events = append(events, e)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.Len(t, events, 1)
+	assert.Equal(t, "tool_result", events[0].Kind)
+	assert.Equal(t, "test failed: exit status 1", events[0].ToolResult)
+	assert.True(t, events[0].IsError)
+}
+
+func TestProcessExecuteMessage_ToolResultDefaultsNotErrorWhenNil(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+	var events []ExecuteEvent
+
+	msg := &claudecode.UserMessage{
+		Content: []claudecode.ContentBlock{
+			&claudecode.ToolResultBlock{ToolUseID: "call-1", Content: "ok"},
+		},
+	}
+	_, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
+		events = append(events, e)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.False(t, events[0].IsError)
+}
+
+func TestProcessExecuteMessage_ResultMessagePopulatesRealMetrics(t *testing.T) {
+	var content strings.Builder
+	content.WriteString("done implementing")
+	var out ExecuteOutput
+
+	cost := 0.0421
+	usage := map[string]any{"input_tokens": float64(120), "output_tokens": float64(45)}
+	msg := &claudecode.ResultMessage{
+		DurationMs:   2500,
+		NumTurns:     7,
+		TotalCostUSD: &cost,
+		Usage:        &usage,
+	}
+	done, err := processExecuteMessage(msg, &content, &out, nil)
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.Equal(t, "done implementing", out.Content)
+	assert.Equal(t, 2.5, out.DurationSeconds)
+	assert.Equal(t, 7, out.NumTurns)
+	assert.Equal(t, 0.0421, out.CostEstimate)
+	assert.Equal(t, 165, out.TokensUsed)
+}
+
+func TestProcessExecuteMessage_ResultMessageLeavesMetricsZeroWhenUnavailable(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+
+	done, err := processExecuteMessage(&claudecode.ResultMessage{DurationMs: 1000}, &content, &out, nil)
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.Equal(t, 0, out.TokensUsed)
+	assert.Equal(t, 0.0, out.CostEstimate)
+}
+
+func TestProcessExecuteMessage_ResultMessageReportsError(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+
+	done, err := processExecuteMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, &content, &out, nil)
+	assert.True(t, done)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+}
+
+func TestProcessExecuteMessage_StreamDeltaEmitsTextEvent(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+	var events []ExecuteEvent
+
+	msg := &claudecode.StreamEvent{Event: map[string]any{
+		"type":  claudecode.StreamEventTypeContentBlockDelta,
+		"delta": map[string]any{"text": "chunk"},
+	}}
+	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
+		events = append(events, e)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Equal(t, []ExecuteEvent{{Kind: "text", Text: "chunk"}}, events)
+}
+
+func TestSumUsageTokens_NilMapReturnsZero(t *testing.T) {
+	assert.Equal(t, 0, sumUsageTokens(nil))
+}
+
+func TestToolResultText_PassesThroughStrings(t *testing.T) {
+	assert.Equal(t, "hello", toolResultText("hello"))
+}
+
+func TestToolResultText_EncodesStructuredContentAsJSON(t *testing.T) {
+	assert.JSONEq(t, `{"ok":true}`, toolResultText(map[string]any{"ok": true}))
+}
+
 func TestClaudeRunner_CheckHealth_FailsWhenReposRootEmpty(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, "")
 	err := r.CheckHealth(context.Background())
