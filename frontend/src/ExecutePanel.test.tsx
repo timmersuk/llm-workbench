@@ -26,6 +26,7 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
 
 beforeEach(() => {
   vi.mocked(api.listExecutions).mockResolvedValue({ executions: [] })
+  vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
 })
 
 describe('ExecutePanel — past executions', () => {

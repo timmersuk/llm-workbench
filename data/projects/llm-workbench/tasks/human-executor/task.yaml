@@ -1,0 +1,38 @@
+id: human-executor
+title: Decide what (if anything) the `human` executor type does
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-09T00:00:00Z
+updated_at: 2026-07-09T00:00:00Z
+
+objective: >-
+  execution.yaml's executor.type enum (docs/task schema v0.md) includes
+  `human` alongside `claude-code` and `codex`, but nothing in the system
+  does anything with it — no UI, no API handler, no schema validation
+  beyond the enum listing it. Milestone 5 (docs/milestones/done/milestone5.md)
+  deliberately kept this schema-only and deferred: decide whether a human
+  executor needs any actual support (e.g. a manual status/metrics entry
+  form so a human-performed implementation attempt can still be recorded
+  as an Execution, consistent with "no hidden state") or whether it should
+  stay a documented-but-unimplemented enum value indefinitely, revisited
+  only when someone actually asks for it.
+
+constraints:
+  - "Do not build speculative UI/API for this before a real use case names what it needs to record."
+
+assumptions:
+  - "Open question: is a human executor ever actually invoked through this system, or is it just documentation for a workflow that happens entirely outside the tool (a human does the work, then someone hand-writes an execution.yaml, if even that)?"
+
+success_criteria:
+  - "Either a concrete, scoped implementation plan exists for what a human executor needs, or an explicit decision is recorded that the enum value stays schema-only with no further action expected."
+
+references:
+  knowledge: []
+  repo:
+    - docs/task schema v0.md
+    - docs/milestones/done/milestone5.md
+    - internal/task/execution.go
