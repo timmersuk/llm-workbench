@@ -199,7 +199,17 @@ describe('GrillMePanel — auto-starting an empty conversation', () => {
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
-    await waitFor(() => expect(api.startStageConversation).toHaveBeenCalledWith(projectId, taskId, 'requirements', expect.anything(), 'claude-code', expect.anything()))
+    await waitFor(() =>
+      expect(api.startStageConversation).toHaveBeenCalledWith(
+        projectId,
+        taskId,
+        'requirements',
+        expect.anything(),
+        'claude-code',
+        expect.anything(),
+        expect.anything(),
+      ),
+    )
   })
 
   it('does not auto-start when the conversation already has messages', async () => {
@@ -233,7 +243,8 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     await user.type(screen.getByPlaceholderText('Reply...'), 'Hello there')
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
-    expect(screen.getByRole('button', { name: 'Sending...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Reply...')).toBeDisabled()
 
     act(() => deliver({ content: 'Hel' }))
     expect(screen.getByText(/Hel$/)).toBeInTheDocument()
@@ -258,7 +269,16 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Hello there{Enter}')
 
-    expect(api.postStageMessage).toHaveBeenCalledWith(projectId, taskId, 'requirements', 'Hello there', expect.anything(), expect.anything(), expect.anything())
+    expect(api.postStageMessage).toHaveBeenCalledWith(
+      projectId,
+      taskId,
+      'requirements',
+      'Hello there',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    )
     expect(screen.getByPlaceholderText('Reply...')).toHaveValue('')
   })
 
@@ -276,7 +296,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     expect(api.postStageMessage).not.toHaveBeenCalled()
   })
 
-  it('while a reply is still streaming, Enter inserts a newline instead of silently swallowing the keystroke', async () => {
+  it('while a reply is still streaming, the input is blocked entirely rather than accepting a second send', async () => {
     const user = userEvent.setup()
     let finishFirstSend!: () => void
     vi.mocked(api.postStageMessage).mockImplementation(
@@ -291,14 +311,15 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
 
     const textarea = screen.getByPlaceholderText('Reply...')
     await user.type(textarea, 'first message{Enter}')
-    expect(await screen.findByRole('button', { name: 'Sending...' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeInTheDocument()
     expect(api.postStageMessage).toHaveBeenCalledTimes(1)
 
-    // A second Enter while still sending must not be silently discarded —
-    // it should behave like a plain newline, not disappear with nothing
-    // sent and nothing shown.
+    // The textarea is disabled for the whole in-flight send — typing (or
+    // pressing Enter) while streaming must have no effect at all, not
+    // fall back to inserting a newline.
+    expect(textarea).toBeDisabled()
     await user.type(textarea, 'typed while busy{Enter}more text')
-    expect(textarea).toHaveValue('typed while busy\nmore text')
+    expect(textarea).toHaveValue('')
     expect(api.postStageMessage).toHaveBeenCalledTimes(1)
 
     await act(async () => finishFirstSend())
@@ -398,6 +419,7 @@ describe('GrillMePanel — message actions', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
+        expect.anything(),
       ),
     )
   })
@@ -429,6 +451,7 @@ describe('GrillMePanel — message actions', () => {
         'requirements',
         0,
         'first question',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
         expect.anything(),
