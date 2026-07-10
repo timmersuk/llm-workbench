@@ -195,3 +195,44 @@ implications, regardless of framework choice:
 - Options: (a) disable thinking at the TEMPLATE level in LM Studio and
   rerun the A/B; (b) drop temperature to 0.6; (c) conclude the spike on
   existing evidence, noting model-reliability dominates framework choice.
+
+## Thinking-disabled round (template-level, temp 0.6, repeat 1.0, presence 1.5)
+
+- Thinking OFF confirmed working (reasoning_content empty, 0 reasoning
+  tokens). Structured tool calls PARSE again — the XML-in-thinking failure
+  mode is eliminated because there is no thinking channel to hide in.
+- NEW pathology signature confirmed: the model duplicates the same tool
+  call N times in one response (4+ identical read_file calls). Bounded
+  only by max_tokens; tamed (not cured) by a "call each tool at most
+  once" system-prompt instruction. ENGINE MUST dedupe identical tool
+  calls per turn and cap calls per turn.
+- Both framework probes streamed NOTHING in this configuration and hung/
+  timed out — because neither probe (nor internal/chat!) can set
+  max_tokens, the unbounded duplicate-call generation never finished.
+  chat.CompletionRequest needs a MaxTokens field before ANY further live
+  probing (also needed for the engine regardless — already noted).
+- Streaming + thinking-off + max_tokens=300 via raw curl: tool-call
+  delta chunks stream correctly (3 chunks: id/name, args, finish).
+
+## Spike verdict (draft, for ADR 0011)
+
+All five criteria now have evidence:
+1. Client fidelity: both wrappable; eino ~150-line adapter vs dive ~380
+   (Anthropic-shape translation). eino better.
+2. Shared-engine fit: both drove correct multi-step grounded loops when
+   the model cooperated (eino morning run; dive 2x post-reload). Both
+   need config accommodations; neither disqualified.
+3. MCP: eino has eino-ext component; dive has none client-side. eino.
+4. Output parity: blocked in internal/chat for all candidates equally
+   (no usage, no max_tokens, no reasoning on non-streaming Message).
+5. Weight: eino 12.2k stars vs dive 128 + wonton dep.
+
+Meta-finding that dominates: local-model misbehavior (spirals, duplicate
+calls, tool-calls-as-text, template sensitivity) is the engine's real
+adversary. The guards needed (per-turn dedupe + caps, max_tokens,
+timeouts, spiral detection, health probes, template-quirk tolerance) are
+custom logic NO framework provides — they live in our tools/loop layer
+either way. This weakens the case for taking on a framework dependency
+for the loop itself (small, well-understood) and strengthens hand-rolled
+with eino as the fallback if orchestration needs grow. ADR to argue this
+properly.
