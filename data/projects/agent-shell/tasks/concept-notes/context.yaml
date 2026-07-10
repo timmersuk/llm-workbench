@@ -1,0 +1,66 @@
+summary: >-
+  A separate, much lighter-weight sibling to llm-workbench: a session
+  shell that freely picks between Claude, Codex, or a homespun Go agent
+  runner, but deliberately skips llm-workbench's Task/Project/stage/
+  workflow-engine automation — closer to a manual, single-session tool
+  than a control plane.
+
+background: >-
+  Arose from a 2026-07-10 rhetorical question comparing llm-workbench to
+  github.com/heyhuynhgiabuu/openpi (an Electron/TypeScript desktop shell
+  wrapping a single fixed agent, "Pi" — no multi-agent selection despite
+  a model picker). Investigation found llm-workbench already solves the
+  hard part of that comparison: a Go-native, narrow `AgentRunner`
+  interface (internal/agentrunner/runner.go) with three live
+  implementations (ClaudeRunner, CodexRunner, ChatClientRunner/"local"),
+  selected per-request via an `Executor` field and filtered to only
+  live-healthy options by internal/api/agent_executors.go. That
+  multi-executor core is reusable, proven infrastructure — not something
+  a leaner tool would need to redo.
+
+  What llm-workbench deliberately is NOT, though, is minimal: it's a full
+  workflow control plane (Task/Project/Knowledge domain objects, an
+  explicit Requirements->Architecture->Planning->Implementation->Review->
+  Completion stage machine, review workflows, a knowledge base). That's
+  the right shape for llm-workbench's actual goal (structured, versioned,
+  inspectable work coordination) but it's overhead for someone who just
+  wants to open a session, pick an agent, and work — no stages, no
+  review gate, no durable task bookkeeping. That gap is the seed of this
+  concept: same proven multi-agent core, deliberately less automation
+  wrapped around it.
+
+files:
+  - internal/agentrunner/runner.go
+  - internal/agentrunner/claude_runner.go
+  - internal/agentrunner/codex_runner.go
+  - internal/agentrunner/chat_client_runner.go
+  - internal/api/agent_executors.go
+  - internal/api/stage_conversation.go
+  - internal/api/chat.go
+  - docs/provider abstraction.md
+  - docs/milestones/milestone8.md
+
+detail: |
+  Not designed. Recorded so the idea isn't lost, and so a future session
+  doesn't have to re-derive that llm-workbench's executor abstraction
+  already generalizes cleanly to this use case.
+
+  Open threads to resolve if this is ever picked up:
+  - Reuse internal/agentrunner directly (extract as a module, or vendor
+    the pattern) vs. write a fresh, smaller implementation inspired by it.
+  - What shell fits a "less automated" tool best — CLI, TUI, or a minimal
+    single-page UI — given llm-workbench itself is a web frontend over a
+    stage-oriented API.
+  - What "less automated" concretely means: no stages at all? No task
+    persistence? Keep Projects (context/constraints/knowledge scoping)
+    but drop everything downstream of picking an agent and sending a
+    message?
+
+verification: []
+
+open_questions:
+  - Is this worth building at all, or is it fully served by using
+    llm-workbench's `local`/`claude-code`/`codex` executors directly
+    without the surrounding workflow (e.g. via its chat API)?
+  - Should this live as a new standalone repo, or as a thin alternate
+    frontend/binary inside llm-workbench that reuses internal/agentrunner?

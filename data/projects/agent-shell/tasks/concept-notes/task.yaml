@@ -1,0 +1,26 @@
+id: concept-notes
+title: "Concept: minimal multi-agent session shell (less automated than llm-workbench)"
+project: agent-shell
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-10T00:00:00Z
+updated_at: 2026-07-10T00:00:00Z
+
+objective: >-
+  Preserve the idea of a lighter-weight, less workflow-automated Go tool
+  that lets a session freely pick between backing agents (Claude, Codex,
+  or a homespun runner) for potential future work. Not scoped, not
+  started — this task exists to hold the context, not to track active
+  progress.
+
+constraints: []
+assumptions: []
+success_criteria: []
+
+references:
+  knowledge: []
+  repo:
+    - github.com/timmersuk/llm-workbench
