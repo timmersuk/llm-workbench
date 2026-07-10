@@ -118,6 +118,32 @@ stars vs dive ~128 remains the maintenance-risk gap.
   `<system-reminder>` priming sentence to every system prompt — no
   opt-out short of stripping it in the adapter.
 
+## Post-reload A/B series (2026-07-10 afternoon, presence_penalty=1.5, temp=1.0)
+
+Six runs after model reload + Qwen-recommended sampling reconfig:
+
+| run | structured tool calls | outcome |
+|---|---|---|
+| eino #1 | 0 | model wrote `<tool_call>` XML inside its THINKING block; LM Studio can only parse tool calls from the content channel; run ended unanswered (39.7s) |
+| dive #1 | 2 | ✅ clean: grep → read_file → correct grounded 5-method answer (53.9s) |
+| eino #2 | 0 | same XML-in-thinking failure (20.4s), plus confabulated "previous search" |
+| eino #3 | 0 | answered from priors without tools (34.5s) |
+| dive #2 | 0 | reasoning spiral to 5m timeout — EVEN WITH presence_penalty=1.5 |
+| eino #4 | 0 | answered without tools (11.5s) |
+
+Wire-level diff between the two adapters' requests is negligible (verified
+by dumping both: same tool schemas modulo `additionalProperties` and key
+order; dive appends one priming sentence). Conclusion: **the variance is
+the model, not the frameworks.** qwen3.6's thinking mode emits tool-call
+XML inside reasoning (unparseable), answers from priors, or spirals —
+stochastically, under the model card's own recommended sampling. Both
+frameworks drove correct loops when the model cooperated (eino in the
+morning run, dive in dive #1).
+
+Next probe step: `/no_think` (or `chat_template_kwargs.enable_thinking:
+false`) — non-thinking mode should stabilize structured tool emission;
+reasoning-fidelity criterion is already proven from the healthy-state runs.
+
 ## Endpoint instability (cross-cutting finding)
 
 The LM Studio endpoint oscillates between healthy (correct tool calls,
