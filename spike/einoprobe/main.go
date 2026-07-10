@@ -68,13 +68,16 @@ func makeTools(root string) ([]tool.BaseTool, error) {
 	readFile, err := utils.InferTool("read_file",
 		"Read a file from the repository. Returns its contents as text.",
 		func(_ context.Context, in *readFileArgs) (string, error) {
+			// Return errors as text: eino treats a Go error from a tool as
+			// fatal to the whole run (NodeRunError), unlike dive's is_error
+			// tool results which let the model self-correct.
 			p, err := resolveInWorkspace(root, in.Path)
 			if err != nil {
-				return "", err
+				return "ERROR: " + err.Error(), nil
 			}
 			b, err := os.ReadFile(p)
 			if err != nil {
-				return "", err
+				return "ERROR: " + err.Error(), nil
 			}
 			return truncate(string(b)), nil
 		})
@@ -178,7 +181,7 @@ func main() {
 	agent, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel:      base,
 		ToolsConfig:           compose.ToolsNodeConfig{Tools: tools},
-		MaxStep:               12,
+		MaxStep:               40, // graph node-steps, ~2 per model turn — NOT turns; 12 exhausted fast with thorough models (and exhaustion is a hard GraphRunError, discarding all progress)
 		StreamToolCallChecker: reasoningAwareToolCallChecker,
 	})
 	if err != nil {

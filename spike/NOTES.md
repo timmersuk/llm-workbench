@@ -266,3 +266,31 @@ Engine implication: the loop must handle "model announced intent but
 stopped" — either a bounded auto-continue nudge or surfacing a clear
 partial-result state. (Matches the turn-exhaustion design from the
 grilling: distinct terminal outcome, partial results preserved.)
+
+## Non-qwen control: openai/gpt-oss-20b
+
+Raw probe: single clean tool call, terse reasoning (7 tokens). WIRE
+FINDING: LM Studio surfaces gpt-oss reasoning under `reasoning`, NOT
+`reasoning_content` — internal/chat parses only the latter, so reasoning
+is silently dropped for this model family. The client must parse both
+keys (engine requirement, framework-independent).
+
+A/B series: **dive 3/3 clean** (~35s each, first try). eino 0/3 then
+3/3 after two probe fixes that exposed real framework semantics:
+
+1. **Tool errors are fatal in eino by default** — a Go error from an
+   InvokableTool kills the whole run (NodeRunError). dive's ToolResult
+   carries is_error back to the model, which self-corrects (gpt-oss
+   probed a speculative path `agentexecutor.go?maybe?`; dive recovered,
+   eino died). Fix: eino tools must return errors as result text.
+2. **eino MaxStep counts graph node-steps (~2 per model turn), not
+   turns** — MaxStep 12 ≈ 6 turns, exhausted by gpt-oss's thorough
+   grep/read habits, and **exhaustion is a hard GraphRunError discarding
+   all progress** — directly violating the milestone's turn-exhaustion
+   design (partial results preserved). Hand-rolled or wrapped, the
+   engine must own this semantics.
+
+gpt-oss-20b is the most reliable validation target tested (6/6 across
+frameworks once configured; ~30s/run) and de-risks the "building against
+qweny behaviour" concern: both adapters + loops work unchanged against a
+non-qwen family, with only the reasoning-key naming differing on the wire.
