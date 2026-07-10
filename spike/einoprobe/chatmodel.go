@@ -42,7 +42,17 @@ func (m *wbChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChat
 			if err != nil {
 				return nil, fmt.Errorf("tool %s: %w", ti.Name, err)
 			}
-			params = b
+			// Re-marshal into canonical key order (type first) — eino's
+			// jsonschema marshals "type" last, and templates that inject
+			// tool JSON verbatim may destabilize models trained on the
+			// canonical ordering. Diagnostic for the eino-vs-dive gap.
+			var full map[string]json.RawMessage
+			if err := json.Unmarshal(b, &full); err != nil {
+				return nil, fmt.Errorf("tool %s: %w", ti.Name, err)
+			}
+			ordered := fmt.Sprintf(`{"type":"object","required":%s,"properties":%s}`,
+				string(full["required"]), string(full["properties"]))
+			params = json.RawMessage(ordered)
 		}
 		converted = append(converted, chat.Tool{
 			Type:     "function",

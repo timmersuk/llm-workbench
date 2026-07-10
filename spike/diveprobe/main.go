@@ -129,7 +129,7 @@ func main() {
 
 	agent, err := dive.NewAgent(dive.AgentOptions{
 		Name:            "diveprobe",
-		SystemPrompt:    "You are a code exploration assistant. Use the read_file and grep_search tools to ground every answer in the repository's actual contents. Keep answers short.",
+		SystemPrompt:    "/no_think You are a code exploration assistant. Use the read_file and grep_search tools to ground every answer in the repository's actual contents. Keep answers short.",
 		Model:           newWBLLM(client, modelName),
 		Tools:           makeTools(root),
 		ResponseTimeout: 5 * time.Minute,

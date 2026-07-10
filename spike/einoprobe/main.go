@@ -195,7 +195,7 @@ func main() {
 	start := time.Now()
 
 	out, err := agent.Stream(ctx, []*schema.Message{
-		schema.SystemMessage("You are a code exploration assistant. Use the read_file and grep_search tools to ground every answer in the repository's actual contents. Keep answers short."),
+		schema.SystemMessage("/no_think You are a code exploration assistant. Use the read_file and grep_search tools to ground every answer in the repository's actual contents. Keep answers short."),
 		schema.UserMessage(question),
 	})
 	if err != nil {

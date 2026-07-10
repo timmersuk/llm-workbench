@@ -165,3 +165,33 @@ implications, regardless of framework choice:
 - Trivially passes criteria 1–2 by construction (it IS this repo's client).
 - The runaway-tool-call and tool_choice findings above apply to any
   implementation.
+
+## /no_think round (2026-07-10 late afternoon)
+
+- `/no_think` in the system prompt is NOT honored by LM Studio's current
+  chat template for this model — reasoning blocks still stream. Disabling
+  thinking needs the template-level `enable_thinking=false` or
+  `chat_template_kwargs` route instead.
+- dive: another clean run (2 structured calls, grounded answer, 32s).
+  Post-reload dive tally: 2 clean / 1 spiral / 1 killed.
+- eino: two more failures — XML-in-thinking again, then a degenerate
+  "definition of definition of" mini-spiral (post-reload tally 0/6).
+- Canonicalizing eino's tool-schema key order (type-first, matching
+  dive's) did not fix it, ruling out the last observable wire-level
+  difference. Remaining hypothesis: per-run stochastic behavior + a
+  template that parses tool calls only from the content channel, with
+  qwen3.6 thinking mode frequently emitting them into reasoning instead.
+- eino's react agent surfaced one design difference under failure: when
+  the model emits no structured call, eino returns whatever streamed
+  (including reasoning) and stops — dive's loop retries/timeouts. Both
+  behaviors are configurable; neither is disqualifying.
+
+## Status / next steps
+
+- Framework-architecture evidence is complete (criteria 1, 3, 5 resolved;
+  criterion 2 partially — both drove correct loops when the model
+  cooperated). Criterion 2's remaining question is fairness-blocked on a
+  stable endpoint, not on framework behavior.
+- Options: (a) disable thinking at the TEMPLATE level in LM Studio and
+  rerun the A/B; (b) drop temperature to 0.6; (c) conclude the spike on
+  existing evidence, noting model-reliability dominates framework choice.
