@@ -236,3 +236,20 @@ either way. This weakens the case for taking on a framework dependency
 for the loop itself (small, well-understood) and strengthens hand-rolled
 with eino as the fallback if orchestration needs grow. ADR to argue this
 properly.
+
+## New-model round: qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive
+
+Raw probe: exactly ONE tool call (no duplication), concise coherent
+reasoning, clean finish. Framework A/B, one run each:
+
+- dive: ✅ 3 structured calls (grep → grep → read runner.go), correct
+  grounded 5-method answer, 33.4s.
+- eino: ✅ grounded 5-method answer with reasoning referencing prior
+  reads, 49.3s. (einoprobe's "[tool call]" counter shows 0 because
+  react agent.Stream only surfaces the FINAL turn's stream — intermediate
+  tool turns need callbacks; logging artifact, not absence.)
+
+Confirms the spike's meta-finding A/B-style: swapping the model fixed
+both frameworks simultaneously. Model choice dominates framework choice
+for loop reliability. This finetune is a viable validation target for
+PR 2-4 engine work.
