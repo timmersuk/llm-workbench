@@ -253,3 +253,16 @@ Confirms the spike's meta-finding A/B-style: swapping the model fixed
 both frameworks simultaneously. Model choice dominates framework choice
 for loop reliability. This finetune is a viable validation target for
 PR 2-4 engine work.
+
+## hauhaucs repeats (3x alternating + initial round)
+
+Tally: eino 2/4, dive 3/4. Failures are the same two qwen-isms at lower
+frequency: (1) tool-call XML emitted as text mid-loop, (2) early stop —
+model narrates its next tool call ("Let me look for...") then ends the
+turn without calling. Both frameworks fail identically when the model
+does this. ~60-75% loop reliability vs base qwen3.6's ~15%.
+
+Engine implication: the loop must handle "model announced intent but
+stopped" — either a bounded auto-continue nudge or surfacing a clear
+partial-result state. (Matches the turn-exhaustion design from the
+grilling: distinct terminal outcome, partial results preserved.)
