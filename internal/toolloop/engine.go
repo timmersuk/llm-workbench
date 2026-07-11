@@ -31,8 +31,7 @@ func New(client completer) *Engine {
 // Config parameterizes one loop instantiation. Run and Execute differ only in
 // these values, per docs/adr/0009-shared-tool-loop-engine-for-run-and-execute.md.
 type Config struct {
-	Model        string
-	SystemPrompt string // prepended as a system message when the caller hasn't already
+	Model string
 	// Workspace is the resolved, confinement-checked root every tool operates
 	// within (ResolveWorkspace for Run, ResolveExecutionWorkspace for Execute).
 	Workspace string
