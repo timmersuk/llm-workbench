@@ -42,6 +42,7 @@ func main() {
 		fleetModels  = flag.String("models", "", "fleet: comma-separated key substrings to restrict the sweep (default: all tool-capable)")
 		fleetContext = flag.Int("fleet-context", 0, "fleet: context length to load each model at; 0 = inherit each model's saved LM Studio config (context + KV-cache quantization, which the REST API cannot set explicitly)")
 		loadTimeout  = flag.Duration("load-timeout", 10*time.Minute, "fleet: max time to wait for a single model to load")
+		modelTimeout = flag.Duration("model-timeout", 4*time.Minute, "fleet: max wall-clock to spend probing one model after it loads; exceeding it marks the model TOO SLOW and moves on")
 	)
 	flag.Parse()
 
@@ -58,7 +59,7 @@ func main() {
 		nat := newNativeClient(*baseURL, *apiKey, *loadTimeout)
 		fmt.Printf("modelprobe fleet — %s\n", *baseURL)
 		fmt.Printf("loop target: %s | grounding: answer must contain %q\n\n", *dir, truncateLabel(e, 60))
-		if err := runFleet(ctx, c, nat, splitCSV(*fleetModels), *dir, q, e, *runs, *maxTurns, *maxTokens, *fleetContext); err != nil {
+		if err := runFleet(ctx, c, nat, splitCSV(*fleetModels), *dir, q, e, *runs, *maxTurns, *maxTokens, *fleetContext, *modelTimeout); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}

@@ -11,25 +11,32 @@ import (
 // fleet mode build one of these per model, so they share identical probe
 // logic and only differ in how they render it.
 type modelReport struct {
-	model  string
-	wire   wireFindings
-	runs   []runResult
-	avgDur time.Duration
+	model    string
+	wire     wireFindings
+	runs     []runResult
+	avgDur   time.Duration
+	timedOut bool // the caller's watchdog fired before the probe finished
 }
 
 // probeModel runs the wire checks and the N-run loop against one already-
-// reachable model, aggregating everything into a modelReport.
+// reachable model, aggregating everything into a modelReport. If ctx carries
+// a deadline (a fleet-mode watchdog) that expires mid-probe, the in-flight
+// request is cancelled, remaining runs are skipped, and timedOut is set.
 func probeModel(ctx context.Context, c *client, model, dir, question, expect string, runs, maxTurns, maxTokens int, testToolChoice bool) modelReport {
 	rep := modelReport{model: model, wire: runWireChecks(ctx, c, model, maxTokens, testToolChoice)}
 	var total time.Duration
 	for i := 0; i < runs; i++ {
+		if ctx.Err() != nil {
+			break // watchdog fired between runs — stop rather than churn fast-failing requests
+		}
 		r := runLoop(ctx, c, model, dir, question, expect, maxTurns, maxTokens)
 		rep.runs = append(rep.runs, r)
 		total += r.dur
 	}
-	if runs > 0 {
-		rep.avgDur = total / time.Duration(runs)
+	if n := len(rep.runs); n > 0 {
+		rep.avgDur = total / time.Duration(n)
 	}
+	rep.timedOut = ctx.Err() != nil
 	return rep
 }
 
@@ -87,6 +94,8 @@ func (r modelReport) toolCallSupported() bool {
 func (r modelReport) verdict() string {
 	rate := r.reliability()
 	switch {
+	case r.timedOut:
+		return "TOO SLOW — exceeded probe time budget"
 	case !r.toolCallSupported():
 		return "UNUSABLE — no structured tool calls"
 	case rate >= 0.8:

@@ -164,7 +164,7 @@ type fleetRow struct {
 
 // runFleet sweeps all tool-capable downloaded models (optionally restricted to
 // an allowlist of key substrings) and prints a comparison matrix.
-func runFleet(ctx context.Context, oai *client, nat *nativeClient, allow []string, dir, question, expect string, runs, maxTurns, maxTokens, fleetContext int) error {
+func runFleet(ctx context.Context, oai *client, nat *nativeClient, allow []string, dir, question, expect string, runs, maxTurns, maxTokens, fleetContext int, modelTimeout time.Duration) error {
 	models, err := nat.listModels(ctx)
 	if err != nil {
 		return fmt.Errorf("list models: %w", err)
@@ -213,8 +213,17 @@ func runFleet(ctx context.Context, oai *client, nat *nativeClient, allow []strin
 			continue
 		}
 		fmt.Printf(" loaded in %.1fs, probing…", lr.LoadTimeSecs)
-		rep := probeModel(ctx, oai, m.Key, dir, question, expect, runs, maxTurns, maxTokens, false)
-		fmt.Printf(" %d/%d ok\n", rep.okCount(), len(rep.runs))
+		// Watchdog: bound the whole probe. If it fires, the in-flight request
+		// is cancelled and the model is marked TOO SLOW rather than stalling
+		// the sweep. Unload still runs under the outer ctx below.
+		probeCtx, cancel := context.WithTimeout(ctx, modelTimeout)
+		rep := probeModel(probeCtx, oai, m.Key, dir, question, expect, runs, maxTurns, maxTokens, false)
+		cancel()
+		if rep.timedOut {
+			fmt.Printf(" TOO SLOW (probe exceeded %s)\n", modelTimeout)
+		} else {
+			fmt.Printf(" %d/%d ok\n", rep.okCount(), len(rep.runs))
+		}
 		if err := nat.unload(ctx, lr.InstanceID); err != nil {
 			fmt.Printf("  (warn: could not unload %s: %v)\n", lr.InstanceID, err)
 		}
@@ -222,7 +231,7 @@ func runFleet(ctx context.Context, oai *client, nat *nativeClient, allow []strin
 	}
 
 	fmt.Println()
-	printMatrix(rows, runs)
+	printMatrix(rows)
 	return nil
 }
 
@@ -235,7 +244,7 @@ func matchesAny(key string, subs []string) bool {
 	return false
 }
 
-func printMatrix(rows []fleetRow, runs int) {
+func printMatrix(rows []fleetRow) {
 	const rowFmt = "  %-48s %-6s %-7s %-10s %-7s %-16s %s\n"
 	fmt.Println("FLEET RESULTS")
 	fmt.Printf(rowFmt, "MODEL", "PARAMS", "LOAD", "REASON-KEY", "RELIAB", "PATHOLOGIES", "VERDICT")
@@ -245,11 +254,13 @@ func printMatrix(rows []fleetRow, runs int) {
 				"LOAD FAILED: "+snippet([]byte(r.loadErr), 50))
 			continue
 		}
+		// Reliability is over runs actually attempted (fewer than requested
+		// if the watchdog cut the probe short).
 		fmt.Printf(rowFmt,
 			truncateLabel(r.key, 48), r.params,
 			fmt.Sprintf("%.1fs", r.loadSecs),
 			shortReasonKey(r.report.wire.reasoningKey),
-			fmt.Sprintf("%d/%d", r.report.okCount(), runs),
+			fmt.Sprintf("%d/%d", r.report.okCount(), len(r.report.runs)),
 			r.report.pathologyLabel(), r.report.verdict())
 	}
 }
