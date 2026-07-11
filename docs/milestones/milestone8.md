@@ -386,11 +386,14 @@ remaining scope.
 
 * ✅ **Closed (PR 4).** `Execute`'s Bash tool — `bash` landed cwd-confined
   to the execution worktree and wired into `toolloop.ExecutionTools()`, per
-  "What shipped (PR 4)" above.
+  "What shipped (PR 4)" above. Tracked at
+  `data/projects/llm-workbench/tasks/execute-bash-tool/` (status: complete).
 * ✅ **Closed (PR 4).** Retire
   `chat.ChatClient.StreamSessionTurn`/`SeedSessionHistory` — dead since PR 2
   (the runner owns its own history); removed from the interface and both
-  implementations, folded into the Bash PR as planned.
+  implementations, folded into the Bash PR as planned. Tracked at
+  `data/projects/llm-workbench/tasks/retire-session-turn-methods/` (status:
+  complete).
 * **`tool-output-caps-config`** — the deferred configuration mechanism
   for the fixed output caps PR 2 shipped, now also covering PR 3's
   write/edit confirmation strings. Tracked at
