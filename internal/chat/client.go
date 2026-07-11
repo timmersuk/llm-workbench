@@ -224,9 +224,16 @@ func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionR
 			toolCalls.add(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments)
 		}
 
+		// A given model populates exactly one reasoning key; prefer
+		// reasoning_content, fall back to reasoning (gpt-oss family), so the
+		// caller sees a single reasoning stream regardless of family.
+		reasoning := choice.Delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = choice.Delta.Reasoning
+		}
 		delta := Delta{
 			Content:          choice.Delta.Content,
-			ReasoningContent: choice.Delta.ReasoningContent,
+			ReasoningContent: reasoning,
 		}
 		if delta.Content != "" || delta.ReasoningContent != "" {
 			if err := onDelta(delta); err != nil {
