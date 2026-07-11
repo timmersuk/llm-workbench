@@ -154,17 +154,6 @@ func (c defaultModelCompleter) ListModels(ctx context.Context) ([]string, error)
 	return c.client.ListModels(ctx)
 }
 
-func (c defaultModelCompleter) StreamSessionTurn(ctx context.Context, sessionKey, systemPrompt, model, userMessage string, tools []chat.Tool, onDelta func(chat.Delta) error) (string, *chat.ToolCall, error) {
-	if model == "" {
-		model = c.model
-	}
-	return c.client.StreamSessionTurn(ctx, sessionKey, systemPrompt, model, userMessage, tools, onDelta)
-}
-
 func (c defaultModelCompleter) CloseSession(sessionKey string) {
 	c.client.CloseSession(sessionKey)
-}
-
-func (c defaultModelCompleter) SeedSessionHistory(sessionKey string, history []chat.Message) {
-	c.client.SeedSessionHistory(sessionKey, history)
 }

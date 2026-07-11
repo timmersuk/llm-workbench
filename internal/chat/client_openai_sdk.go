@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,9 +18,6 @@ import (
 type openaiSDKClient struct {
 	client  openai.Client
 	timeout time.Duration
-
-	sessionsMu sync.Mutex
-	sessions   map[string][]Message
 }
 
 // NewOpenAISDKClient returns a ChatClient speaking the OpenAI-compatible chat
@@ -37,9 +32,8 @@ func NewOpenAISDKClient(baseURL, apiKey string, timeout time.Duration) ChatClien
 	}
 
 	return &openaiSDKClient{
-		client:   openai.NewClient(opts...),
-		timeout:  timeout,
-		sessions: make(map[string][]Message),
+		client:  openai.NewClient(opts...),
+		timeout: timeout,
 	}
 }
 
@@ -196,71 +190,17 @@ func (c *openaiSDKClient) ListModels(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// StreamSessionTurn implements ChatClient. Unbounded in-memory growth for
-// the life of the process is expected — CloseSession is the mitigation for
-// a session that's genuinely done, not a size cap.
-func (c *openaiSDKClient) StreamSessionTurn(ctx context.Context, sessionKey, systemPrompt, model, userMessage string, tools []Tool, onDelta func(Delta) error) (string, *ToolCall, error) {
-	c.sessionsMu.Lock()
-	history := append([]Message{}, c.sessions[sessionKey]...)
-	c.sessionsMu.Unlock()
-
-	messages := history
-	if systemPrompt != "" && (len(messages) == 0 || messages[0].Role != "system") {
-		messages = append([]Message{{Role: "system", Content: systemPrompt}}, messages...)
-	}
-	messages = append(messages, Message{Role: "user", Content: userMessage})
-
-	var content strings.Builder
-	var toolCall *ToolCall
-	err := c.StreamChatCompletion(ctx, CompletionRequest{Model: model, Messages: messages, Tools: tools}, func(d Delta) error {
-		if d.Content != "" {
-			content.WriteString(d.Content)
-		}
-		if d.ToolCall != nil {
-			toolCall = d.ToolCall
-		}
-		return onDelta(d)
-	})
-
-	result := content.String()
-
-	assistantMsg := Message{Role: "assistant", Content: result}
-	newHistory := append(messages, assistantMsg)
-	if toolCall != nil {
-		newHistory[len(newHistory)-1].ToolCalls = []ToolCall{*toolCall}
-		newHistory = append(newHistory, Message{Role: "tool", ToolCallID: toolCall.ID, Content: "Draft proposed to user for review."})
-	}
-
-	c.sessionsMu.Lock()
-	c.sessions[sessionKey] = newHistory
-	c.sessionsMu.Unlock()
-
-	return result, toolCall, err
-}
-
-// CloseSession implements ChatClient.
-func (c *openaiSDKClient) CloseSession(sessionKey string) {
-	c.sessionsMu.Lock()
-	delete(c.sessions, sessionKey)
-	c.sessionsMu.Unlock()
-}
-
-// SeedSessionHistory implements ChatClient.
-func (c *openaiSDKClient) SeedSessionHistory(sessionKey string, history []Message) {
-	c.sessionsMu.Lock()
-	defer c.sessionsMu.Unlock()
-	if _, exists := c.sessions[sessionKey]; exists {
-		return
-	}
-	c.sessions[sessionKey] = append([]Message{}, history...)
-}
+// CloseSession implements ChatClient. This client holds no per-session state
+// (each turn is a stateless completion; the caller owns history), so there is
+// nothing to discard.
+func (c *openaiSDKClient) CloseSession(string) {}
 
 // toOpenAISDKMessages converts internal Message structs to openai-go's
 // message-param union, preserving tool-call round-tripping: an assistant
 // message with ToolCalls is built via the verbose
 // ChatCompletionAssistantMessageParam form (the plain openai.AssistantMessage
-// helper has no way to carry tool calls), and a "tool" role message (the
-// synthetic acknowledgement StreamSessionTurn appends after a tool call)
+// helper has no way to carry tool calls), and a "tool" role message (a
+// tool-result message the tool-loop engine appends after a tool call)
 // becomes an openai.ToolMessage.
 func toOpenAISDKMessages(msgs []Message) []openai.ChatCompletionMessageParamUnion {
 	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
