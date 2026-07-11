@@ -40,7 +40,7 @@ func main() {
 
 		fleet        = flag.Bool("fleet", false, "LM Studio only: load/probe/unload every downloaded tool-capable model, one at a time")
 		fleetModels  = flag.String("models", "", "fleet: comma-separated key substrings to restrict the sweep (default: all tool-capable)")
-		fleetContext = flag.Int("fleet-context", 8192, "fleet: context length to load each model at (kept small for the probe)")
+		fleetContext = flag.Int("fleet-context", 0, "fleet: context length to load each model at; 0 = inherit each model's saved LM Studio config (context + KV-cache quantization, which the REST API cannot set explicitly)")
 		loadTimeout  = flag.Duration("load-timeout", 10*time.Minute, "fleet: max time to wait for a single model to load")
 	)
 	flag.Parse()

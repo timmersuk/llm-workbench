@@ -112,14 +112,21 @@ func (n *nativeClient) listModels(ctx context.Context) ([]nativeModel, error) {
 	return out.Models, nil
 }
 
+// load loads a model by key. When contextLength <= 0 the request omits every
+// load parameter, so LM Studio applies the model's saved per-model config —
+// the only way to get the user's KV-cache quantization (K=Q8_0/V=Q4_0),
+// since the REST load endpoint rejects the quantization fields outright
+// (lmstudio-bug-tracker #2024/#107). A positive contextLength overrides the
+// saved context but still cannot set cache quantization (forced f16).
 func (n *nativeClient) load(ctx context.Context, key string, contextLength int) (loadResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, n.loadTimeout)
 	defer cancel()
+	body := map[string]any{"model": key}
+	if contextLength > 0 {
+		body["context_length"] = contextLength
+	}
 	var out loadResponse
-	err := n.do(ctx, http.MethodPost, "/api/v1/models/load", map[string]any{
-		"model":          key,
-		"context_length": contextLength,
-	}, &out)
+	err := n.do(ctx, http.MethodPost, "/api/v1/models/load", body, &out)
 	return out, err
 }
 
@@ -177,7 +184,11 @@ func runFleet(ctx context.Context, oai *client, nat *nativeClient, allow []strin
 		return fmt.Errorf("no tool-capable models matched (of %d downloaded)", len(models))
 	}
 
-	fmt.Printf("FLEET SWEEP — %d tool-capable model(s), one at a time, ctx=%d\n", len(targets), fleetContext)
+	ctxNote := "context: each model's saved LM Studio config (incl. KV-cache quantization)"
+	if fleetContext > 0 {
+		ctxNote = fmt.Sprintf("context: forced to %d (KV cache f16 — REST cannot set quantization)", fleetContext)
+	}
+	fmt.Printf("FLEET SWEEP — %d tool-capable model(s), one at a time\n  %s\n", len(targets), ctxNote)
 	skipped := len(models) - len(targets)
 	if len(allow) == 0 && skipped > 0 {
 		fmt.Printf("  (skipped %d non-LLM / non-tool-capable models)\n", skipped)
@@ -189,7 +200,7 @@ func runFleet(ctx context.Context, oai *client, nat *nativeClient, allow []strin
 	rows := make([]fleetRow, 0, len(targets))
 	for i, m := range targets {
 		ctxLen := fleetContext
-		if m.MaxContextLength > 0 && ctxLen > m.MaxContextLength {
+		if ctxLen > 0 && m.MaxContextLength > 0 && ctxLen > m.MaxContextLength {
 			ctxLen = m.MaxContextLength
 		}
 		fmt.Printf("[%d/%d] %s (%s) — loading…", i+1, len(targets), m.Key, m.ParamsString)
