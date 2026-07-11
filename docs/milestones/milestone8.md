@@ -1,7 +1,10 @@
 # Milestone 8 — Chat Client Agent Runner as Execution Harness
 
-**Status: Not started** — scoped via a `/grill-with-docs` session on
-2026-07-10.
+**Status: In progress** — scoped via a `/grill-with-docs` session on
+2026-07-10. **Phase 0 complete** (2026-07-11): the framework spike ran and
+concluded in favour of a hand-rolled engine — see
+`docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`. The open
+questions below are resolved; implementation (PR 2 onwards) is next.
 
 ## Why now
 
@@ -142,22 +145,84 @@ cwd-confined Bash tool.
 The spike concludes with its own ADR (the framework pick) — written after
 it runs, not here.
 
+**Outcome (2026-07-11):** hand-rolled, with `eino` recorded as the
+fallback — `docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`.
+The decisive finding was not the criteria table (where `eino` beat `dive`
+on adapter cost and MCP support) but that the engine's real adversary is
+local-model misbehaviour — spirals, duplicate calls, tool-call XML as
+text, announce-but-stall turns — whose guards no framework provides, and
+which `eino` actively fought (fatal-on-tool-error; `MaxStep` exhaustion
+discards all progress). The spike's throwaway probes and full working
+record stay on the unmerged `milestone8-phase0-spike` branch. Its most
+reusable output — the model-behaviour findings — was packaged as the
+standalone `cmd/modelprobe` qualification harness.
+
 ## Out of scope
 
-* **The framework pick itself.** Deferred to Phase 0's own ADR.
+* ~~**The framework pick itself.** Deferred to Phase 0's own ADR.~~
+  Resolved: hand-rolled —
+  `docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`.
 * **OS-level Bash sandboxing** (Landlock, Sandboxie, containers). See
   "Bash: scope and posture" above and
   `docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md`.
 * **Merge automation and knowledge-base promotion** — unrelated to this
   milestone's scope; still `docs/milestones/milestone7.md`.
 
-## Open questions for whoever executes this milestone
+## Open questions — resolved during the grill/spike (2026-07-10/11)
 
-* Where the shared engine actually lives (a new `internal/toolloop`-style
-  package, vs. living inside `internal/chat` alongside the existing
-  streaming/session code) — not designed in detail here.
-* Whether MCP tool-sourcing (the filesystem/LSP-bridge servers from
-  criterion 3) is wired into the initial implementation, or left as an
-  explicit fast-follow after Bash lands.
-* The spike's own output format (a written comparison, throwaway code for
-  each candidate, or both) — left to whoever runs Phase 0.
+* **Where the shared engine lives** → a new `internal/toolloop` package,
+  not inside `internal/chat`. `internal/chat` stays a clean
+  OpenAI-compatible provider (wire format only); `internal/toolloop` holds
+  the loop driver plus native Go tool implementations; `agentrunner`
+  composes the two. This keeps the existing three-layer shape (`chat` →
+  `toolloop` → `agentrunner`) rather than collapsing wire-format and
+  tool-execution concerns together.
+* **MCP tool-sourcing** → fast-follow, not initial. Read/Grep/Glob/Write/
+  Edit are implemented natively in Go first (matching the
+  `chatclient-tool-loop` task's own assumption and giving full control
+  over the small-context result-shaping caps that matter for local
+  models); the engine's toolset is a parameter, so an MCP-sourced tool —
+  the LSP-bridge specifically, for its semantic-navigation token savings —
+  slots in later without restructuring. The MCP *filesystem* server is not
+  planned at all: native tools with controlled output win on tokens.
+* **The spike's output format** → both a written comparison and throwaway
+  per-candidate code, retained on the unmerged `milestone8-phase0-spike`
+  branch (`spike/NOTES.md` + `spike/einoprobe`/`spike/diveprobe`); the
+  durable conclusion is
+  `docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`.
+
+## Further decisions taken (grill, 2026-07-10)
+
+Settled during scoping, ahead of implementation:
+
+* **Native Bash tool** → Git-for-Windows `bash.exe` (already a hard
+  dependency via worktrees) on Windows, system `bash` elsewhere; cwd
+  pinned to the execution worktree; **2-minute default per-command
+  timeout**; no OS sandboxing per
+  `docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md`.
+* **Turn exhaustion** → distinct terminal outcome preserving partial
+  results: `Run` returns accumulated text and degrades gracefully;
+  `Execute` fails loudly into `execution.yaml`.
+* **`ExecuteOutput` metrics for a local model** → `NumTurns` from the loop
+  counter, `DurationSeconds` wall-clock, `TokensUsed` summed from the
+  OpenAI `usage` field (needs `stream_options.include_usage`),
+  `CostEstimate` = 0 (local inference has no marginal API cost).
+* **Tool-output caps** → conservative fixed defaults sized for a ~32k
+  local model (Read ~1000 lines with offset/limit paging, Grep ~100
+  matches, Bash ~20KB), each truncation explicit to the model. A
+  configuration mechanism is deferred to a separate, as-yet-undefined
+  task (`data/projects/llm-workbench/tasks/tool-output-caps-config/`).
+
+## Known `internal/chat` gaps the engine must close (from the spike)
+
+Surfaced hands-on during Phase 0; needed regardless of the (hand-rolled)
+vehicle:
+
+* `chat.CompletionRequest` has **no `MaxTokens` field** — without it a
+  spiralling or duplicate-call model generates unbounded and can wedge the
+  endpoint. Required before Execute drives a real local model.
+* No usage is surfaced on the streaming path — `TokensUsed` needs
+  `stream_options: {include_usage: true}` and the final usage chunk read.
+* Reasoning arrives under **`reasoning`** for some model families (e.g.
+  `gpt-oss`) and `reasoning_content` for others (qwen/deepseek);
+  `internal/chat` parses only the latter, so the client must read both.
