@@ -58,7 +58,12 @@ type CompletionRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
-	Stream   bool      `json:"stream,omitempty"`
+	// MaxTokens caps the tokens generated per response. Zero omits the field
+	// (provider default). The tool loop sets it so a misbehaving local model
+	// — one that spirals or emits the same tool call unbounded — cannot
+	// generate without limit and wedge the endpoint (Milestone 8 Phase 0).
+	MaxTokens int  `json:"max_tokens,omitempty"`
+	Stream    bool `json:"stream,omitempty"`
 }
 
 // CompletionResponse is an OpenAI-compatible non-streaming chat completion
@@ -101,8 +106,14 @@ type Delta struct {
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`
+			Content string `json:"content"`
+			// Reasoning-capable models expose their thinking under one of two
+			// keys depending on family: reasoning_content (qwen, deepseek via
+			// llama.cpp/LM Studio) or reasoning (gpt-oss). Both are decoded so
+			// the loop sees reasoning regardless of which the model uses
+			// (Milestone 8 Phase 0 found gpt-oss uses `reasoning`).
 			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
 			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`

@@ -3,49 +3,141 @@ package agentrunner
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"sync"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/toolloop"
 )
+
+// chatClientMaxResponseTokens caps tokens generated per model response in the
+// tool loop. It bounds a misbehaving local model that spirals or repeats
+// (Milestone 8 Phase 0) while leaving ample room for a full interview answer
+// plus reasoning. Distinct from the loop's turn bound (claudeRunnerMaxTurns).
+const chatClientMaxResponseTokens = 8192
 
 // ChatClientRunner adapts a chat.ChatClient into the AgentRunner interface,
 // so both stage-conversation agents and the free-floating Chat tab are
-// selectable and health-checked through the same abstraction. Session
-// state (per-SessionKey conversation history) is held by the wrapped
-// ChatClient itself (chat.ChatClient.StreamSessionTurn/CloseSession) —
-// this type is a thin translator, not a second place holding state.
+// selectable and health-checked through the same abstraction.
+//
+// It drives internal/toolloop's shared engine: when a run is given a valid
+// workspace it offers the read-only Read/Grep/Glob toolset so the local-LLM
+// path can ground its answers in the reference repository, the same way
+// ClaudeRunner already can (closing the chatclient-tool-loop task). The
+// engine is stateless, so this runner owns per-SessionKey conversation
+// history: only the human turn and the assistant's final text persist across
+// turns; the loop's intermediate tool-call/result messages are ephemeral,
+// keeping the durable context flat (matching what a rehydration from
+// RunInput.History produces — see api.conversationHistoryToChatMessages) and
+// honoring the "no hidden state" invariant.
 type ChatClientRunner struct {
 	client chat.ChatClient
+	engine *toolloop.Engine
+
+	mu       sync.Mutex
+	sessions map[string][]chat.Message // per-SessionKey history: user/assistant turns, no system message
 }
 
 // NewChatClientRunner returns an AgentRunner backed by client.
 func NewChatClientRunner(client chat.ChatClient) *ChatClientRunner {
-	return &ChatClientRunner{client: client}
+	return &ChatClientRunner{
+		client:   client,
+		engine:   toolloop.New(client),
+		sessions: make(map[string][]chat.Message),
+	}
 }
 
-// Run implements AgentRunner. in.Tool, if set, is offered to the wrapped
-// ChatClient the same way stage conversations offer it directly — so a
-// Draft proposal from the local-LLM path surfaces as RunOutput.ToolCall
-// exactly like ClaudeRunner's does.
+// Run implements AgentRunner. It builds the message list (system prompt +
+// held history + the new user message), runs the tool loop offering the
+// read-only toolset when in.Workspace is a usable directory, and offers
+// in.Tool (the Draft-proposing tool) as the loop's stop condition — so a
+// Draft proposal surfaces as RunOutput.ToolCall exactly like ClaudeRunner's.
 func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.Delta) error) (RunOutput, error) {
 	if in.SessionKey == "" {
 		return RunOutput{}, errors.New("chat client runner requires a non-empty SessionKey")
 	}
-	if len(in.History) > 0 {
-		r.client.SeedSessionHistory(in.SessionKey, in.History)
+
+	// Snapshot the session's held history, seeding it from in.History the
+	// first time we see this key (rehydration after a restart). History is
+	// ignored once a live session exists — replaying it would duplicate turns
+	// the runner already holds.
+	r.mu.Lock()
+	base, live := r.sessions[in.SessionKey]
+	if !live && len(in.History) > 0 {
+		base = append([]chat.Message(nil), in.History...)
+		r.sessions[in.SessionKey] = base
 	}
-	var tools []chat.Tool
+	snapshot := append([]chat.Message(nil), base...)
+	r.mu.Unlock()
+
+	msgs := make([]chat.Message, 0, len(snapshot)+2)
+	if in.SystemPrompt != "" {
+		msgs = append(msgs, chat.Message{Role: "system", Content: in.SystemPrompt})
+	}
+	msgs = append(msgs, snapshot...)
+	msgs = append(msgs, chat.Message{Role: "user", Content: in.UserMessage})
+
+	cfg := toolloop.Config{
+		Model:     in.Model,
+		Workspace: in.Workspace,
+		Tools:     readOnlyToolsFor(in.Workspace),
+		MaxTurns:  claudeRunnerMaxTurns,
+		MaxTokens: chatClientMaxResponseTokens,
+	}
 	if in.Tool.Function.Name != "" {
-		tools = []chat.Tool{in.Tool}
+		tool := in.Tool
+		cfg.StopTool = &tool
 	}
-	content, toolCall, err := r.client.StreamSessionTurn(ctx, in.SessionKey, in.SystemPrompt, in.Model, in.UserMessage, tools, onDelta)
-	return RunOutput{Content: content, ToolCall: toolCall}, err
+
+	res, err := r.engine.Run(ctx, cfg, msgs, onDelta)
+	if err != nil {
+		// A failed turn is not persisted — the history stays at its
+		// pre-turn state so the next attempt rebuilds cleanly.
+		return RunOutput{Content: res.Content, ToolCall: res.StopCall}, err
+	}
+
+	content := res.Content
+	if res.Exhausted {
+		content += "\n\n[Note: reached the tool-exploration turn limit; this answer may be incomplete.]"
+	}
+
+	// Persist the human turn and the assistant's final text. A Draft proposal
+	// is folded into the assistant text (not a structured tool call), matching
+	// api.conversationHistoryToChatMessages so the live store and a rehydrated
+	// one are identical and no dangling tool_call is left for the next turn.
+	assistantContent := content
+	if res.StopCall != nil {
+		assistantContent += fmt.Sprintf("\n(proposed a draft via %s: %s)", res.StopCall.Function.Name, res.StopCall.Function.Arguments)
+	}
+	r.mu.Lock()
+	turns := append(r.sessions[in.SessionKey], chat.Message{Role: "user", Content: in.UserMessage})
+	turns = append(turns, chat.Message{Role: "assistant", Content: assistantContent})
+	r.sessions[in.SessionKey] = turns
+	r.mu.Unlock()
+
+	return RunOutput{Content: content, ToolCall: res.StopCall}, nil
 }
 
-// Execute implements AgentRunner. The wrapped chat.ChatClient has no tool
-// loop (see data/projects/llm-workbench/tasks/chatclient-tool-loop/), so
-// there is nothing here that could actually write code or run commands —
-// this returns ErrExecuteNotSupported immediately rather than pretending
-// to run.
+// readOnlyToolsFor returns the read-only toolset when workspace is a usable
+// directory, else nil (a plain completion with no tools). Both callers pass a
+// workspace — stage conversations a resolved repo checkout, free chat the
+// sibling-repos root — so both gain grounded read access; a run with no valid
+// workspace degrades to text-only.
+func readOnlyToolsFor(workspace string) []toolloop.Tool {
+	if workspace == "" {
+		return nil
+	}
+	info, err := os.Stat(workspace)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	return toolloop.ReadOnlyTools()
+}
+
+// Execute implements AgentRunner. Real Execute capability (a write-enabled
+// tool loop against an isolated worktree) is a later Milestone 8 phase; until
+// then this returns ErrExecuteNotSupported rather than pretending to run.
 func (r *ChatClientRunner) Execute(_ context.Context, _ ExecuteInput, _ func(ExecuteEvent) error) (ExecuteOutput, error) {
 	return ExecuteOutput{}, ErrExecuteNotSupported
 }
@@ -60,7 +152,11 @@ func (r *ChatClientRunner) ListModels(ctx context.Context) ([]string, error) {
 	return r.client.ListModels(ctx)
 }
 
-// CloseSession implements AgentRunner.
+// CloseSession implements AgentRunner, discarding this runner's held history
+// for sessionKey (and any state the wrapped client may still hold).
 func (r *ChatClientRunner) CloseSession(sessionKey string) {
+	r.mu.Lock()
+	delete(r.sessions, sessionKey)
+	r.mu.Unlock()
 	r.client.CloseSession(sessionKey)
 }
