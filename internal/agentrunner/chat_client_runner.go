@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/toolloop"
@@ -135,11 +136,66 @@ func readOnlyToolsFor(workspace string) []toolloop.Tool {
 	return toolloop.ReadOnlyTools()
 }
 
-// Execute implements AgentRunner. Real Execute capability (a write-enabled
-// tool loop against an isolated worktree) is a later Milestone 8 phase; until
-// then this returns ErrExecuteNotSupported rather than pretending to run.
-func (r *ChatClientRunner) Execute(_ context.Context, _ ExecuteInput, _ func(ExecuteEvent) error) (ExecuteOutput, error) {
-	return ExecuteOutput{}, ErrExecuteNotSupported
+// Execute implements AgentRunner. It drives internal/toolloop's engine with
+// the write-enabled toolset (Read/Grep/Glob/Write/Edit; Bash follows in a
+// later PR, per milestone8.md's "Bash: scope and posture") against the
+// isolated execution worktree in.Workspace. Unlike Run, there is no history
+// to rehydrate and no StopTool: the loop's only natural stop is the model
+// finishing without a further tool call, matching an autonomous
+// Implementation-stage run. Turn exhaustion is Execute's one meaningful
+// failure mode distinct from Run's graceful degradation (milestone8.md's
+// "Turn exhaustion" decision): it comes back as an error, with whatever
+// partial ExecuteOutput accumulated, so the caller records a failed
+// execution.yaml rather than a silently incomplete one.
+func (r *ChatClientRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func(ExecuteEvent) error) (ExecuteOutput, error) {
+	if in.Workspace == "" {
+		return ExecuteOutput{}, errors.New("chat client runner requires a resolved execution workspace")
+	}
+
+	msgs := make([]chat.Message, 0, 2)
+	if in.SystemPrompt != "" {
+		msgs = append(msgs, chat.Message{Role: "system", Content: in.SystemPrompt})
+	}
+	msgs = append(msgs, chat.Message{Role: "user", Content: executionKickoffMessage})
+
+	cfg := toolloop.Config{
+		Model:     in.Model,
+		Workspace: in.Workspace,
+		Tools:     toolloop.ExecutionTools(),
+		MaxTurns:  claudeExecutionMaxTurns,
+		MaxTokens: chatClientMaxResponseTokens,
+	}
+	var onDelta func(chat.Delta) error
+	if onEvent != nil {
+		cfg.OnToolCall = func(name, argumentsJSON string) error {
+			return onEvent(ExecuteEvent{Kind: "tool_call", ToolName: name, ToolInput: argumentsJSON})
+		}
+		cfg.OnToolResult = func(name, result string, isError bool) error {
+			return onEvent(ExecuteEvent{Kind: "tool_result", ToolResult: result, IsError: isError})
+		}
+		onDelta = func(d chat.Delta) error {
+			if d.Content == "" {
+				return nil
+			}
+			return onEvent(ExecuteEvent{Kind: "text", Text: d.Content})
+		}
+	}
+
+	start := time.Now()
+	res, err := r.engine.Run(ctx, cfg, msgs, onDelta)
+	out := ExecuteOutput{
+		Content:         res.Content,
+		DurationSeconds: time.Since(start).Seconds(),
+		TokensUsed:      res.TokensUsed,
+		NumTurns:        res.Turns,
+	}
+	if err != nil {
+		return out, err
+	}
+	if res.Exhausted {
+		return out, fmt.Errorf("execution exhausted its %d-turn budget without finishing", cfg.MaxTurns)
+	}
+	return out, nil
 }
 
 // CheckHealth implements AgentRunner.

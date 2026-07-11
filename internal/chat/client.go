@@ -156,6 +156,7 @@ func withTimeBudgetHint(messages []Message, budget time.Duration) []Message {
 // further.
 func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionRequest, onDelta func(Delta) error) error {
 	req.Stream = true
+	req.StreamOptions = &StreamOptions{IncludeUsage: true}
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -214,6 +215,11 @@ func (c *openAIClient) StreamChatCompletion(ctx context.Context, req CompletionR
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return fmt.Errorf("decoding chat completion stream chunk: %w", err)
+		}
+		if chunk.Usage != nil {
+			if err := onDelta(Delta{Usage: chunk.Usage}); err != nil {
+				return err
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			continue

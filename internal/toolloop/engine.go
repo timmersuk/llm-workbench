@@ -55,6 +55,14 @@ type Config struct {
 	// execute, after de-duplication, bounding a model that emits the same or
 	// many calls at once. Zero applies defaultMaxToolCallsPerTurn.
 	MaxToolCallsPerTurn int
+	// OnToolCall, if set, is invoked just before each de-duplicated,
+	// executed call runs. Execute uses this to surface every real action as
+	// an ExecuteEvent; Run leaves it nil since RunOutput only surfaces text
+	// and the final StopCall. An error aborts the loop, matching onDelta's
+	// contract.
+	OnToolCall func(name, argumentsJSON string) error
+	// OnToolResult mirrors OnToolCall for the result of executing that call.
+	OnToolResult func(name, result string, isError bool) error
 }
 
 const defaultMaxToolCallsPerTurn = 8
@@ -74,6 +82,10 @@ type Result struct {
 	// The caller decides how to surface this (Run degrades gracefully with
 	// whatever Content accumulated; Execute treats it as a failure).
 	Exhausted bool
+	// TokensUsed sums every turn's completion usage (chat.Delta.Usage,
+	// requires internal/chat's stream_options.include_usage). Zero if the
+	// upstream server never sent a usage chunk.
+	TokensUsed int
 }
 
 // Run drives the loop. messages is the full starting conversation (the caller
@@ -93,6 +105,7 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 	msgs = append(msgs, messages...)
 
 	var lastText string
+	var totalTokens int
 	for turn := 1; turn <= cfg.MaxTurns; turn++ {
 		var text strings.Builder
 		var calls []chat.ToolCall
@@ -103,6 +116,10 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 			Tools:     specs,
 			MaxTokens: cfg.MaxTokens,
 		}, func(d chat.Delta) error {
+			if d.Usage != nil {
+				totalTokens += d.Usage.TotalTokens
+				return nil
+			}
 			if d.ToolCall != nil {
 				calls = append(calls, *d.ToolCall)
 				return nil
@@ -114,13 +131,13 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 			return nil
 		})
 		if err != nil {
-			return Result{Content: text.String(), Turns: turn}, err
+			return Result{Content: text.String(), Turns: turn, TokensUsed: totalTokens}, err
 		}
 		lastText = text.String()
 
 		// No tool calls: the model answered. Terminal for both instantiations.
 		if len(calls) == 0 {
-			return Result{Content: lastText, Turns: turn}, nil
+			return Result{Content: lastText, Turns: turn, TokensUsed: totalTokens}, nil
 		}
 
 		// StopTool takes precedence: if the model proposed the Draft (or
@@ -128,7 +145,7 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 		// also called a read tool in the same turn.
 		if cfg.StopTool != nil {
 			if sc := findCall(calls, cfg.StopTool.Function.Name); sc != nil {
-				return Result{Content: lastText, StopCall: sc, Turns: turn}, nil
+				return Result{Content: lastText, StopCall: sc, Turns: turn, TokensUsed: totalTokens}, nil
 			}
 		}
 
@@ -140,28 +157,39 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 		executed := capCalls(dedupeCalls(calls), maxCalls)
 		msgs = append(msgs, chat.Message{Role: "assistant", Content: lastText, ToolCalls: executed})
 		for _, call := range executed {
-			result := executeCall(ctx, byName, cfg.Workspace, call)
+			if cfg.OnToolCall != nil {
+				if err := cfg.OnToolCall(call.Function.Name, call.Function.Arguments); err != nil {
+					return Result{Content: lastText, Turns: turn, TokensUsed: totalTokens}, err
+				}
+			}
+			result, isError := executeCall(ctx, byName, cfg.Workspace, call)
+			if cfg.OnToolResult != nil {
+				if err := cfg.OnToolResult(call.Function.Name, result, isError); err != nil {
+					return Result{Content: lastText, Turns: turn, TokensUsed: totalTokens}, err
+				}
+			}
 			msgs = append(msgs, chat.Message{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 	}
 
 	// Hit the turn budget without a natural stop.
-	return Result{Content: lastText, Turns: cfg.MaxTurns, Exhausted: true}, nil
+	return Result{Content: lastText, Turns: cfg.MaxTurns, Exhausted: true, TokensUsed: totalTokens}, nil
 }
 
-// executeCall dispatches one tool call, returning result text. A call to an
-// unknown tool or a tool that errors comes back as an error string the model
-// can read and recover from — never a Go error that aborts the loop.
-func executeCall(ctx context.Context, byName map[string]Tool, workspace string, call chat.ToolCall) string {
+// executeCall dispatches one tool call, returning result text and whether it
+// represents an error. A call to an unknown tool or a tool that errors comes
+// back as an error string the model can read and recover from — never a Go
+// error that aborts the loop.
+func executeCall(ctx context.Context, byName map[string]Tool, workspace string, call chat.ToolCall) (result string, isError bool) {
 	tool, ok := byName[call.Function.Name]
 	if !ok {
-		return "error: unknown tool " + call.Function.Name
+		return "error: unknown tool " + call.Function.Name, true
 	}
 	out, err := tool.Execute(ctx, workspace, call.Function.Arguments)
 	if err != nil {
-		return "error: " + err.Error()
+		return "error: " + err.Error(), true
 	}
-	return out
+	return out, false
 }
 
 // toolSpecs assembles the OpenAI-compatible tool declarations offered to the
