@@ -37,14 +37,13 @@ func main() {
 		maxTokens = flag.Int("max-tokens", 2048, "per-request max_tokens ceiling")
 		timeout   = flag.Duration("timeout", 5*time.Minute, "per-request timeout")
 		toolChoc  = flag.Bool("tool-choice", false, "also test tool_choice=required (can hang some servers)")
+
+		fleet        = flag.Bool("fleet", false, "LM Studio only: load/probe/unload every downloaded tool-capable model, one at a time")
+		fleetModels  = flag.String("models", "", "fleet: comma-separated key substrings to restrict the sweep (default: all tool-capable)")
+		fleetContext = flag.Int("fleet-context", 8192, "fleet: context length to load each model at (kept small for the probe)")
+		loadTimeout  = flag.Duration("load-timeout", 10*time.Minute, "fleet: max time to wait for a single model to load")
 	)
 	flag.Parse()
-
-	if *model == "" {
-		fmt.Fprintln(os.Stderr, "error: -model (or LLM_MODEL) is required")
-		flag.Usage()
-		os.Exit(2)
-	}
 
 	q, e, gerr := groundingTest(*dir, *groundEnv, *question, *expect)
 	if gerr != nil {
@@ -55,65 +54,73 @@ func main() {
 	c := newClient(*baseURL, *apiKey, *timeout)
 	ctx := context.Background()
 
+	if *fleet {
+		nat := newNativeClient(*baseURL, *apiKey, *loadTimeout)
+		fmt.Printf("modelprobe fleet — %s\n", *baseURL)
+		fmt.Printf("loop target: %s | grounding: answer must contain %q\n\n", *dir, truncateLabel(e, 60))
+		if err := runFleet(ctx, c, nat, splitCSV(*fleetModels), *dir, q, e, *runs, *maxTurns, *maxTokens, *fleetContext); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *model == "" {
+		fmt.Fprintln(os.Stderr, "error: -model (or LLM_MODEL) is required (or use -fleet)")
+		flag.Usage()
+		os.Exit(2)
+	}
+
 	fmt.Printf("modelprobe — %s @ %s\n", *model, *baseURL)
 	fmt.Printf("loop target: %s | grounding: answer must contain %q\n\n", *dir, truncateLabel(e, 60))
 
+	rep := probeModel(ctx, c, *model, *dir, q, e, *runs, *maxTurns, *maxTokens, *toolChoc)
+
 	// --- Wire checks ---
 	fmt.Println("WIRE CHECKS")
-	wf := runWireChecks(ctx, c, *model, *maxTokens, *toolChoc)
-	for _, ck := range wf.checks {
+	for _, ck := range rep.wire.checks {
 		fmt.Printf("  %-6s %-24s %s\n", ck.status, ck.name, ck.detail)
 	}
-	if served := strings.TrimSpace(wf.servedModel); served != "" && served != *model {
+	if served := strings.TrimSpace(rep.wire.servedModel); served != "" && served != *model {
 		fmt.Printf("  %-6s %-24s requested %q but server served %q — results are for the served model\n",
 			"WARN", "served model", *model, served)
 	}
-	fmt.Printf("  %-6s %-24s %s\n", "INFO", "reasoning key", reasoningKeyNote(wf.reasoningKey))
+	fmt.Printf("  %-6s %-24s %s\n", "INFO", "reasoning key", reasoningKeyNote(rep.wire.reasoningKey))
 	fmt.Println()
 
 	// --- Loop reliability ---
 	fmt.Printf("LOOP RELIABILITY (%d runs)\n", *runs)
-	var (
-		ok, dup, spiral, toolXML, stall, errs int
-		totalDur                              time.Duration
-	)
-	for i := 0; i < *runs; i++ {
-		r := runLoop(ctx, c, *model, *dir, q, e, *maxTurns, *maxTokens)
-		fmt.Printf("  run %d/%d: %s\n", i+1, *runs, r)
-		if r.ok {
-			ok++
-		}
-		if r.dupCall {
-			dup++
-		}
-		if r.spiral {
-			spiral++
-		}
-		if r.toolXML {
-			toolXML++
-		}
-		if r.stall {
-			stall++
-		}
-		if r.errText != "" {
-			errs++
-		}
-		totalDur += r.dur
+	for i, r := range rep.runs {
+		fmt.Printf("  run %d/%d: %s\n", i+1, len(rep.runs), r)
 	}
 	fmt.Println()
 
 	// --- Report card ---
-	rate := float64(ok) / float64(*runs)
+	dup, spiral, toolXML, stall, errs := rep.pathologyCounts()
 	fmt.Println("SUMMARY")
-	fmt.Printf("  loop reliability : %d/%d (%.0f%%)\n", ok, *runs, rate*100)
-	fmt.Printf("  avg run duration : %s\n", (totalDur / time.Duration(*runs)).Round(time.Millisecond))
+	fmt.Printf("  loop reliability : %d/%d (%.0f%%)\n", rep.okCount(), len(rep.runs), rep.reliability()*100)
+	fmt.Printf("  avg run duration : %s\n", rep.avgDur.Round(time.Millisecond))
 	fmt.Printf("  pathologies      : dup-calls=%d spiral=%d tool-xml=%d stall=%d error=%d\n", dup, spiral, toolXML, stall, errs)
-	fmt.Printf("  reasoning channel: %s\n", wf.reasoningKey)
-	fmt.Printf("  verdict          : %s\n", verdict(wf, rate))
+	fmt.Printf("  reasoning channel: %s\n", rep.wire.reasoningKey)
+	fmt.Printf("  verdict          : %s\n", rep.verdict())
 
-	if rate < 0.5 {
+	if rep.reliability() < 0.5 {
 		os.Exit(1) // usable-as-CI signal: <50% loop reliability is a failing grade
 	}
+}
+
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // groundingTest builds the loop's question and expected-substring. By default
@@ -168,25 +175,6 @@ func reasoningKeyNote(key string) string {
 		return "both keys populated"
 	default:
 		return "none (no separate reasoning channel observed)"
-	}
-}
-
-func verdict(wf wireFindings, rate float64) string {
-	toolOK := true
-	for _, ck := range wf.checks {
-		if strings.HasPrefix(ck.name, "tool-call") && ck.status == statusFail {
-			toolOK = false
-		}
-	}
-	switch {
-	case !toolOK:
-		return "UNUSABLE — cannot emit structured tool calls"
-	case rate >= 0.8:
-		return "READY — reliable enough for the tool loop"
-	case rate >= 0.5:
-		return "MARGINAL — usable with loop guards; expect retries"
-	default:
-		return "UNRELIABLE — tool calls work but the loop rarely completes"
 	}
 }
 
