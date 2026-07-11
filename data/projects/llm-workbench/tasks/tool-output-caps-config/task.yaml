@@ -1,0 +1,45 @@
+id: tool-output-caps-config
+title: Add a configuration mechanism for tool-loop output caps
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-11T00:00:00Z
+updated_at: 2026-07-11T00:00:00Z
+
+objective: >-
+  The shared tool-loop engine (internal/toolloop, introduced in Milestone 8)
+  ships conservative fixed output caps sized for a ~32k-context local model:
+  Read ~1000 lines with offset/limit paging, Grep ~100 matches, Bash ~20KB
+  combined stdout/stderr, each truncation surfaced to the model with an
+  explicit marker. Milestone 8 deliberately hard-coded these (see
+  docs/milestones/milestone8.md, "Further decisions taken") rather than build
+  speculative configurability. This task adds a real configuration mechanism
+  once a concrete need appears — e.g. a larger-context model that can afford
+  bigger reads, or a model that behaves better with tighter caps. The
+  mechanism itself is as-yet undefined: whether per-executor, per-model,
+  env-var, or workspace-config, is part of what this task must decide.
+
+constraints:
+  - "Must preserve the current defaults as the fallback when nothing is configured — no behaviour change for existing callers."
+  - "Every truncation must stay explicit to the model (the marker text), however the limits are sourced — configurability changes the numbers, not the contract."
+  - "Follow the existing configuration conventions in docs/engineering conventions.md (the GetEnvDefault pattern used for AGENT_TIMEOUT/LLM_TIMEOUT) unless a stated reason justifies a new one."
+  - "No new runtime dependency without a stated reason (project architectural invariant)."
+
+assumptions:
+  - "Open question: the right scope for the knob — per-executor, per-model, per-workspace, or global — depends on whether cap-tuning tracks the model (context window) or the task; not yet decided."
+  - "The engine already threads the caps as parameters into its native tool implementations, so this is a sourcing/plumbing change, not a redesign of the tools."
+
+success_criteria:
+  - "A tool-output cap (at least one of Read lines, Grep matches, Bash bytes) can be overridden from configuration, and the override takes effect in a real Execute run."
+  - "With no configuration present, the engine uses the Milestone 8 defaults unchanged."
+  - "The chosen mechanism is recorded in docs/engineering conventions.md if it introduces a new configuration pattern."
+
+references:
+  knowledge: []
+  repo:
+    - docs/milestones/milestone8.md
+    - docs/engineering conventions.md
+    - internal/utils/env.go

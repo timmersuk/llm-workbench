@@ -1,0 +1,45 @@
+id: modelprobe-toolloop-refactor
+title: Refactor modelprobe onto the shared internal/toolloop engine
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-11T00:00:00Z
+updated_at: 2026-07-11T00:00:00Z
+
+objective: >-
+  cmd/modelprobe (the model-qualification harness that emerged from Milestone
+  8's Phase 0 spike) currently ships a deliberately self-contained
+  OpenAI-compatible client and a minimal ~80-line tool loop, because the
+  shared engine did not yet exist when it was built. Once internal/toolloop
+  lands (Milestone 8 PR 2, the hand-rolled engine chosen in
+  docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md), refactor
+  modelprobe to drive that engine instead — making it the engine's first
+  real consumer, so the tool qualifies models against the exact loop the
+  workbench actually runs, not a parallel reimplementation that can drift.
+
+constraints:
+  - "modelprobe must keep bounding generations (the max_tokens ceiling) and per-request/per-model timeouts — the whole point is that a pathological model cannot wedge the endpoint. If internal/toolloop does not yet expose max_tokens, that gap (tracked in docs/milestones/milestone8.md's internal/chat gaps) must close first."
+  - "Preserve modelprobe's existing wire checks (reasoning-key detection across `reasoning`/`reasoning_content`, served-model echo, streaming tool-call deltas) — these inspect raw wire shape internal/chat/toolloop may abstract away, so some raw-HTTP probing likely stays."
+  - "Preserve the pathology detectors (duplicate calls, spirals, tool-call-XML-as-text, announce-but-stall) and their unit tests; ideally the engine's own guards and modelprobe's detectors share code rather than duplicate it."
+  - "Keep fleet mode (LM Studio load/probe/unload sweep with the per-model watchdog) working unchanged."
+
+assumptions:
+  - "The engine's read-only Run instantiation (Read/Grep/Glob) is the natural loop for the grounding probe; modelprobe should reuse it rather than its own tool implementations."
+  - "Open question: how much of modelprobe's raw-HTTP client survives — the wire checks need it, but the loop should move onto the engine. The split is part of what this task decides."
+
+success_criteria:
+  - "modelprobe's N-run reliability loop is driven by internal/toolloop, not its own private loop implementation."
+  - "Single-model and fleet modes produce equivalent verdicts to the pre-refactor tool on the same models (no regression in qualification behaviour)."
+  - "The pathology detectors remain covered by unit tests and, where shared with the engine, are exercised from one place."
+
+references:
+  knowledge: []
+  repo:
+    - cmd/modelprobe/main.go
+    - cmd/modelprobe/loop.go
+    - cmd/modelprobe/report.go
+    - docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md
+    - docs/milestones/milestone8.md
