@@ -5,8 +5,10 @@
 concluded in favour of a hand-rolled engine — see
 `docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`. **PR 2
 shipped** (2026-07-11, #18): `internal/toolloop` engine plus the read-only
-`Run` instantiation, live-verified — see "What shipped" below. `Execute`
-(Write/Edit, then Bash) is next.
+`Run` instantiation, live-verified — see "What shipped" below. **PR 3
+shipped** (2026-07-12): `Execute` now drives the engine with a
+Read/Grep/Glob/Write/Edit toolset, live-verified — see "What shipped (PR 3)"
+below. Bash is next.
 
 ## Why now
 
@@ -41,10 +43,10 @@ blank slate.
   `internal/toolloop`, used by `ChatClientRunner.Run` today and intended
   for `ChatClientRunner.Execute` once that instantiation lands, rather
   than two independent implementations.
-* ⏳ **Pending.** Real `Execute` capability for the `local` executor: a
-  Write/Edit/Bash tool loop against the execution worktree, producing
-  `ExecuteOutput`/`ExecuteEvent` values in parity with `ClaudeRunner`'s
-  shape.
+* ✅ **Shipped (PR 3, 2026-07-12).** Real `Execute` capability for the
+  `local` executor: a Write/Edit tool loop against the execution worktree
+  (Bash still pending), producing `ExecuteOutput`/`ExecuteEvent` values in
+  parity with `ClaudeRunner`'s shape — see "What shipped (PR 3)" below.
 * ✅ **Shipped (PR 2, #18).** Closure of the standalone
   `chatclient-tool-loop` task
   (`data/projects/llm-workbench/tasks/chatclient-tool-loop/task.yaml`) —
@@ -66,11 +68,12 @@ One engine, two instantiations:
 
 | | `Run` (stage conversations) | `Execute` (implementation) |
 |---|---|---|
-| Status | ✅ shipped (PR 2, #18) | ⏳ pending |
-| Toolset | Read/Grep/Glob (`toolloop.ReadOnlyTools`) | Read/Grep/Glob/Write/Edit/Bash (planned) |
+| Status | ✅ shipped (PR 2, #18) | ✅ shipped (PR 3, Write/Edit); Bash pending |
+| Toolset | Read/Grep/Glob (`toolloop.ReadOnlyTools`) | Read/Grep/Glob/Write/Edit (`toolloop.ExecutionTools`); Bash to follow |
 | Workspace | shared checkout (`ResolveWorkspace`) | isolated execution worktree (`ResolveExecutionWorkspace`, `worktree.go`) |
 | Turn bound | 30 (`claudeRunnerMaxTurns`) | ~100, matching `claudeExecutionMaxTurns` |
 | Stop condition | text response, or a Draft-tool-call | model finishes the run autonomously |
+| Turn exhaustion | degrades gracefully, returns partial content | fails loudly (returns an error alongside partial `ExecuteOutput`) |
 
 Building this as one parameterized engine (rather than Execute's loop
 first, Run's read-only loop as an afterthought) is what makes "absorbs
@@ -120,6 +123,53 @@ Verified end-to-end against a live LM Studio endpoint (not just unit
 tests): the real runner drove `gpt-oss-20b` to grep and read
 `internal/agentrunner/runner.go` and correctly ground an answer about the
 `AgentRunner` interface entirely from the repository's own contents.
+
+## What shipped (PR 3, 2026-07-12)
+
+`ChatClientRunner.Execute` no longer returns `ErrExecuteNotSupported`: it
+builds a `system` + fixed kickoff-message (`executionKickoffMessage`,
+shared with `ClaudeRunner`) conversation and drives `internal/toolloop`'s
+engine with `toolloop.ExecutionTools()` (`ReadOnlyTools()` plus two new
+native tools, `write_file` and `edit_file`), `claudeExecutionMaxTurns`, and
+no `StopTool` — the loop's only natural stop is the model finishing without
+a further tool call, matching an autonomous Implementation-stage run.
+`edit_file` follows this repo's own `Edit` tool convention: an exact
+`old_string`/`new_string` replace that must be unique in the file unless
+`replace_all` is set, rather than a line-numbered or diff-based patch
+format — simpler for a small local model to emit correctly.
+
+Turn exhaustion is Execute's one meaningful failure mode, distinct from
+Run's graceful degradation (per the "Turn exhaustion" decision above): it
+now surfaces as a Go error, with whatever partial `ExecuteOutput`
+accumulated still returned alongside it, so a caller records a failed
+`execution.yaml` rather than a silently incomplete one.
+
+`ExecuteOutput`/`ExecuteEvent` parity with `ClaudeRunner` is achieved via
+two additions to the shared engine rather than a second loop
+implementation (`docs/adr/0009`'s bar): `toolloop.Config` gained optional
+`OnToolCall`/`OnToolResult` hooks fired around each executed tool call —
+`Run` leaves both nil (unaffected), `Execute` uses them to emit
+`tool_call`/`tool_result` `ExecuteEvent`s — and `toolloop.Result` gained a
+`TokensUsed` field. That closes the previously-open `internal/chat`
+streaming-usage gap (below): `chat.CompletionRequest` now carries a
+`StreamOptions` field `StreamChatCompletion` forces to
+`{include_usage: true}`, and the final usage-only chunk a
+`stream_options`-enabled server sends is decoded and surfaced as a new
+`chat.Delta.Usage`, which the engine sums across turns. `CostEstimate`
+stays 0, per the "further decisions taken" note below (no marginal cost
+for local inference).
+
+Verified end-to-end against a live LM Studio endpoint (`openai/gpt-oss-20b`,
+matching PR 2's verified model): the real runner read a Go file containing
+a stubbed function via `read_file`, used `edit_file` to implement it
+correctly, and reported a non-zero `TokensUsed` — proving both the
+write-enabled loop and the new usage-accounting path work against a real
+model, not just a scripted fake in unit tests.
+
+**Deliberately deferred, not dropped:** retiring
+`chat.ChatClient.StreamSessionTurn`/`SeedSessionHistory` (dead code since PR
+2) stayed out of this PR to keep its diff focused on `Execute` — see
+"Follow-ups" below, unchanged from PR 2's note.
 
 ## Bash: scope and posture
 
@@ -270,10 +320,11 @@ vehicle:
   without it a spiralling or duplicate-call model generates unbounded and
   can wedge the endpoint. Now a request field, and the engine sets it on
   every completion.
-* ⏳ **Still open.** No usage is surfaced on the streaming path —
-  `TokensUsed` needs `stream_options: {include_usage: true}` and the
-  final usage chunk read. Needed before `Execute` can report real
-  `TokensUsed` metrics.
+* ✅ **Closed (PR 3).** No usage was surfaced on the streaming path —
+  `stream_options: {include_usage: true}` is now forced on every streamed
+  request and the final usage chunk is decoded into `chat.Delta.Usage`, so
+  `Execute` reports real `TokensUsed` metrics (summed across turns by the
+  engine).
 * ✅ **Closed (PR 2).** Reasoning arrived under **`reasoning`** for some
   model families (e.g. `gpt-oss`) and `reasoning_content` for others
   (qwen/deepseek); `internal/chat` parsed only the latter. Now decodes
@@ -284,24 +335,19 @@ vehicle:
 Tracked here so they aren't lost between PRs; none block Milestone 8's
 remaining scope.
 
-* **`Execute` instantiation (Write/Edit, then Bash)** — PR 3 and PR 4,
-  per "Bash: scope and posture" above. The engine already supports this
-  shape (`toolloop.Config` with the write toolset, no `StopTool`, a
-  higher turn bound, fail-loud-on-exhaustion) — mostly the write/edit/bash
-  tools themselves plus `ExecuteOutput` metrics wiring and
-  `ResolveExecutionWorkspace` integration remain.
+* **`Execute`'s Bash tool** — PR 4, per "Bash: scope and posture" above.
+  Write/Edit landed in PR 3; Bash is the remaining tool, plus wiring it
+  into `toolloop.ExecutionTools()`.
 * **Retire `chat.ChatClient.StreamSessionTurn`/`SeedSessionHistory`** —
   dead code now that `ChatClientRunner.Run` drives the engine directly and
-  owns its own session history (PR 2). Left in place for PR 2's minimal
-  diff; no task filed yet, small enough to fold into the `Execute` PR or
-  do as a standalone cleanup.
+  owns its own session history (PR 2). Deliberately left out of PR 3 too,
+  to keep that PR's diff focused on `Execute`; no task filed yet, still
+  small enough to fold into the Bash PR or do as a standalone cleanup.
 * **`tool-output-caps-config`** — the deferred configuration mechanism
-  for the fixed output caps PR 2 shipped. Tracked at
+  for the fixed output caps PR 2 shipped, now also covering PR 3's
+  write/edit confirmation strings. Tracked at
   `data/projects/llm-workbench/tasks/tool-output-caps-config/`.
 * **`modelprobe-toolloop-refactor`** — move `cmd/modelprobe`'s private
   loop onto `internal/toolloop` now that the engine exists, making it the
   engine's first non-runner consumer. Tracked at
   `data/projects/llm-workbench/tasks/modelprobe-toolloop-refactor/`.
-* **`internal/chat` streaming usage** (the still-open gap above) — no
-  task filed yet; small enough to land as part of the `Execute` PR when
-  `TokensUsed` is wired up.

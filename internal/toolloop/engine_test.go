@@ -3,6 +3,8 @@ package toolloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,6 +225,83 @@ func TestGrepAndGlob(t *testing.T) {
 	gl, _ := globTool{}.Execute(context.Background(), dir, `{"pattern":"**/*.go"}`)
 	if !strings.Contains(gl, "sub/x.go") || strings.Contains(gl, "y.md") {
 		t.Fatalf("glob wrong: %q", gl)
+	}
+}
+
+func TestOnToolCallAndOnToolResultFire(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644)
+
+	f := &fakeClient{turns: []func(func(chat.Delta) error) error{
+		toolTurn(call("c1", "read_file", `{"path":"a.txt"}`)),
+		textTurn("done"),
+	}}
+
+	var calls []string
+	var results []string
+	res, err := New(f).Run(context.Background(), Config{
+		Workspace: dir, Tools: ReadOnlyTools(), MaxTurns: 5,
+		OnToolCall: func(name, args string) error {
+			calls = append(calls, name+":"+args)
+			return nil
+		},
+		OnToolResult: func(name, result string, isError bool) error {
+			results = append(results, fmt.Sprintf("%s:%v:%s", name, isError, result))
+			return nil
+		},
+	}, baseMessages(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Content != "done" {
+		t.Fatalf("unexpected: %+v", res)
+	}
+	if len(calls) != 1 || calls[0] != `read_file:{"path":"a.txt"}` {
+		t.Fatalf("OnToolCall not fired correctly: %v", calls)
+	}
+	if len(results) != 1 || !strings.Contains(results[0], "hello") || strings.Contains(results[0], "true") {
+		t.Fatalf("OnToolResult not fired correctly: %v", results)
+	}
+}
+
+func TestOnToolCallErrorAbortsLoop(t *testing.T) {
+	f := &fakeClient{turns: []func(func(chat.Delta) error) error{
+		toolTurn(call("c1", "read_file", `{"path":"x"}`)),
+	}}
+	wantErr := errors.New("nope")
+	_, err := New(f).Run(context.Background(), Config{
+		Tools: ReadOnlyTools(), MaxTurns: 5,
+		OnToolCall: func(string, string) error { return wantErr },
+	}, baseMessages(), nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected OnToolCall error to abort, got %v", err)
+	}
+}
+
+func TestTokensUsedAccumulatesAcrossTurns(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644)
+
+	f := &fakeClient{turns: []func(func(chat.Delta) error) error{
+		func(onDelta func(chat.Delta) error) error {
+			if err := onDelta(chat.Delta{ToolCall: &chat.ToolCall{ID: "c1", Type: "function", Function: chat.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`}}}); err != nil {
+				return err
+			}
+			return onDelta(chat.Delta{Usage: &chat.Usage{TotalTokens: 10}})
+		},
+		func(onDelta func(chat.Delta) error) error {
+			if err := onDelta(chat.Delta{Content: "done"}); err != nil {
+				return err
+			}
+			return onDelta(chat.Delta{Usage: &chat.Usage{TotalTokens: 15}})
+		},
+	}}
+	res, err := New(f).Run(context.Background(), Config{Workspace: dir, Tools: ReadOnlyTools(), MaxTurns: 5}, baseMessages(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TokensUsed != 25 {
+		t.Fatalf("expected summed usage 25, got %d", res.TokensUsed)
 	}
 }
 

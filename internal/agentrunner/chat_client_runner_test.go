@@ -3,6 +3,8 @@ package agentrunner
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,11 +19,18 @@ import (
 // StreamSessionTurn/SeedSessionHistory remain on the interface but are no
 // longer called by Run, so they are inert stubs.
 type fakeChatClient struct {
-	// Scripted StreamChatCompletion response.
+	// Scripted StreamChatCompletion response, used when streamTurns is nil.
 	streamContent  string
 	streamToolCall *chat.ToolCall
 	streamErr      error
 	gotRequests    []chat.CompletionRequest
+
+	// streamTurns, if set, scripts one function per StreamChatCompletion
+	// call in sequence — for multi-turn Execute tests that need several
+	// round-trips (tool call, then tool call, then text). Overrides the
+	// single-turn fields above.
+	streamTurns []func(onDelta func(chat.Delta) error) error
+	turnCall    int
 
 	closedSessions   []string
 	checkHealthErr   error
@@ -35,6 +44,11 @@ func (f *fakeChatClient) CreateChatCompletion(context.Context, chat.CompletionRe
 
 func (f *fakeChatClient) StreamChatCompletion(_ context.Context, req chat.CompletionRequest, onDelta func(chat.Delta) error) error {
 	f.gotRequests = append(f.gotRequests, req)
+	if f.streamTurns != nil {
+		turn := f.streamTurns[f.turnCall]
+		f.turnCall++
+		return turn(onDelta)
+	}
 	if f.streamErr != nil {
 		return f.streamErr
 	}
@@ -212,10 +226,138 @@ func TestChatClientRunner_Run_PropagatesUnderlyingError(t *testing.T) {
 	assert.ErrorIs(t, err, wantErr)
 }
 
-func TestChatClientRunner_Execute_ReturnsNotSupported(t *testing.T) {
+func TestChatClientRunner_Execute_RequiresWorkspace(t *testing.T) {
 	runner := NewChatClientRunner(&fakeChatClient{})
-	_, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute"}, func(ExecuteEvent) error { return nil })
-	assert.ErrorIs(t, err, ErrExecuteNotSupported)
+	_, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute"}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workspace")
+}
+
+func TestChatClientRunner_Execute_KicksOffWithWriteToolsAndReturnsContent(t *testing.T) {
+	dir := t.TempDir()
+	client := &fakeChatClient{streamContent: "all done"}
+	runner := NewChatClientRunner(client)
+
+	out, err := runner.Execute(context.Background(), ExecuteInput{
+		SessionKey:   "task-a:execute",
+		Workspace:    dir,
+		SystemPrompt: "implement the plan",
+		Model:        "m",
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "all done", out.Content)
+	assert.Equal(t, 1, out.NumTurns)
+	assert.GreaterOrEqual(t, out.DurationSeconds, 0.0)
+
+	require.Len(t, client.gotRequests, 1)
+	req := client.gotRequests[0]
+	assert.Equal(t, "m", req.Model)
+	require.Len(t, req.Messages, 2)
+	assert.Equal(t, chat.Message{Role: "system", Content: "implement the plan"}, req.Messages[0])
+	assert.Equal(t, chat.Message{Role: "user", Content: executionKickoffMessage}, req.Messages[1])
+	// Write/edit must be offered alongside the read-only toolset — not just
+	// read-only, unlike Run.
+	var names []string
+	for _, tl := range req.Tools {
+		names = append(names, tl.Function.Name)
+	}
+	assert.Contains(t, names, "write_file")
+	assert.Contains(t, names, "edit_file")
+	assert.Contains(t, names, "read_file")
+}
+
+func TestChatClientRunner_Execute_StreamsToolCallAndResultEvents(t *testing.T) {
+	dir := t.TempDir()
+	client := &fakeChatClient{streamTurns: []func(func(chat.Delta) error) error{
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{ToolCall: &chat.ToolCall{
+				ID: "c1", Type: "function",
+				Function: chat.ToolCallFunction{Name: "write_file", Arguments: `{"path":"a.txt","content":"hi"}`},
+			}})
+		},
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{Content: "wrote the file"})
+		},
+	}}
+	runner := NewChatClientRunner(client)
+
+	var events []ExecuteEvent
+	out, err := runner.Execute(context.Background(), ExecuteInput{
+		SessionKey: "task-a:execute",
+		Workspace:  dir,
+	}, func(e ExecuteEvent) error {
+		events = append(events, e)
+		return nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "wrote the file", out.Content)
+	assert.Equal(t, 2, out.NumTurns)
+
+	require.Len(t, events, 3)
+	assert.Equal(t, "tool_call", events[0].Kind)
+	assert.Equal(t, "write_file", events[0].ToolName)
+	assert.Equal(t, `{"path":"a.txt","content":"hi"}`, events[0].ToolInput)
+	assert.Equal(t, "tool_result", events[1].Kind)
+	assert.False(t, events[1].IsError)
+	assert.Contains(t, events[1].ToolResult, "wrote")
+	assert.Equal(t, "text", events[2].Kind)
+	assert.Equal(t, "wrote the file", events[2].Text)
+
+	written, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "hi", string(written))
+}
+
+func TestChatClientRunner_Execute_FailsLoudlyOnExhaustion(t *testing.T) {
+	dir := t.TempDir()
+	turn := func(onDelta func(chat.Delta) error) error {
+		return onDelta(chat.Delta{ToolCall: &chat.ToolCall{
+			ID: "c", Type: "function",
+			Function: chat.ToolCallFunction{Name: "write_file", Arguments: `{"path":"a.txt","content":"x"}`},
+		}})
+	}
+	turns := make([]func(func(chat.Delta) error) error, claudeExecutionMaxTurns)
+	for i := range turns {
+		turns[i] = turn
+	}
+	client := &fakeChatClient{streamTurns: turns}
+	runner := NewChatClientRunner(client)
+
+	out, err := runner.Execute(context.Background(), ExecuteInput{
+		SessionKey: "task-a:execute",
+		Workspace:  dir,
+	}, nil)
+
+	require.Error(t, err, "turn exhaustion must fail loudly, unlike Run's graceful degradation")
+	assert.Contains(t, err.Error(), "exhausted")
+	assert.Equal(t, claudeExecutionMaxTurns, out.NumTurns, "partial output must still be reported alongside the error")
+}
+
+func TestChatClientRunner_Execute_PropagatesUnderlyingError(t *testing.T) {
+	dir := t.TempDir()
+	wantErr := errors.New("upstream down")
+	runner := NewChatClientRunner(&fakeChatClient{streamErr: wantErr})
+	_, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute", Workspace: dir}, nil)
+	assert.ErrorIs(t, err, wantErr)
+}
+
+func TestChatClientRunner_Execute_ReportsTokensUsed(t *testing.T) {
+	dir := t.TempDir()
+	client := &fakeChatClient{streamTurns: []func(func(chat.Delta) error) error{
+		func(onDelta func(chat.Delta) error) error {
+			if err := onDelta(chat.Delta{Content: "done"}); err != nil {
+				return err
+			}
+			return onDelta(chat.Delta{Usage: &chat.Usage{TotalTokens: 42}})
+		},
+	}}
+	runner := NewChatClientRunner(client)
+
+	out, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute", Workspace: dir}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 42, out.TokensUsed)
 }
 
 func TestChatClientRunner_CheckHealth_DelegatesToWrappedClient(t *testing.T) {

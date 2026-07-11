@@ -64,6 +64,15 @@ type CompletionRequest struct {
 	// generate without limit and wedge the endpoint (Milestone 8 Phase 0).
 	MaxTokens int  `json:"max_tokens,omitempty"`
 	Stream    bool `json:"stream,omitempty"`
+	// StreamOptions is forced non-nil (IncludeUsage: true) by
+	// StreamChatCompletion — callers don't set it themselves, mirroring how
+	// Stream itself is forced — so the loop can read a final usage chunk.
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+// StreamOptions is the OpenAI-compatible "stream_options" request field.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // CompletionResponse is an OpenAI-compatible non-streaming chat completion
@@ -94,6 +103,19 @@ type Delta struct {
 	Content          string    `json:"content"`
 	ReasoningContent string    `json:"reasoning_content"`
 	ToolCall         *ToolCall `json:"tool_call,omitempty"`
+	// Usage is populated exactly once, on the final usage-only chunk a
+	// stream_options.include_usage request gets after the last content/tool
+	// chunk (empty Choices, so it is otherwise skipped) — never combined
+	// with Content/ReasoningContent/ToolCall on the same Delta.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is OpenAI-compatible token accounting for one completion, requested
+// via CompletionRequest.StreamOptions and delivered as a Delta.Usage.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // streamChunk is the wire shape of a single OpenAI-compatible
@@ -104,6 +126,9 @@ type Delta struct {
 // are typically only present on a call's first fragment, and Arguments
 // arrives as incremental string pieces of one JSON object.
 type streamChunk struct {
+	// Usage is only present on the final usage-only chunk (see Delta.Usage);
+	// absent on every content/tool-call chunk.
+	Usage   *Usage `json:"usage,omitempty"`
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
