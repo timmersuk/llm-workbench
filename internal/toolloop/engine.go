@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/timmersuk/llm-workbench/internal/chat"
 )
 
@@ -181,15 +183,42 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 // back as an error string the model can read and recover from — never a Go
 // error that aborts the loop.
 func executeCall(ctx context.Context, byName map[string]Tool, workspace string, call chat.ToolCall) (result string, isError bool) {
-	tool, ok := byName[call.Function.Name]
+	name := call.Function.Name
+	// Log every tool the model actually runs at the one point every caller's
+	// tool calls funnel through, so there is an independent server-side record
+	// of what a Run or Execute did — a bash `go test`, a read, a grep — rather
+	// than only the model's own prose claiming it (the "no hidden state"
+	// invariant). The OnToolCall/OnToolResult hooks stay a caller concern for
+	// surfacing UI events; this is the ops record, on by default.
+	logrus.WithFields(logrus.Fields{
+		"tool": name, "workspace": workspace, "args": logPreview(call.Function.Arguments),
+	}).Info("toolloop: executing tool call")
+
+	tool, ok := byName[name]
 	if !ok {
-		return "error: unknown tool " + call.Function.Name, true
+		logrus.WithField("tool", name).Warn("toolloop: model called an unknown tool")
+		return "error: unknown tool " + name, true
 	}
 	out, err := tool.Execute(ctx, workspace, call.Function.Arguments)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{"tool": name, "error": err.Error()}).Warn("toolloop: tool call failed")
 		return "error: " + err.Error(), true
 	}
+	logrus.WithFields(logrus.Fields{"tool": name, "result": logPreview(out)}).Debug("toolloop: tool call result")
 	return out, false
+}
+
+// logPreview flattens and trims a tool's arguments or result to a single short
+// line for structured logging — enough to see what ran without spilling a full
+// file read or command output into the logs (truncateResult already bounds
+// what the model sees; this is a much tighter cap for humans).
+func logPreview(s string) string {
+	const max = 200
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // toolSpecs assembles the OpenAI-compatible tool declarations offered to the
