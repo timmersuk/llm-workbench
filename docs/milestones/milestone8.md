@@ -1,16 +1,19 @@
 # Milestone 8 — Chat Client Agent Runner as Execution Harness
 
-**Status: In progress** — scoped via a `/grill-with-docs` session on
-2026-07-10. **Phase 0 complete** (2026-07-11): the framework spike ran and
+**Status: Done** (2026-07-12) — scoped via a `/grill-with-docs` session on
+2026-07-10. All core scope shipped and merged to `main` (final PR #20,
+`fe4c488`); the four remaining items are explicitly-deferred, task-tracked
+follow-ups that do not block the milestone (see "Follow-ups" below).
+**Phase 0 complete** (2026-07-11): the framework spike ran and
 concluded in favour of a hand-rolled engine — see
 `docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`. **PR 2
 shipped** (2026-07-11, #18): `internal/toolloop` engine plus the read-only
 `Run` instantiation, live-verified — see "What shipped" below. **PR 3
 shipped** (2026-07-12): `Execute` now drives the engine with a
 Read/Grep/Glob/Write/Edit toolset, live-verified — see "What shipped (PR 3)"
-below. **PR 4 shipped** (2026-07-12): the `bash` tool completes the Execute
-toolset and the dead `StreamSessionTurn`/`SeedSessionHistory` session methods
-are retired, live-verified — see "What shipped (PR 4)" below.
+below. **PR 4 shipped** (2026-07-12, #20): the `bash` tool completes the
+Execute toolset and the dead `StreamSessionTurn`/`SeedSessionHistory` session
+methods are retired, live-verified — see "What shipped (PR 4)" below.
 
 ## Why now
 
