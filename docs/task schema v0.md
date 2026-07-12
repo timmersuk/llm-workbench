@@ -20,8 +20,8 @@ data/projects/llm-workbench/tasks/fix-login-bug/
     task.yaml
     context.yaml (optional, derived — see below)
     plan.yaml (optional, generated)
-    execution.yaml (one per execution attempt)
-    review.yaml (optional, human or system generated)
+    executions/exec-NNN.yaml (append-only, one per execution attempt)
+    reviews/review-NNN.yaml (optional, append-only, one per review cycle)
 ```
 
 Only `task.yaml` is required at creation. A task's id is client-specified at
@@ -127,12 +127,25 @@ failure:
 
 ---
 
-### review.yaml (optional)
+### reviews/review-NNN.yaml (optional, append-only)
+
+Review verdicts are stored one file per cycle under `reviews/`, append-only
+and never overwritten — the same shape as `executions/exec-NNN.yaml` (§5.2). A
+task that cycles review → implementation (`needs_changes`) → review again
+records a fresh `review-NNN.yaml` each time, so the full history of every
+verdict is a first-class queryable fact.
 
 ```yaml
+review_id: review-001
+task_id: fix-login-bug
 decision: approved | rejected | needs_changes
 notes: ""
+created_at: 2026-07-09T00:00:00Z
 ```
+
+`decision` drives the stage transition on Finalize: `approved` → `complete`,
+`needs_changes` → `implementation` (a fresh execution attempt), `rejected` →
+`requirements` (reopening GrillMe).
 
 ---
 

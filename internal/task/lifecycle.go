@@ -84,6 +84,66 @@ func (s *FileStore) FinalizePlan(id string, plan Plan) (Task, error) {
 	return t, nil
 }
 
+// FinalizeReview is the human "Finalize" action for Review: it records an
+// append-only reviews/review-NNN.yaml verdict (RecordReview) and moves Stage
+// according to the draft's three-way decision. The task must currently be in
+// "review" stage. Unlike GrillMe/Planning Finalize (which only ever advance
+// one step), Review's Finalize can move Stage in either direction, because
+// its decision encodes which direction is correct (CONTEXT.md's **Review**):
+//
+//   - approved      → "complete" (the terminal stage; nothing else reaches it)
+//   - needs_changes → "implementation" (a fresh execution attempt; the
+//     verdict's notes are preserved in the review record for the
+//     execute-retrigger path to surface)
+//   - rejected      → "requirements" (the requirements/plan themselves were
+//     wrong, not just the implementation; reopens the GrillMe conversation)
+//
+// The review record is written before the Stage advance, so Stage stays the
+// single source of truth for how far Finalize got: if RecordReview succeeds
+// but the task.yaml write then fails, the verdict is on disk but Stage hasn't
+// moved yet — a safely-retriable state (the append-only store means a retry
+// records a fresh verdict rather than corrupting the prior one).
+func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
+	t, err := s.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StageReview {
+		return Task{}, fmt.Errorf("finalizing review for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+
+	var nextStage string
+	switch draft.Decision {
+	case ReviewDecisionApproved:
+		nextStage = StageComplete
+	case ReviewDecisionNeedsChanges:
+		nextStage = StageImplementation
+	case ReviewDecisionRejected:
+		nextStage = StageRequirements
+	default:
+		return Task{}, fmt.Errorf("finalizing review for %s: unknown decision %q", id, draft.Decision)
+	}
+
+	reviewID, err := s.NextReviewID(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if _, err := s.RecordReview(id, Review{
+		ReviewID: reviewID,
+		Decision: draft.Decision,
+		Notes:    strings.TrimSpace(draft.Notes),
+	}); err != nil {
+		return Task{}, err
+	}
+
+	t.Stage = nextStage
+	t.UpdatedAt = time.Now().UTC()
+	if err := s.writeTask(t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
 // ReviseToRequirements is the "Revise Requirements" action (CONTEXT.md's
 // "Revise"): moves Stage back from "planning" to "requirements", reopening
 // the requirements Conversation (GetConversation/AppendConversationMessages
