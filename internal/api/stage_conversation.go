@@ -159,6 +159,107 @@ func handleGetStageConversation(projects ProjectStore, factory TaskStoreFactory)
 	}
 }
 
+// stageStreamTarget bundles what a streaming stage handler needs once the
+// per-request boilerplate — executor lookup plus owning-project/task
+// resolution — has run: the resolved runner, project, task store, and task.
+// The three streaming handlers all consult these, resolved once here so each
+// handler is left with only its distinct pre-stream logic.
+type stageStreamTarget struct {
+	runner agentrunner.AgentRunner
+	proj   project.Project
+	store  TaskStore
+	task   task.Task
+}
+
+// resolveStageStreamTarget selects the executor's runner (defaulting to
+// defaultChatExecutor when unset — the same convention as chat.go's
+// free-floating endpoint) and resolves the owning project and task. It writes
+// the appropriate 400/404 and returns false on any failure; every one of these
+// fires before the SSE headers are sent, so they surface as real HTTP status
+// codes. Callers must already have validated the stage and decoded their
+// request body first — the request types differ, so decode stays per-handler,
+// and validating the stage before touching the body preserves the order in
+// which those two 400s fire.
+func resolveStageStreamTarget(w http.ResponseWriter, projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, executorKey, projectId, taskId string) (stageStreamTarget, bool) {
+	if executorKey == "" {
+		executorKey = defaultChatExecutor
+	}
+	runner, ok := agentRunners[executorKey]
+	if !ok {
+		http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+		return stageStreamTarget{}, false
+	}
+
+	proj, err := projects.Get(projectId)
+	if err != nil {
+		writeGetError(w, err)
+		return stageStreamTarget{}, false
+	}
+	root, err := projects.TasksRoot(projectId)
+	if err != nil {
+		writeGetError(w, err)
+		return stageStreamTarget{}, false
+	}
+	store := factory(root)
+
+	t, err := store.Get(taskId)
+	if err != nil {
+		writeGetError(w, err)
+		return stageStreamTarget{}, false
+	}
+
+	return stageStreamTarget{runner: runner, proj: proj, store: store, task: t}, true
+}
+
+// beginStageStream confirms the ResponseWriter can stream, writes the SSE
+// response headers (200 OK), and returns the writeEvent closure the turn uses
+// to relay chatStreamEvents (the wire shape shared with chat.go). Once this
+// returns true the headers are committed: from that point a failure can no
+// longer surface as an HTTP status, only as a final SSE {Error:...} event — so
+// callers must complete every real-HTTP-status check before calling this, and
+// treat everything after it as stream-only. "streaming unsupported" itself is
+// still an HTTP 500 because it happens before any header is written.
+func beginStageStream(w http.ResponseWriter) (func(chatStreamEvent), bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return nil, false
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	return func(ev chatStreamEvent) {
+		data, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}, true
+}
+
+// stageAssistantMessage assembles the assistant turn to persist once a stream
+// has ended: its accumulated content, the stream error stamped onto .Error
+// (already surfaced to the human as an SSE event, recorded here so the durable
+// transcript keeps it too), and any Draft tool call the model proposed
+// (CONTEXT.md), flattened into the persisted ConversationToolCall shape. All
+// three streaming handlers build this identically; they differ only in how
+// they then pair or replace it in the record.
+func stageAssistantMessage(content string, proposed *chat.ToolCall, streamErr error) task.ConversationMessage {
+	msg := task.ConversationMessage{Role: "assistant", Content: content}
+	if streamErr != nil {
+		msg.Error = streamErr.Error()
+	}
+	if proposed != nil {
+		msg.ToolCall = &task.ConversationToolCall{
+			ID:        proposed.ID,
+			Name:      proposed.Function.Name,
+			Arguments: proposed.Function.Arguments,
+		}
+	}
+	return msg
+}
+
 // handlePostStageMessage posts a user message to a stage's Conversation,
 // streams the assistant's reply as SSE (reusing chatStreamEvent, same wire
 // shape as the free-floating chat endpoint in chat.go), and persists both
@@ -182,52 +283,15 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 			return
 		}
 
-		executorKey := req.Executor
-		if executorKey == "" {
-			executorKey = defaultChatExecutor
-		}
-		runner, ok := agentRunners[executorKey]
-		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
-			return
-		}
-
-		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
-
-		proj, err := projects.Get(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		root, err := projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := factory(root)
-
-		t, err := store.Get(taskId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-
-		flusher, ok := w.(http.Flusher)
+		target, ok := resolveStageStreamTarget(w, projects, factory, agentRunners, req.Executor, r.PathValue("projectId"), taskId)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-
-		writeEvent := func(ev chatStreamEvent) {
-			data, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+		writeEvent, ok := beginStageStream(w)
+		if !ok {
+			return
 		}
 
 		var assistantContent string
@@ -239,13 +303,13 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 		// configured repository is tolerated for Requirements/Planning (an
 		// empty workspace, a text-only turn); any other resolution failure
 		// aborts the turn as an SSE error, since headers are already sent.
-		run, runErr := resolveStageRun(r.Context(), reposRoot, proj, store, t, stage, knowledgeReader)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
 		if runErr != nil {
 			streamErr = runErr
-		} else if history, convErr := store.GetConversation(taskId, stage); convErr != nil {
+		} else if history, convErr := target.store.GetConversation(taskId, stage); convErr != nil {
 			streamErr = fmt.Errorf("loading conversation history: %w", convErr)
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     taskId + ":" + stage,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -263,19 +327,9 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
-		if streamErr != nil {
-			assistantMsg.Error = streamErr.Error()
-		}
-		if proposed != nil {
-			assistantMsg.ToolCall = &task.ConversationToolCall{
-				ID:        proposed.ID,
-				Name:      proposed.Function.Name,
-				Arguments: proposed.Function.Arguments,
-			}
-		}
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
 
-		if _, err := store.AppendConversationMessages(taskId, stage,
+		if _, err := target.store.AppendConversationMessages(taskId, stage,
 			task.ConversationMessage{Role: "user", Content: req.Content},
 			assistantMsg,
 		); err != nil {
@@ -310,38 +364,13 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 			return
 		}
 
-		executorKey := req.Executor
-		if executorKey == "" {
-			executorKey = defaultChatExecutor
-		}
-		runner, ok := agentRunners[executorKey]
-		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
-			return
-		}
-
-		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
-
-		proj, err := projects.Get(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		root, err := projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := factory(root)
-
-		t, err := store.Get(taskId)
-		if err != nil {
-			writeGetError(w, err)
+		target, ok := resolveStageStreamTarget(w, projects, factory, agentRunners, req.Executor, r.PathValue("projectId"), taskId)
+		if !ok {
 			return
 		}
 
-		existing, err := store.GetConversation(taskId, stage)
+		existing, err := target.store.GetConversation(taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -351,32 +380,20 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 			return
 		}
 
-		flusher, ok := w.(http.Flusher)
+		writeEvent, ok := beginStageStream(w)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
-		}
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-
-		writeEvent := func(ev chatStreamEvent) {
-			data, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
 		}
 
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		run, runErr := resolveStageRun(r.Context(), reposRoot, proj, store, t, stage, knowledgeReader)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     taskId + ":" + stage,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -390,19 +407,9 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
-		if streamErr != nil {
-			assistantMsg.Error = streamErr.Error()
-		}
-		if proposed != nil {
-			assistantMsg.ToolCall = &task.ConversationToolCall{
-				ID:        proposed.ID,
-				Name:      proposed.Function.Name,
-				Arguments: proposed.Function.Arguments,
-			}
-		}
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
 
-		if _, err := store.AppendConversationMessages(taskId, stage, assistantMsg); err != nil {
+		if _, err := target.store.AppendConversationMessages(taskId, stage, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting stage conversation kickoff message")
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
@@ -496,38 +503,13 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 			return
 		}
 
-		executorKey := req.Executor
-		if executorKey == "" {
-			executorKey = defaultChatExecutor
-		}
-		runner, ok := agentRunners[executorKey]
-		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
-			return
-		}
-
-		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
-
-		proj, err := projects.Get(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		root, err := projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := factory(root)
-
-		t, err := store.Get(taskId)
-		if err != nil {
-			writeGetError(w, err)
+		target, ok := resolveStageStreamTarget(w, projects, factory, agentRunners, req.Executor, r.PathValue("projectId"), taskId)
+		if !ok {
 			return
 		}
 
-		existing, err := store.GetConversation(taskId, stage)
+		existing, err := target.store.GetConversation(taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -543,21 +525,9 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 
 		historyPrefix := append([]task.ConversationMessage{}, existing.Messages[:index]...)
 
-		flusher, ok := w.(http.Flusher)
+		writeEvent, ok := beginStageStream(w)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
-		}
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-
-		writeEvent := func(ev chatStreamEvent) {
-			data, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
 		}
 
 		sessionKey := taskId + ":" + stage
@@ -567,11 +537,11 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		run, runErr := resolveStageRun(r.Context(), reposRoot, proj, store, t, stage, knowledgeReader)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     sessionKey,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -586,24 +556,14 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
-		if streamErr != nil {
-			assistantMsg.Error = streamErr.Error()
-		}
-		if proposed != nil {
-			assistantMsg.ToolCall = &task.ConversationToolCall{
-				ID:        proposed.ID,
-				Name:      proposed.Function.Name,
-				Arguments: proposed.Function.Arguments,
-			}
-		}
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
 
 		now := time.Now().UTC()
 		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}
 		assistantMsg.CreatedAt = now
 
 		newMessages := append(historyPrefix, userMsg, assistantMsg)
-		if _, err := store.ReplaceConversationMessages(taskId, stage, newMessages); err != nil {
+		if _, err := target.store.ReplaceConversationMessages(taskId, stage, newMessages); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting regenerated stage conversation messages")
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
