@@ -1,7 +1,20 @@
 # Milestone 6 — Review
 
-**Status: Not started** — scoped via a `/grill-with-docs` session on
-2026-07-09.
+**Status: Scoping (2026-07-12)** — original design scoped via a
+`/grill-with-docs` session on 2026-07-09; re-validated against `main` after
+Milestone 8 shipped. Every code anchor below still holds (verified 2026-07-12:
+`stageTool`'s two-case switch, `ExecutionInput{PlanRef, ContextRefs}`,
+`Context.Verification []string`, the `Finalize*/Revise*` shapes, and
+`StageComplete` still defined-but-unused — M6 remains its first user). Two
+scoping decisions taken 2026-07-12:
+
+* **Automated-checks test-running** (was open question #2) → **reuse Milestone
+  8's cwd-confined `bash` tool**. The review conversation runs as a
+  `internal/toolloop` loop with `bash` confined to the execution worktree, so
+  the agent runs the project's test command itself — no bespoke test-runner
+  machinery. M8's `Execute` path already proves this shape end-to-end.
+* **Delivery** → **phased, matching Milestone 8's PR cadence** (see "Phasing"
+  below), not one large diff.
 
 ## Why now
 
@@ -269,14 +282,40 @@ not replacing it.
   doesn't exist, the same reason merge is deferred. Deferred to
   Milestone 7.
 
+## Phasing
+
+Delivered as sequential PRs, matching Milestone 8's cadence — each
+independently reviewable and live-verifiable, rather than one large diff:
+
+* **PR 1 — Review backend + lifecycle.** The `context.yaml`
+  `verification: []` schema change (`[]string` → structured
+  `{description, kind}` entries, `docs/adr/0008`), the append-only
+  `reviews/review-NNN.yaml` store (`internal/task/review.go`:
+  `RecordReview`/`ListReviews`/`NextReviewID`, mirroring the execution
+  store), `FinalizeReview` + `ReviseToImplementation` + the
+  `execution.yaml` `review_feedback` field, and the three-way
+  `approved | rejected | needs_changes` → stage-transition wiring. The
+  first thing to ever reach `StageComplete`. No conversation or UI yet —
+  proven by unit tests over the lifecycle transitions.
+* **PR 2 — Review conversation.** The `propose_review` Draft tool
+  (`internal/drafttool`, added to `All()` so `cmd/draftmcp` picks it up
+  for free), the three `stage`-switch cases (`validateConversationStage`,
+  `stageTool`, `buildStagePrompt`), and the `reviewSystemPrompt` encoding
+  the three-phase discipline. The automated-checks phase drives a
+  `toolloop` loop with the M8 `bash` tool (test command) plus the
+  read-only toolset (Standards/Spec pass over the diff). Full-patch variant
+  of `CollectExecutionOutput` so the prompt carries the actual diff.
+  Live-verified end-to-end against a real execution, matching M8's bar.
+* **PR 3 — ReviewPanel frontend.** `ReviewPanel.tsx` +
+  `ReviewDraftForm.tsx` (mirroring the GrillMe/Planning wrappers), the
+  `finalizeReview` API function + `handleFinalizeReview` route, and the
+  `TaskDetailPanel` `stage === 'review'` insertion point alongside the
+  existing "Revise Plan" affordance.
+
 ## Open questions for whoever executes this milestone
 
 * Exact wire shape for how `ReviseToImplementation`'s `reviewFeedback`
   reaches the next `Execute` call's prompt — whether it's injected into
-  the executor's system prompt alongside `plan_ref`/`context_refs`, or
-  handled some other way. Sketched above but not fully specified.
-* Whether `reviewSystemPrompt`'s automated-checks phase invokes the
-  executor's own test-running mechanism directly (e.g. shelling out to a
-  project's test command) or goes through some more structured interface
-  — this milestone doc assumes the former but doesn't design it in
-  detail.
+  the executor's system prompt alongside `plan_ref`/`context_refs` (the
+  leaning) or handled some other way. A PR 1 implementation detail,
+  sketched above but not fully specified.
