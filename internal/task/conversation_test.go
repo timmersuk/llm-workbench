@@ -19,6 +19,24 @@ func TestFileStore_GetConversation_EmptyWhenNoFileYet(t *testing.T) {
 	assert.Empty(t, conv.Messages)
 }
 
+func TestFileStore_Conversation_ReviewStageIsValid(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create(Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	// Review (Milestone 6) persists its conversation the same way
+	// requirements/planning do — conversation-review.yaml round-trips.
+	_, err = store.AppendConversationMessages("task-a", StageReview, ConversationMessage{Role: "assistant", Content: "starting review"})
+	require.NoError(t, err)
+
+	conv, err := store.GetConversation("task-a", StageReview)
+	require.NoError(t, err)
+	assert.Equal(t, StageReview, conv.Stage)
+	require.Len(t, conv.Messages, 1)
+	assert.Equal(t, "starting review", conv.Messages[0].Content)
+}
+
 func TestFileStore_GetConversation_RejectsInvalidStage(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)

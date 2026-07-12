@@ -109,3 +109,56 @@ func TestCollectExecutionOutput_EmptyWhenNoCommitsMade(t *testing.T) {
 	assert.Empty(t, commits)
 	assert.Empty(t, artifacts)
 }
+
+func TestCollectExecutionPatch_ReturnsCommitsAndRealDiff(t *testing.T) {
+	reposRoot := t.TempDir()
+	initTestRepo(t, reposRoot, "myrepo")
+
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "new-file.txt"), []byte("added line\n"), 0o644))
+	_, err = runGit(context.Background(), ws.Path, "add", ".")
+	require.NoError(t, err)
+	_, err = runGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
+	require.NoError(t, err)
+
+	commits, patch, err := CollectExecutionPatch(context.Background(), ws)
+	require.NoError(t, err)
+	assert.Len(t, commits, 1)
+	// The full-patch variant carries the actual diff text, not just names.
+	assert.Contains(t, patch, "new-file.txt")
+	assert.Contains(t, patch, "+added line")
+}
+
+func TestResolveReviewWorkspace_LocatesExistingExecutionWorktree(t *testing.T) {
+	reposRoot := t.TempDir()
+	initTestRepo(t, reposRoot, "myrepo")
+
+	created, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	require.NoError(t, err)
+
+	// Review resolves the same worktree the execution left in place, without
+	// creating anything new.
+	review, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "exec-001")
+	require.NoError(t, err)
+	assert.Equal(t, created.Path, review.Path)
+	assert.Equal(t, created.Branch, review.Branch)
+	assert.Equal(t, created.BaseBranch, review.BaseBranch)
+}
+
+func TestResolveReviewWorkspace_MissingWorktreeIsAnError(t *testing.T) {
+	reposRoot := t.TempDir()
+	initTestRepo(t, reposRoot, "myrepo")
+
+	_, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "exec-404")
+	assert.ErrorIs(t, err, ErrInvalidRepository)
+}
+
+func TestResolveReviewWorkspace_RejectsUnsafeID(t *testing.T) {
+	reposRoot := t.TempDir()
+	initTestRepo(t, reposRoot, "myrepo")
+
+	_, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "../escape")
+	assert.ErrorIs(t, err, ErrInvalidRepository)
+}

@@ -12,9 +12,10 @@ import (
 )
 
 // ErrInvalidStage is returned when a stage name isn't one of the stages
-// that has a Conversation ("requirements", "planning") — implementation/
-// review/complete don't have an interview mechanism (see CONTEXT.md's
-// "Conversation" entry).
+// that has a Conversation ("requirements", "planning", "review") —
+// implementation/complete don't have an interview mechanism (see CONTEXT.md's
+// "Conversation" entry). Review's conversation (Milestone 6) persists the
+// same way as the others, in conversation-review.yaml.
 var ErrInvalidStage = errors.New("invalid conversation stage")
 
 // ConversationToolCall records a Draft-proposing tool call an assistant
@@ -45,16 +46,16 @@ type ConversationMessage struct {
 
 // Conversation is one stage's full, append-only message history, stored as
 // <task root>/<id>/conversation-<stage>.yaml — one file per stage
-// (requirements, planning), not one file for the task's whole life, and
-// not a fresh file per visit: revisiting a stage (via Revise, lifecycle.go)
-// resumes appending to the same Conversation.
+// (requirements, planning, review), not one file for the task's whole life,
+// and not a fresh file per visit: revisiting a stage (via Revise,
+// lifecycle.go) resumes appending to the same Conversation.
 type Conversation struct {
 	Stage    string                `yaml:"stage" json:"stage"`
 	Messages []ConversationMessage `yaml:"messages" json:"messages"`
 }
 
 func validateConversationStage(stage string) error {
-	if stage != StageRequirements && stage != StagePlanning {
+	if stage != StageRequirements && stage != StagePlanning && stage != StageReview {
 		return fmt.Errorf("%w: %q", ErrInvalidStage, stage)
 	}
 	return nil

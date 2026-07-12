@@ -79,6 +79,52 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 	return ExecutionWorkspace{Path: worktreePath, Branch: branch, BaseBranch: baseBranch}, nil
 }
 
+// ResolveReviewWorkspace locates the execution worktree ResolveExecutionWorkspace
+// already created for executionID and left in place — it never creates one.
+// The Review conversation (Milestone 6) runs against this same isolated
+// worktree so its confined bash tool can run the project's tests over the
+// executed change, and its diff can be collected (CollectExecutionPatch),
+// without touching the project's shared checkout. The worktree path is
+// reconstructed deterministically the same way ResolveExecutionWorkspace built
+// it (<reposRoot>/.worktrees/<repoName>/<executionID>) and must already exist;
+// BaseBranch is re-derived from the shared checkout's current branch, exactly
+// as the execution derived it originally.
+func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories []string, executionID string) (ExecutionWorkspace, error) {
+	if strings.ContainsAny(executionID, `/\`) || strings.Contains(executionID, "..") {
+		return ExecutionWorkspace{}, fmt.Errorf("%w: execution id %q", ErrInvalidRepository, executionID)
+	}
+
+	base, err := ResolveWorkspace(reposRoot, repositories)
+	if err != nil {
+		return ExecutionWorkspace{}, err
+	}
+
+	baseBranchOut, err := runGit(ctx, base, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return ExecutionWorkspace{}, fmt.Errorf("resolving base branch for %s: %w", base, err)
+	}
+	baseBranch := strings.TrimSpace(baseBranchOut)
+
+	root := filepath.Dir(base)
+	repoName := filepath.Base(base)
+	worktreePath := filepath.Join(root, ".worktrees", repoName, executionID)
+
+	info, err := os.Stat(worktreePath)
+	if err != nil {
+		return ExecutionWorkspace{}, fmt.Errorf("%w: resolving execution worktree %s: %v", ErrInvalidRepository, worktreePath, err)
+	}
+	if !info.IsDir() {
+		return ExecutionWorkspace{}, fmt.Errorf("%w: %s is not a directory", ErrInvalidRepository, worktreePath)
+	}
+
+	branchOut, err := runGit(ctx, worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return ExecutionWorkspace{}, fmt.Errorf("resolving worktree branch for %s: %w", worktreePath, err)
+	}
+
+	return ExecutionWorkspace{Path: worktreePath, Branch: strings.TrimSpace(branchOut), BaseBranch: baseBranch}, nil
+}
+
 // CollectExecutionOutput inspects ws after an Execute run has finished,
 // returning the commits made on ws.Branch since it diverged from
 // ws.BaseBranch (oldest first) and the paths of every file that differs
@@ -100,6 +146,28 @@ func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace) (commits
 	artifacts = splitNonEmptyLines(artifactsOut)
 
 	return commits, artifacts, nil
+}
+
+// CollectExecutionPatch is the full-patch variant of CollectExecutionOutput:
+// it returns the same commits (oldest first), but instead of just the changed
+// file names it returns the actual unified diff of ws.Branch against
+// ws.BaseBranch. The Review conversation (Milestone 6) carries this real diff
+// in its prompt so the agent has the concrete change to check, rather than a
+// bare list of touched paths. Best-effort in the same way — a caller should
+// log a failure here rather than fail the whole review over it.
+func CollectExecutionPatch(ctx context.Context, ws ExecutionWorkspace) (commits []string, patch string, err error) {
+	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", ws.BaseBranch+"..HEAD")
+	if err != nil {
+		return nil, "", fmt.Errorf("listing commits for %s: %w", ws.Path, err)
+	}
+	commits = splitNonEmptyLines(commitsOut)
+
+	patchOut, err := runGit(ctx, ws.Path, "diff", ws.BaseBranch+"..HEAD")
+	if err != nil {
+		return nil, "", fmt.Errorf("collecting patch for %s: %w", ws.Path, err)
+	}
+
+	return commits, patchOut, nil
 }
 
 // runGit runs `git <args...>` with dir as its working directory, returning

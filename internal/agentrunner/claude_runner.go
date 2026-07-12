@@ -272,6 +272,14 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	}
 
 	allowedTools := append([]string{}, readOnlyTools...)
+	// The Review stage (Milestone 6) widens the read-only boundary with Bash
+	// so the reviewing agent can run the project's tests over the executed
+	// change — confined to the execution worktree (in.Workspace), never the
+	// shared checkout. Requirements/Planning leave EnableBashTool false and
+	// stay strictly read-only.
+	if in.EnableBashTool {
+		allowedTools = append(allowedTools, "Bash")
+	}
 	// in.Tool is optional — free-chat callers (no Draft concept) leave it
 	// as the zero value, in which case no MCP tool/server is registered at
 	// all rather than trying to build one from an empty name/schema.

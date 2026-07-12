@@ -111,6 +111,58 @@ func TestChatClientRunner_Run_BuildsMessagesAndStreams(t *testing.T) {
 	assert.Equal(t, []chat.Delta{{Content: "hi back"}}, gotDeltas)
 }
 
+func TestChatClientRunner_Run_EnableBashOffersReviewToolset(t *testing.T) {
+	dir := t.TempDir()
+	client := &fakeChatClient{streamContent: "reviewing"}
+	runner := NewChatClientRunner(client)
+
+	_, err := runner.Run(context.Background(), RunInput{
+		SessionKey:     "task-a:review",
+		Workspace:      dir,
+		SystemPrompt:   "review the change",
+		Model:          "m",
+		UserMessage:    "start",
+		EnableBashTool: true,
+	}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.gotRequests, 1)
+	var names []string
+	for _, tl := range client.gotRequests[0].Tools {
+		names = append(names, tl.Function.Name)
+	}
+	// Review adds bash to the read-only set so it can run the tests, but never
+	// the write/edit tools — review inspects an execution, it doesn't author one.
+	assert.Contains(t, names, "read_file")
+	assert.Contains(t, names, "bash")
+	assert.NotContains(t, names, "write_file")
+	assert.NotContains(t, names, "edit_file")
+}
+
+func TestChatClientRunner_Run_DefaultsToReadOnlyToolset(t *testing.T) {
+	dir := t.TempDir()
+	client := &fakeChatClient{streamContent: "planning"}
+	runner := NewChatClientRunner(client)
+
+	_, err := runner.Run(context.Background(), RunInput{
+		SessionKey:   "task-a:planning",
+		Workspace:    dir,
+		SystemPrompt: "plan the change",
+		Model:        "m",
+		UserMessage:  "start",
+	}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.gotRequests, 1)
+	var names []string
+	for _, tl := range client.gotRequests[0].Tools {
+		names = append(names, tl.Function.Name)
+	}
+	// Requirements/Planning stay strictly read-only — no bash.
+	assert.Contains(t, names, "read_file")
+	assert.NotContains(t, names, "bash")
+}
+
 func TestChatClientRunner_Run_ForwardsToolAndSurfacesToolCall(t *testing.T) {
 	toolCall := &chat.ToolCall{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{
 		Name: "propose_context", Arguments: `{"objective":"ship login"}`,

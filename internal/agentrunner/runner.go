@@ -58,6 +58,14 @@ type RunInput struct {
 	// zero value (Tool.Function.Name == "") means no tool is offered —
 	// free-chat callers leave this unset.
 	Tool chat.Tool
+	// EnableBashTool widens the loop's toolset from read-only Read/Grep/Glob
+	// to also include the confined bash tool, for the Review stage's
+	// automated-checks phase (Milestone 6) — the reviewing agent runs the
+	// project's test command over the executed change. Left false by
+	// Requirements/Planning, whose agents stay strictly read-only. bash is
+	// still confined to Workspace (the execution worktree for a review), so
+	// this never reaches the project's shared checkout.
+	EnableBashTool bool
 	// History is a stage conversation's persisted transcript so far
 	// (internal/task.Conversation, mapped to chat.Message by the caller),
 	// used to rehydrate an AgentRunner's in-memory session state after a

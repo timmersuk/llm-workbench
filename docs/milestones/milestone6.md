@@ -287,25 +287,33 @@ not replacing it.
 Delivered as sequential PRs, matching Milestone 8's cadence — each
 independently reviewable and live-verifiable, rather than one large diff:
 
-* **PR 1 — Review backend + lifecycle.** The `context.yaml`
-  `verification: []` schema change (`[]string` → structured
-  `{description, kind}` entries, `docs/adr/0008`), the append-only
+* **PR 1 — Review backend + lifecycle. ✅ Shipped (#23).** The append-only
   `reviews/review-NNN.yaml` store (`internal/task/review.go`:
   `RecordReview`/`ListReviews`/`NextReviewID`, mirroring the execution
-  store), `FinalizeReview` + `ReviseToImplementation` + the
-  `execution.yaml` `review_feedback` field, and the three-way
+  store), `FinalizeReview` and the three-way
   `approved | rejected | needs_changes` → stage-transition wiring. The
   first thing to ever reach `StageComplete`. No conversation or UI yet —
-  proven by unit tests over the lifecycle transitions.
-* **PR 2 — Review conversation.** The `propose_review` Draft tool
-  (`internal/drafttool`, added to `All()` so `cmd/draftmcp` picks it up
-  for free), the three `stage`-switch cases (`validateConversationStage`,
-  `stageTool`, `buildStagePrompt`), and the `reviewSystemPrompt` encoding
-  the three-phase discipline. The automated-checks phase drives a
-  `toolloop` loop with the M8 `bash` tool (test command) plus the
-  read-only toolset (Standards/Spec pass over the diff). Full-patch variant
-  of `CollectExecutionOutput` so the prompt carries the actual diff.
-  Live-verified end-to-end against a real execution, matching M8's bar.
+  proven by unit tests over the lifecycle transitions. (The `context.yaml`
+  `verification` schema change and `ReviseToImplementation`/the
+  `execution.yaml` `review_feedback` field, originally slotted here, moved
+  out: the schema change is inseparable from its frontend authoring form
+  and its Review consumer, so it landed in PR 2; the execute-retrigger
+  plumbing is deferred to its own later PR — `needs_changes` notes already
+  persist in `review-NNN.yaml`.)
+* **PR 2 — Review conversation. ✅ Shipped.** The `context.yaml`
+  `verification: []` schema migration (`[]string` → structured
+  `{description, kind}` entries, `docs/adr/0008`) across backend and
+  frontend together, the `propose_review` Draft tool (`internal/drafttool`,
+  added to `All()` so `cmd/draftmcp` picks it up for free), the three
+  `stage`-switch cases (`validateConversationStage`, `stageTool`,
+  `buildStagePrompt`), and the `reviewSystemPrompt` encoding the three-phase
+  discipline. The automated-checks phase drives a `toolloop` loop with the
+  M8 `bash` tool (test command) plus the read-only toolset (Standards/Spec
+  pass over the diff), confined to the execution worktree
+  (`ResolveReviewWorkspace`). Full-patch variant of `CollectExecutionOutput`
+  (`CollectExecutionPatch`) so the prompt carries the actual diff.
+  Verified end-to-end through the real router/FileStore/git chain with a
+  faked model, matching M8's bar as closely as a model-less environment allows.
 * **PR 3 — ReviewPanel frontend.** `ReviewPanel.tsx` +
   `ReviewDraftForm.tsx` (mirroring the GrillMe/Planning wrappers), the
   `finalizeReview` API function + `handleFinalizeReview` route, and the

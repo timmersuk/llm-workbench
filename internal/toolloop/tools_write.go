@@ -19,6 +19,15 @@ func ExecutionTools() []Tool {
 	return append(ReadOnlyTools(), writeTool{}, editTool{}, bashTool{})
 }
 
+// ReviewTools returns the toolset offered to the Review conversation
+// (Milestone 6's automated-checks phase): the read-only Read/Grep/Glob set
+// plus the confined bash tool, so the reviewing agent can run the project's
+// test command and probe the executed change, but not write or edit it —
+// review inspects a completed execution, it doesn't author one.
+func ReviewTools() []Tool {
+	return append(ReadOnlyTools(), bashTool{})
+}
+
 // --- write_file ---
 
 type writeTool struct{}

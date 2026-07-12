@@ -82,10 +82,10 @@ func newStageMessageServer(t *testing.T, tasks *mockTaskStore, repositories []st
 }
 
 func TestHandleStartStageConversation_InvalidStage(t *testing.T) {
-	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/review/start", stageStartRequest{})
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/implementation/start", stageStartRequest{})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
-	req.SetPathValue("stage", "review")
+	req.SetPathValue("stage", "implementation")
 	w := httptest.NewRecorder()
 	handleStartStageConversation(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "")(w, req)
 
@@ -183,10 +183,10 @@ func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t 
 }
 
 func TestHandlePostStageMessage_InvalidStage(t *testing.T) {
-	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/review/messages", stageMessageRequest{Content: "hi"})
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/implementation/messages", stageMessageRequest{Content: "hi"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
-	req.SetPathValue("stage", "review")
+	req.SetPathValue("stage", "implementation")
 	w := httptest.NewRecorder()
 	handlePostStageMessage(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "")(w, req)
 
@@ -630,10 +630,10 @@ func TestHandlePostStageMessage_PersistsErrorOnFailedTurn(t *testing.T) {
 }
 
 func TestHandleDeleteStageMessage_InvalidStage(t *testing.T) {
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/review/messages/0", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/implementation/messages/0", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
-	req.SetPathValue("stage", "review")
+	req.SetPathValue("stage", "implementation")
 	req.SetPathValue("index", "0")
 	w := httptest.NewRecorder()
 	handleDeleteStageMessage(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), nil)(w, req)
@@ -733,10 +733,10 @@ func TestHandleDeleteStageMessage_RemovesOnlyThatMessageAndEvictsSessions(t *tes
 }
 
 func TestHandleRegenerateStageMessage_InvalidStage(t *testing.T) {
-	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/review/messages/0/regenerate", stageRegenerateRequest{Content: "hi"})
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/implementation/messages/0/regenerate", stageRegenerateRequest{Content: "hi"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
-	req.SetPathValue("stage", "review")
+	req.SetPathValue("stage", "implementation")
 	req.SetPathValue("index", "0")
 	w := httptest.NewRecorder()
 	handleRegenerateStageMessage(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "")(w, req)
