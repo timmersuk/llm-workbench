@@ -1,0 +1,46 @@
+id: bash-os-sandboxing
+title: Harden the Execute bash tool with OS-level sandboxing
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-12T00:00:00Z
+updated_at: 2026-07-12T00:00:00Z
+
+objective: >-
+  Milestone 8's bash tool (internal/toolloop/tools_bash.go) confines execution
+  to the execution worktree's cwd only — no OS-level sandbox — matching the
+  trust level ClaudeRunner/CodexRunner already operate at. That posture was a
+  deliberate v1 decision, not an oversight
+  (docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md; and
+  docs/milestones/milestone8.md, "Out of scope" / "Bash: scope and posture").
+  This task is the deferred hardening pass: add real OS-enforced confinement so
+  a model-issued command cannot read or write outside the worktree even if it
+  tries. Two candidates are already on record and must be evaluated hands-on
+  before a pick — neither is a drop-in wrapper.
+
+constraints:
+  - "Preserve current behaviour as the floor: a command legitimately operating within the worktree must still succeed unchanged; sandboxing tightens the boundary, it does not change the tool's contract (output caps, timeout, exit-status reporting)."
+  - "Cross-platform reality: the primary dev/host platform is Windows; Landlock is Linux-5.13+-only, so the design must degrade sensibly per-OS rather than assume one mechanism everywhere."
+  - "No new always-on hard dependency for the default path without a stated reason (project architectural invariant); if sandboxing is opt-in, the unsandboxed path must remain exactly today's behaviour."
+  - "The chosen mechanism and its residual trust assumptions must be recorded (update or supersede ADR 0010)."
+
+assumptions:
+  - "Landlock (landlock-lsm/go-landlock, or shelling out via Zouuup/landrun) gives kernel-level path allow-listing on Linux 5.13+, the closest fit to 'confine writes to the worktree'."
+  - "Sandboxie (Windows-only) uses a redirect-writes-elsewhere model by default; allowlist-like behaviour needs explicit 'Open Path' rules, so it is not a straight analogue of Landlock and may not be the right Windows answer."
+  - "Open question: whether containers/job-objects are a better Windows story than Sandboxie — unresolved; part of what this task must decide."
+  - "This only matters once the local executor runs genuinely untrusted plans autonomously; until then cwd-confinement matches the existing runners' trust level, so this is hardening, not a correctness fix."
+
+success_criteria:
+  - "A bash command that attempts to write or read outside the execution worktree is blocked by an OS-enforced mechanism (not just cwd convention) on at least one target platform, demonstrated by a test."
+  - "Commands operating within the worktree continue to pass, including the existing bash tool test suite."
+  - "The decision (mechanism, platform coverage, residual trust) is captured in an ADR that updates or supersedes 0010."
+
+references:
+  knowledge: []
+  repo:
+    - docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md
+    - docs/milestones/milestone8.md
+    - internal/toolloop/tools_bash.go

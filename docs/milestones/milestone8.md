@@ -56,9 +56,9 @@ blank slate.
   `chatclient-tool-loop` task
   (`data/projects/llm-workbench/tasks/chatclient-tool-loop/task.yaml`) —
   `ChatClientRunner.Run` is now the read-only instantiation of the shared
-  engine, not a separately-built feature. That task file is left
-  untouched; this document is the cross-reference (its schema has no
-  "superseded" status value to set — see `docs/task schema v0.md`).
+  engine, not a separately-built feature. That task is now marked
+  `complete`/`complete`, with a note recording that it was delivered via the
+  shared engine rather than built standalone.
 * ✅ **Shipped (Phase 0, #17).** A spike comparing hand-rolled, `dive`,
   and `eino` as the engine's implementation vehicle, gated by explicit
   evaluation criteria (below) rather than a pre-made pick. Concluded:
@@ -311,7 +311,9 @@ standalone `cmd/modelprobe` qualification harness.
   `docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`.
 * **OS-level Bash sandboxing** (Landlock, Sandboxie, containers). See
   "Bash: scope and posture" above and
-  `docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md`.
+  `docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md`. Now tracked
+  as a task for the deferred hardening pass:
+  `data/projects/llm-workbench/tasks/bash-os-sandboxing/`.
 * **Merge automation and knowledge-base promotion** — unrelated to this
   milestone's scope; still `docs/milestones/milestone7.md`.
 
@@ -331,7 +333,9 @@ standalone `cmd/modelprobe` qualification harness.
   models); the engine's toolset is a parameter, so an MCP-sourced tool —
   the LSP-bridge specifically, for its semantic-navigation token savings —
   slots in later without restructuring. The MCP *filesystem* server is not
-  planned at all: native tools with controlled output win on tokens.
+  planned at all: native tools with controlled output win on tokens. The
+  LSP-bridge fast-follow is now tracked as a task:
+  `data/projects/llm-workbench/tasks/mcp-lsp-bridge-tool/`.
 * **The spike's output format** → both a written comparison and throwaway
   per-candidate code, retained on the unmerged `milestone8-phase0-spike`
   branch (`spike/NOTES.md` + `spike/einoprobe`/`spike/diveprobe`); the
@@ -402,3 +406,12 @@ remaining scope.
   loop onto `internal/toolloop` now that the engine exists, making it the
   engine's first non-runner consumer. Tracked at
   `data/projects/llm-workbench/tasks/modelprobe-toolloop-refactor/`.
+* **`mcp-lsp-bridge-tool`** — the deferred MCP tool-sourcing fast-follow: an
+  LSP-bridge navigation tool (definition/references/hover) consumed over MCP
+  through the engine's toolset parameter, for semantic-navigation token
+  savings on the local-model path. Tracked at
+  `data/projects/llm-workbench/tasks/mcp-lsp-bridge-tool/`.
+* **`bash-os-sandboxing`** — the deferred OS-level hardening pass over the
+  bash tool's cwd-only v1 confinement (Landlock on Linux, a Windows story TBD),
+  to update or supersede ADR 0010. Tracked at
+  `data/projects/llm-workbench/tasks/bash-os-sandboxing/`.
