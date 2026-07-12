@@ -130,6 +130,10 @@ func (r *ClaudeRunner) CloseSession(sessionKey string) {
 
 // Run implements AgentRunner.
 func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.Delta) error) (RunOutput, error) {
+	// The claude CLI path drives its own subprocess rather than the shared
+	// toolloop engine, so it does not surface per-call tool activity here:
+	// in.OnToolCall/OnToolResult are intentionally ignored (only the
+	// engine-backed ChatClientRunner honors them).
 	key := in.SessionKey
 	if !r.tryLock(key) {
 		return RunOutput{}, ErrRunInProgress

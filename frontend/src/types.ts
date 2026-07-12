@@ -130,15 +130,25 @@ export interface ChatHistoryEntry {
 
 // ChatStreamEvent mirrors internal/api/chat.go's chatStreamEvent — one
 // incremental piece of a streamed chat completion. content, reasoning_
-// content, and tool_call are never more than one set on the same event;
-// error is only set on the final event of a stream that failed partway
-// through. tool_call is only ever populated on the stage-conversation
-// endpoint (postStageMessage) — the free-floating chat endpoint never
-// registers tools, so never sets it, but shares this event shape.
+// content, tool_call, and tool_activity are never more than one set on the
+// same event; error is only set on the final event of a stream that failed
+// partway through. tool_call (the single final Draft) and tool_activity
+// (the agent's intermediate executed tool calls/results) are only populated
+// on the stage-conversation endpoints — the free-floating chat endpoint
+// never registers tools, so never sets either, but shares this event shape.
+// Rendering tool_activity in a panel (ReviewPanel) is deferred to a later
+// PR; this contract is carried now so the stream stays typed.
 export interface ChatStreamEvent {
   content?: string
   reasoning_content?: string
   tool_call?: { name: string; arguments: string }
+  tool_activity?: {
+    phase: 'call' | 'result'
+    name: string
+    arguments?: string
+    result?: string
+    is_error?: boolean
+  }
   error?: string
 }
 

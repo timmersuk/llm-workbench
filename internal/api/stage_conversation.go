@@ -617,6 +617,19 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 // they differ in what UserMessage/History they supply and what gets
 // persisted afterward, not in how a turn is actually run and streamed.
 func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, err error) {
+	// Surface the agent's intermediate tool activity (the executed
+	// read_file/grep_search/glob/bash calls and their results) live, so a
+	// client can render "ran go test ./... -> ok" as it happens. These are
+	// the loop's EXECUTED tools — kept distinct from the single final Draft
+	// (validated against in.Tool below), which is never routed here. General
+	// across all three stages: Requirements/Planning only ever make read-only
+	// calls, Review adds bash.
+	in.OnToolCall = func(name, argsJSON string) {
+		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "call", Name: name, Arguments: argsJSON}})
+	}
+	in.OnToolResult = func(name, result string, isError bool) {
+		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "result", Name: name, Result: result, IsError: isError}})
+	}
 	out, runErr := runner.Run(ctx, in, func(d chat.Delta) error {
 		writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
 		return nil

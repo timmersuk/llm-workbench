@@ -18,18 +18,38 @@ const defaultChatExecutor = "local"
 // chatStreamEvent is the shape re-emitted to the browser for each streamed
 // chat completion piece, decoupled from whichever upstream provider is
 // actually configured — the frontend only ever sees this shape, never the
-// upstream's own wire format. Error is only set on the final event of a
-// stream that failed partway through: whatever content/reasoning_content
-// already streamed is left in place, not discarded. ToolCall is only ever
-// set by handlePostStageMessage (stage_conversation.go), when GrillMe/
-// Planning Mode's registered tool is called — the free-floating chat
-// endpoint below never registers any tools, so it never populates this
-// field, but shares the same event shape.
+// upstream's own wire format. At most one of Content/ReasoningContent/
+// ToolCall/ToolActivity is set per event; Error is only set on the final
+// event of a stream that failed partway through: whatever content/
+// reasoning_content already streamed is left in place, not discarded.
+// ToolCall is only ever set by the stage-conversation handlers
+// (stage_conversation.go), when the stage's registered Draft tool is called
+// — the free-floating chat endpoint below never registers any tools, so it
+// never populates it, but shares the same event shape. ToolActivity carries
+// the reviewing/interviewing agent's INTERMEDIATE tool calls and their
+// results (each read_file/grep_search/glob/bash the loop actually ran),
+// distinct from the single final Draft ToolCall — so a client can render the
+// agent's checks live, not just its prose.
 type chatStreamEvent struct {
-	Content          string             `json:"content,omitempty"`
-	ReasoningContent string             `json:"reasoning_content,omitempty"`
-	ToolCall         *chatToolCallEvent `json:"tool_call,omitempty"`
-	Error            string             `json:"error,omitempty"`
+	Content          string                 `json:"content,omitempty"`
+	ReasoningContent string                 `json:"reasoning_content,omitempty"`
+	ToolCall         *chatToolCallEvent     `json:"tool_call,omitempty"`
+	ToolActivity     *chatToolActivityEvent `json:"tool_activity,omitempty"`
+	Error            string                 `json:"error,omitempty"`
+}
+
+// chatToolActivityEvent is the wire shape of one intermediate tool step the
+// agent's loop executed. Phase is "call" (Name/Arguments set, the tool's raw
+// JSON input) or "result" (Name/Result set, IsError flags a failed call).
+// Unlike a Draft chatToolCallEvent, a single turn can emit many of these —
+// they narrate the agent's actual actions (e.g. running the test suite)
+// before it either replies in prose or proposes its Draft.
+type chatToolActivityEvent struct {
+	Phase     string `json:"phase"` // "call" | "result"
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
+	Result    string `json:"result,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 }
 
 // chatToolCallEvent is the wire shape of a proposed Draft's tool call:

@@ -90,6 +90,23 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 		tool := in.Tool
 		cfg.StopTool = &tool
 	}
+	// Surface the loop's intermediate tool activity (Read/Grep/Glob/bash) to
+	// the caller as it happens, exactly as Execute already does. Only the
+	// engine-executed tools flow through here — the final Draft stop call
+	// surfaces separately as res.StopCall, not as a tool_call/tool_result
+	// event.
+	if in.OnToolCall != nil {
+		cfg.OnToolCall = func(name, argumentsJSON string) error {
+			in.OnToolCall(name, argumentsJSON)
+			return nil
+		}
+	}
+	if in.OnToolResult != nil {
+		cfg.OnToolResult = func(name, result string, isError bool) error {
+			in.OnToolResult(name, result, isError)
+			return nil
+		}
+	}
 
 	res, err := r.engine.Run(ctx, cfg, msgs, onDelta)
 	if err != nil {
