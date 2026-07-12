@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -34,27 +33,13 @@ type ChatClient interface {
 	ListModels(ctx context.Context) ([]string, error)
 	CheckHealth(ctx context.Context) error
 
-	// StreamSessionTurn appends userMessage to sessionKey's held history
-	// (seeding a leading system message from systemPrompt on the
-	// session's first turn), streams via StreamChatCompletion (offering
-	// tools, if any), and appends the accumulated assistant reply back
-	// into history before returning — so callers send only the newest
-	// turn instead of resending full history each call. If the model
-	// calls one of tools, the returned ToolCall is non-nil and the held
-	// history records it as an assistant tool-call message followed by a
-	// synthetic tool-role acknowledgement, so the next turn stays
-	// protocol-valid without the caller reconstructing that shape itself.
-	StreamSessionTurn(ctx context.Context, sessionKey, systemPrompt, model, userMessage string, tools []Tool, onDelta func(Delta) error) (content string, toolCall *ToolCall, err error)
-
-	// CloseSession discards sessionKey's held history. Safe to call for a
-	// key that never had one (no-op).
+	// CloseSession is a lifecycle hook to discard any per-session state a
+	// stateful provider might hold. The OpenAI-compatible clients hold none
+	// — each engine turn is a stateless completion and the caller
+	// (ChatClientRunner) owns conversation history — so their implementation
+	// is a no-op. Retained on the interface so a future stateful provider can
+	// hook session teardown, and safe to call for any key.
 	CloseSession(sessionKey string)
-
-	// SeedSessionHistory sets sessionKey's held history to history, but
-	// only if the session doesn't already exist — used to rehydrate a
-	// persisted conversation into a fresh in-memory session after a
-	// process restart, without clobbering a session that's already live.
-	SeedSessionHistory(sessionKey string, history []Message)
 }
 
 // openAIClient talks to an OpenAI-compatible chat completions endpoint. It
@@ -65,9 +50,6 @@ type openAIClient struct {
 	apiKey     string
 	httpClient *http.Client
 	timeout    time.Duration
-
-	sessionsMu sync.Mutex
-	sessions   map[string][]Message
 }
 
 // NewOpenAIClient returns a ChatClient speaking the OpenAI-compatible chat
@@ -84,7 +66,6 @@ func NewOpenAIClient(baseURL, apiKey string, timeout time.Duration) ChatClient {
 		apiKey:     apiKey,
 		httpClient: &http.Client{},
 		timeout:    timeout,
-		sessions:   make(map[string][]Message),
 	}
 }
 
@@ -313,64 +294,10 @@ func (c *openAIClient) ListModels(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// StreamSessionTurn implements ChatClient. Unbounded in-memory growth for
-// the life of the process is expected — CloseSession is the mitigation for
-// a session that's genuinely done, not a size cap.
-func (c *openAIClient) StreamSessionTurn(ctx context.Context, sessionKey, systemPrompt, model, userMessage string, tools []Tool, onDelta func(Delta) error) (string, *ToolCall, error) {
-	c.sessionsMu.Lock()
-	history := append([]Message{}, c.sessions[sessionKey]...)
-	c.sessionsMu.Unlock()
-
-	messages := history
-	if systemPrompt != "" && (len(messages) == 0 || messages[0].Role != "system") {
-		messages = append([]Message{{Role: "system", Content: systemPrompt}}, messages...)
-	}
-	messages = append(messages, Message{Role: "user", Content: userMessage})
-
-	var content strings.Builder
-	var toolCall *ToolCall
-	err := c.StreamChatCompletion(ctx, CompletionRequest{Model: model, Messages: messages, Tools: tools}, func(d Delta) error {
-		if d.Content != "" {
-			content.WriteString(d.Content)
-		}
-		if d.ToolCall != nil {
-			toolCall = d.ToolCall
-		}
-		return onDelta(d)
-	})
-
-	result := content.String()
-
-	assistantMsg := Message{Role: "assistant", Content: result}
-	newHistory := append(messages, assistantMsg)
-	if toolCall != nil {
-		newHistory[len(newHistory)-1].ToolCalls = []ToolCall{*toolCall}
-		newHistory = append(newHistory, Message{Role: "tool", ToolCallID: toolCall.ID, Content: "Draft proposed to user for review."})
-	}
-
-	c.sessionsMu.Lock()
-	c.sessions[sessionKey] = newHistory
-	c.sessionsMu.Unlock()
-
-	return result, toolCall, err
-}
-
-// CloseSession implements ChatClient.
-func (c *openAIClient) CloseSession(sessionKey string) {
-	c.sessionsMu.Lock()
-	delete(c.sessions, sessionKey)
-	c.sessionsMu.Unlock()
-}
-
-// SeedSessionHistory implements ChatClient.
-func (c *openAIClient) SeedSessionHistory(sessionKey string, history []Message) {
-	c.sessionsMu.Lock()
-	defer c.sessionsMu.Unlock()
-	if _, exists := c.sessions[sessionKey]; exists {
-		return
-	}
-	c.sessions[sessionKey] = append([]Message{}, history...)
-}
+// CloseSession implements ChatClient. This client holds no per-session state
+// (each turn is a stateless completion; the caller owns history), so there is
+// nothing to discard.
+func (c *openAIClient) CloseSession(string) {}
 
 func (c *openAIClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")

@@ -8,7 +8,9 @@ shipped** (2026-07-11, #18): `internal/toolloop` engine plus the read-only
 `Run` instantiation, live-verified — see "What shipped" below. **PR 3
 shipped** (2026-07-12): `Execute` now drives the engine with a
 Read/Grep/Glob/Write/Edit toolset, live-verified — see "What shipped (PR 3)"
-below. Bash is next.
+below. **PR 4 shipped** (2026-07-12): the `bash` tool completes the Execute
+toolset and the dead `StreamSessionTurn`/`SeedSessionHistory` session methods
+are retired, live-verified — see "What shipped (PR 4)" below.
 
 ## Why now
 
@@ -47,13 +49,16 @@ blank slate.
   `local` executor: a Write/Edit tool loop against the execution worktree
   (Bash still pending), producing `ExecuteOutput`/`ExecuteEvent` values in
   parity with `ClaudeRunner`'s shape — see "What shipped (PR 3)" below.
+* ✅ **Shipped (PR 4, 2026-07-12).** The `bash` tool — the last piece of the
+  Execute toolset — cwd-confined to the execution worktree, with a 2-minute
+  per-command timeout and a 20KB output cap; see "What shipped (PR 4)" below.
 * ✅ **Shipped (PR 2, #18).** Closure of the standalone
   `chatclient-tool-loop` task
   (`data/projects/llm-workbench/tasks/chatclient-tool-loop/task.yaml`) —
   `ChatClientRunner.Run` is now the read-only instantiation of the shared
-  engine, not a separately-built feature. That task file is left
-  untouched; this document is the cross-reference (its schema has no
-  "superseded" status value to set — see `docs/task schema v0.md`).
+  engine, not a separately-built feature. That task is now marked
+  `complete`/`complete`, with a note recording that it was delivered via the
+  shared engine rather than built standalone.
 * ✅ **Shipped (Phase 0, #17).** A spike comparing hand-rolled, `dive`,
   and `eino` as the engine's implementation vehicle, gated by explicit
   evaluation criteria (below) rather than a pre-made pick. Concluded:
@@ -68,8 +73,8 @@ One engine, two instantiations:
 
 | | `Run` (stage conversations) | `Execute` (implementation) |
 |---|---|---|
-| Status | ✅ shipped (PR 2, #18) | ✅ shipped (PR 3, Write/Edit); Bash pending |
-| Toolset | Read/Grep/Glob (`toolloop.ReadOnlyTools`) | Read/Grep/Glob/Write/Edit (`toolloop.ExecutionTools`); Bash to follow |
+| Status | ✅ shipped (PR 2, #18) | ✅ shipped (PR 3 Write/Edit, PR 4 Bash) |
+| Toolset | Read/Grep/Glob (`toolloop.ReadOnlyTools`) | Read/Grep/Glob/Write/Edit/Bash (`toolloop.ExecutionTools`) |
 | Workspace | shared checkout (`ResolveWorkspace`) | isolated execution worktree (`ResolveExecutionWorkspace`, `worktree.go`) |
 | Turn bound | 30 (`claudeRunnerMaxTurns`) | ~100, matching `claudeExecutionMaxTurns` |
 | Stop condition | text response, or a Draft-tool-call | model finishes the run autonomously |
@@ -168,8 +173,52 @@ model, not just a scripted fake in unit tests.
 
 **Deliberately deferred, not dropped:** retiring
 `chat.ChatClient.StreamSessionTurn`/`SeedSessionHistory` (dead code since PR
-2) stayed out of this PR to keep its diff focused on `Execute` — see
-"Follow-ups" below, unchanged from PR 2's note.
+2) stayed out of this PR to keep its diff focused on `Execute`. It was folded
+into PR 4 instead — see "What shipped (PR 4)" below.
+
+## What shipped (PR 4, 2026-07-12)
+
+**The `bash` tool** (`internal/toolloop/tools_bash.go`) completes the Execute
+toolset. It is one more `toolloop.Tool` — the engine already routes calls by
+name and hands every tool the confinement-checked `Workspace`, so no engine
+change was needed. Mechanics, per the "further decisions taken" note below:
+
+* **Shell resolution** — Git-for-Windows `bash.exe` on Windows (via
+  `exec.LookPath`, falling back to the standard `%ProgramFiles%\Git` install
+  paths), system `bash` elsewhere; a genuine "bash not found" is the tool's
+  one hard error.
+* **Confinement** — `cmd.Dir` pinned to the workspace is the *entire* sandbox
+  in v1: no path allow-listing, no OS-level isolation (ADR 0010), matching the
+  trust level `ClaudeRunner`/`CodexRunner` already operate at.
+* **Invocation & timeout** — `exec.CommandContext(ctx, shell, "-c", command)`
+  under a 2-minute `context.WithTimeout`. A killed command reports its partial
+  output rather than aborting the loop. On Windows, killing `bash.exe` does not
+  close pipes an inherited grandchild (e.g. `sleep`) still holds, so
+  `cmd.WaitDelay` force-closes the I/O shortly after the kill; the orphan
+  finishes in the background, acceptable under the no-sandbox posture.
+* **Output** — combined stdout+stderr, capped at 20KB with an explicit
+  truncation marker, `[exit status N]` appended on a non-zero exit. A non-zero
+  exit is signal the model can read and recover from, **not** a loop-aborting
+  error — only a failure to launch bash is.
+
+**Retiring the dead session methods** (the PR 3 fold-in): `ChatClientRunner`
+has owned its own per-`SessionKey` history since PR 2, so
+`chat.ChatClient.StreamSessionTurn` and `SeedSessionHistory` had no live
+caller. Both are removed from the `ChatClient` interface and from both
+implementations (`openAIClient`, `openaiSDKClient`), along with the now-dead
+per-session `sessions` map/mutex and the interface-satisfaction forwarders on
+`cmd/server/main.go`'s `defaultModelCompleter`. `CloseSession` stays on the
+interface as a no-op lifecycle hook — still called defensively by
+`ChatClientRunner.CloseSession`, and a legitimate seam for a future stateful
+provider.
+
+Verified end-to-end against a live LM Studio endpoint (`openai/gpt-oss-20b`,
+matching PR 2/3's model): the real runner was tasked to count the lines in a
+workspace file. It called the `bash` tool with `wc -l data.txt` (resolving the
+relative path correctly, proving the cwd pin), got `5` back, recorded it, and
+finished — 3 turns, 2239 tokens, 8.8s — proving the bash tool runs real
+commands confined to the worktree against a real model, not just a scripted
+fake.
 
 ## Bash: scope and posture
 
@@ -262,7 +311,9 @@ standalone `cmd/modelprobe` qualification harness.
   `docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md`.
 * **OS-level Bash sandboxing** (Landlock, Sandboxie, containers). See
   "Bash: scope and posture" above and
-  `docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md`.
+  `docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md`. Now tracked
+  as a task for the deferred hardening pass:
+  `data/projects/llm-workbench/tasks/bash-os-sandboxing/`.
 * **Merge automation and knowledge-base promotion** — unrelated to this
   milestone's scope; still `docs/milestones/milestone7.md`.
 
@@ -282,7 +333,9 @@ standalone `cmd/modelprobe` qualification harness.
   models); the engine's toolset is a parameter, so an MCP-sourced tool —
   the LSP-bridge specifically, for its semantic-navigation token savings —
   slots in later without restructuring. The MCP *filesystem* server is not
-  planned at all: native tools with controlled output win on tokens.
+  planned at all: native tools with controlled output win on tokens. The
+  LSP-bridge fast-follow is now tracked as a task:
+  `data/projects/llm-workbench/tasks/mcp-lsp-bridge-tool/`.
 * **The spike's output format** → both a written comparison and throwaway
   per-candidate code, retained on the unmerged `milestone8-phase0-spike`
   branch (`spike/NOTES.md` + `spike/einoprobe`/`spike/diveprobe`); the
@@ -335,14 +388,16 @@ vehicle:
 Tracked here so they aren't lost between PRs; none block Milestone 8's
 remaining scope.
 
-* **`Execute`'s Bash tool** — PR 4, per "Bash: scope and posture" above.
-  Write/Edit landed in PR 3; Bash is the remaining tool, plus wiring it
-  into `toolloop.ExecutionTools()`.
-* **Retire `chat.ChatClient.StreamSessionTurn`/`SeedSessionHistory`** —
-  dead code now that `ChatClientRunner.Run` drives the engine directly and
-  owns its own session history (PR 2). Deliberately left out of PR 3 too,
-  to keep that PR's diff focused on `Execute`; no task filed yet, still
-  small enough to fold into the Bash PR or do as a standalone cleanup.
+* ✅ **Closed (PR 4).** `Execute`'s Bash tool — `bash` landed cwd-confined
+  to the execution worktree and wired into `toolloop.ExecutionTools()`, per
+  "What shipped (PR 4)" above. Tracked at
+  `data/projects/llm-workbench/tasks/execute-bash-tool/` (status: complete).
+* ✅ **Closed (PR 4).** Retire
+  `chat.ChatClient.StreamSessionTurn`/`SeedSessionHistory` — dead since PR 2
+  (the runner owns its own history); removed from the interface and both
+  implementations, folded into the Bash PR as planned. Tracked at
+  `data/projects/llm-workbench/tasks/retire-session-turn-methods/` (status:
+  complete).
 * **`tool-output-caps-config`** — the deferred configuration mechanism
   for the fixed output caps PR 2 shipped, now also covering PR 3's
   write/edit confirmation strings. Tracked at
@@ -351,3 +406,12 @@ remaining scope.
   loop onto `internal/toolloop` now that the engine exists, making it the
   engine's first non-runner consumer. Tracked at
   `data/projects/llm-workbench/tasks/modelprobe-toolloop-refactor/`.
+* **`mcp-lsp-bridge-tool`** — the deferred MCP tool-sourcing fast-follow: an
+  LSP-bridge navigation tool (definition/references/hover) consumed over MCP
+  through the engine's toolset parameter, for semantic-navigation token
+  savings on the local-model path. Tracked at
+  `data/projects/llm-workbench/tasks/mcp-lsp-bridge-tool/`.
+* **`bash-os-sandboxing`** — the deferred OS-level hardening pass over the
+  bash tool's cwd-only v1 confinement (Landlock on Linux, a Windows story TBD),
+  to update or supersede ADR 0010. Tracked at
+  `data/projects/llm-workbench/tasks/bash-os-sandboxing/`.

@@ -14,10 +14,8 @@ import (
 )
 
 // fakeChatClient is a minimal chat.ChatClient stub for exercising
-// ChatClientRunner without a real HTTP upstream. Since the runner now drives
-// the tool loop via StreamChatCompletion, that is the method under test here;
-// StreamSessionTurn/SeedSessionHistory remain on the interface but are no
-// longer called by Run, so they are inert stubs.
+// ChatClientRunner without a real HTTP upstream. The runner drives the tool
+// loop via StreamChatCompletion, so that is the method under test here.
 type fakeChatClient struct {
 	// Scripted StreamChatCompletion response, used when streamTurns is nil.
 	streamContent  string
@@ -65,12 +63,6 @@ func (f *fakeChatClient) StreamChatCompletion(_ context.Context, req chat.Comple
 	}
 	return nil
 }
-
-// Inert on the interface but unused by Run now.
-func (f *fakeChatClient) StreamSessionTurn(context.Context, string, string, string, string, []chat.Tool, func(chat.Delta) error) (string, *chat.ToolCall, error) {
-	return "", nil, nil
-}
-func (f *fakeChatClient) SeedSessionHistory(string, []chat.Message) {}
 
 func (f *fakeChatClient) CloseSession(sessionKey string) {
 	f.closedSessions = append(f.closedSessions, sessionKey)

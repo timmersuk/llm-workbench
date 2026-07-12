@@ -12,11 +12,11 @@ import (
 )
 
 // ExecutionTools returns the write-enabled toolset offered to the Execute
-// instantiation: everything ReadOnlyTools offers, plus write_file and
-// edit_file. Bash joins this set in a later PR — see milestone8.md's "Bash:
-// scope and posture".
+// instantiation: everything ReadOnlyTools offers, plus write_file, edit_file,
+// and bash — the full implementation-stage toolset (milestone8.md's "Bash:
+// scope and posture").
 func ExecutionTools() []Tool {
-	return append(ReadOnlyTools(), writeTool{}, editTool{})
+	return append(ReadOnlyTools(), writeTool{}, editTool{}, bashTool{})
 }
 
 // --- write_file ---
