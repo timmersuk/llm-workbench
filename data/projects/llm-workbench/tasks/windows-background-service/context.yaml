@@ -70,10 +70,14 @@ detail: |
   as visible as a console's.
 
 verification:
-  - "workbench.exe install registers a Windows Service; starting it via services.msc or sc start makes GET /healthcheck respond."
-  - "sc stop performs a clean shutdown (same orphaned-subprocess check as graceful-shutdown) within the SCM's default stop timeout."
-  - "workbench.exe uninstall removes the service cleanly, confirmed via services.msc no longer listing it."
-  - "A service installed without AGENT_REPOS_ROOT configured produces a clear, discoverable error (event log or equivalent), not just a silent failure to start."
+  - description: "workbench.exe install registers a Windows Service; starting it via services.msc or sc start makes GET /healthcheck respond."
+    kind: human_judgment
+  - description: "sc stop performs a clean shutdown (same orphaned-subprocess check as graceful-shutdown) within the SCM's default stop timeout."
+    kind: human_judgment
+  - description: "workbench.exe uninstall removes the service cleanly, confirmed via services.msc no longer listing it."
+    kind: human_judgment
+  - description: "A service installed without AGENT_REPOS_ROOT configured produces a clear, discoverable error (event log or equivalent), not just a silent failure to start."
+    kind: human_judgment
 
 open_questions:
   - "How should required env vars actually be supplied to the installed service — via kardianos's own Config mechanism, a wrapper .env file read at run() entry, or documented manual registry/services.msc configuration? Needs a decision before implementation, since it changes the install UX."

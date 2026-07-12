@@ -54,9 +54,12 @@ detail: |
   "supervise" model is chosen.
 
 verification:
-  - "Launching the tray binary shows an icon whose status reflects real /healthcheck state, verified by toggling the LLM backend on/off and observing the icon change."
-  - "\"Open in browser\" opens the correct host:port, including when the port isn't the fixed :8080 default."
-  - "\"Quit\" performs a full graceful shutdown (no orphaned claude subprocess, per graceful-shutdown's verification) and removes the tray icon from the notification area."
+  - description: "Launching the tray binary shows an icon whose status reflects real /healthcheck state, verified by toggling the LLM backend on/off and observing the icon change."
+    kind: human_judgment
+  - description: "\"Open in browser\" opens the correct host:port, including when the port isn't the fixed :8080 default."
+    kind: human_judgment
+  - description: "\"Quit\" performs a full graceful shutdown (no orphaned claude subprocess, per graceful-shutdown's verification) and removes the tray icon from the notification area."
+    kind: human_judgment
 
 open_questions:
   - "Own vs. supervise the server process — see detail above. Blocks committing to cmd/tray's actual implementation shape."

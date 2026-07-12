@@ -72,9 +72,21 @@ background: ""
 files: []
 detail: |
   ""
-verification: []
+verification:
+  - description: ""
+    kind: agent_executable | human_judgment
 open_questions: []
 ```
+
+Each `verification` entry is a structured step, not a bare string: a
+human-readable `description` plus a `kind` classifying who performs it —
+`agent_executable` (the reviewing agent attempts it directly — hit an
+endpoint, run a command, drive a UI check — and reports what it observed) or
+`human_judgment` (the human performs it themselves; the agent only records
+their confirmation). Authored during GrillMe, consumed during Review's
+per-step confirmation phase. See
+`docs/adr/0008-structure-context-verification-entries.md` for why this field
+was widened from `[]string`.
 
 ---
 

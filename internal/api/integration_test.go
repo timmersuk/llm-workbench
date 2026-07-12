@@ -624,7 +624,17 @@ func TestIntegration_FullLifecycle_FinalizeAndReviseBothWays(t *testing.T) {
 
 	draft := task.RequirementsDraft{
 		Objective: "ship login",
-		Context:   task.Context{Summary: "adds a login page"},
+		Context: task.Context{
+			Summary: "adds a login page",
+			// Structured verification (docs/adr/0008): the exact wire shape
+			// the frontend now POSTs. This is the finalize break Milestone 6
+			// PR 2 has to fix — a string[] body would no longer decode into
+			// []VerificationStep — so the round-trip is asserted end-to-end.
+			Verification: []task.VerificationStep{
+				{Description: "hit POST /login and get a 200", Kind: task.VerificationKindAgentExecutable},
+				{Description: "the empty-state copy reads naturally", Kind: task.VerificationKindHumanJudgment},
+			},
+		},
 	}
 	draftBody, err := json.Marshal(draft)
 	require.NoError(t, err)
@@ -641,6 +651,7 @@ func TestIntegration_FullLifecycle_FinalizeAndReviseBothWays(t *testing.T) {
 	var gotCtx task.Context
 	require.NoError(t, json.NewDecoder(ctxResp.Body).Decode(&gotCtx))
 	assert.Equal(t, "adds a login page", gotCtx.Summary)
+	assert.Equal(t, draft.Context.Verification, gotCtx.Verification)
 
 	plan := task.Plan{Approach: "incremental", EstimatedComplexity: "low"}
 	planBody, err := json.Marshal(plan)

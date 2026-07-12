@@ -47,7 +47,14 @@ func TestFileStore_FinalizeRequirements_TrimsFieldsToAvoidYAMLRoundTripBug(t *te
 	draft := RequirementsDraft{
 		Objective:   "\nship login",
 		Constraints: []string{"\nno new deps"},
-		Context:     Context{Summary: "\nadds a login page", Detail: "\nsome detail"},
+		Context: Context{
+			Summary: "\nadds a login page",
+			Detail:  "\nsome detail",
+			Verification: []VerificationStep{
+				{Description: "\nrun the tests", Kind: VerificationKindAgentExecutable},
+				{Description: "   ", Kind: VerificationKindHumanJudgment}, // dropped: empty after trim
+			},
+		},
 	}
 	updated, err := store.FinalizeRequirements("task-a", draft)
 	require.NoError(t, err)
@@ -64,6 +71,9 @@ func TestFileStore_FinalizeRequirements_TrimsFieldsToAvoidYAMLRoundTripBug(t *te
 	ctx, err := store.GetContext("task-a")
 	require.NoError(t, err)
 	assert.Equal(t, "adds a login page", ctx.Summary)
+	// The empty-Description step is dropped; the surviving one is trimmed and
+	// keeps its Kind, and round-trips back off disk intact.
+	assert.Equal(t, []VerificationStep{{Description: "run the tests", Kind: VerificationKindAgentExecutable}}, ctx.Verification)
 }
 
 func TestFileStore_FinalizeRequirements_WrongStage(t *testing.T) {

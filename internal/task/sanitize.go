@@ -17,3 +17,22 @@ func trimmedList(items []string) []string {
 	}
 	return trimmed
 }
+
+// trimmedVerification trims each VerificationStep's Description (same yaml.v3
+// leading-newline hazard trimmedList guards against, since Description is
+// LLM-authored Draft free text) and drops any entry whose Description is
+// empty after trimming — an empty verification step carries no meaning and
+// would only clutter Review's per-step walk. Kind is trimmed but otherwise
+// preserved as-is; validation of its value belongs to the Draft schema, not
+// here.
+func trimmedVerification(items []VerificationStep) []VerificationStep {
+	trimmed := make([]VerificationStep, 0, len(items))
+	for _, s := range items {
+		desc := strings.TrimSpace(s.Description)
+		if desc == "" {
+			continue
+		}
+		trimmed = append(trimmed, VerificationStep{Description: desc, Kind: strings.TrimSpace(s.Kind)})
+	}
+	return trimmed
+}

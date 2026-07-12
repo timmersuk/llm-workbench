@@ -6,7 +6,10 @@ files:
     - internal/utils/env.go
 detail: ""
 verification:
-    - make build && run the binary in console mode, confirm normal startup/serving is unchanged
-    - Start a claude-code chat session to spawn a real claude CLI subprocess, then Ctrl+C the server, and confirm (e.g. via process list) no orphaned claude process remains
-    - Confirm process exit happens within SHUTDOWN_TIMEOUT (default 10s) under normal conditions
+    - description: make build && run the binary in console mode, confirm normal startup/serving is unchanged
+      kind: human_judgment
+    - description: Start a claude-code chat session to spawn a real claude CLI subprocess, then Ctrl+C the server, and confirm (e.g. via process list) no orphaned claude process remains
+      kind: human_judgment
+    - description: Confirm process exit happens within SHUTDOWN_TIMEOUT (default 10s) under normal conditions
+      kind: human_judgment
 open_questions: []

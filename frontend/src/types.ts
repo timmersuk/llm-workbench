@@ -142,6 +142,20 @@ export interface ChatStreamEvent {
   error?: string
 }
 
+// VerificationKind mirrors task.VerificationKind* (internal/task/context.go)
+// — who performs a verification step: agent_executable (the reviewing agent
+// attempts it directly) or human_judgment (the human performs it, the agent
+// only records their confirmation). See docs/adr/0008.
+export type VerificationKind = 'agent_executable' | 'human_judgment'
+
+// VerificationStep mirrors task.VerificationStep (internal/task/context.go) —
+// one entry in context.yaml's verification list: a human-readable description
+// plus a kind classifying who performs it.
+export interface VerificationStep {
+  description: string
+  kind: VerificationKind
+}
+
 // TaskContext mirrors task.Context (internal/task/context.go) —
 // context.yaml, GrillMe's Finalize output alongside the requirements
 // fields on Task itself.
@@ -150,7 +164,7 @@ export interface TaskContext {
   background: string
   files: string[]
   detail: string
-  verification: string[]
+  verification: VerificationStep[]
   open_questions: string[]
 }
 

@@ -40,7 +40,17 @@ var proposeContextSchema = json.RawMessage(`{
         "background": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
         "detail": {"type": "string"},
-        "verification": {"type": "array", "items": {"type": "string"}},
+        "verification": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "description": {"type": "string"},
+              "kind": {"type": "string", "enum": ["agent_executable", "human_judgment"]}
+            },
+            "required": ["description", "kind"]
+          }
+        },
         "open_questions": {"type": "array", "items": {"type": "string"}}
       },
       "required": ["summary"]

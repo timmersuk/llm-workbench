@@ -8,17 +8,39 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Verification step kinds, per docs/adr/0008-structure-context-verification-entries.md
+// and CONTEXT.md's **Verification step** entry. Review's per-step
+// confirmation phase (Milestone 6) routes on this: an agent_executable step
+// is attempted by the reviewing agent directly (hit an endpoint, run a
+// command, drive a UI check) and reported; a human_judgment step is left for
+// the human to perform, with the agent only recording their confirmation.
+const (
+	VerificationKindAgentExecutable = "agent_executable"
+	VerificationKindHumanJudgment   = "human_judgment"
+)
+
+// VerificationStep is one entry in context.yaml's verification list —
+// a human-readable Description plus a Kind classifying who performs it
+// (agent_executable | human_judgment). Widened from a bare string per
+// docs/adr/0008: GrillMe authors the classification once, at the point a
+// human is already reviewing the draft context, and Review is its first
+// consumer. Field-for-field mirror of docs/task schema v0.md §3.
+type VerificationStep struct {
+	Description string `yaml:"description" json:"description"`
+	Kind        string `yaml:"kind" json:"kind"` // agent_executable | human_judgment
+}
+
 // Context is the optional, derived narrative context behind a task, stored
 // as <task root>/<id>/context.yaml. Field-for-field mirror of
 // docs/task schema v0.md §3 ("context.yaml"). Produced by GrillMe via
 // FinalizeRequirements (lifecycle.go), never hand-authored.
 type Context struct {
-	Summary       string   `yaml:"summary" json:"summary"`
-	Background    string   `yaml:"background" json:"background"`
-	Files         []string `yaml:"files" json:"files"`
-	Detail        string   `yaml:"detail" json:"detail"`
-	Verification  []string `yaml:"verification" json:"verification"`
-	OpenQuestions []string `yaml:"open_questions" json:"open_questions"`
+	Summary       string             `yaml:"summary" json:"summary"`
+	Background    string             `yaml:"background" json:"background"`
+	Files         []string           `yaml:"files" json:"files"`
+	Detail        string             `yaml:"detail" json:"detail"`
+	Verification  []VerificationStep `yaml:"verification" json:"verification"`
+	OpenQuestions []string           `yaml:"open_questions" json:"open_questions"`
 }
 
 // RequirementsDraft is the wire shape GrillMe's propose_context tool call

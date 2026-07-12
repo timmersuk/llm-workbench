@@ -60,10 +60,14 @@ detail: |
   or alongside this task, not after.
 
 verification:
-  - "CI runs make all, boots the binary against seeded fixtures, and Playwright's suite passes against it."
-  - "At least one test loads the dashboard and asserts real task/project data (not mocked) renders in a real browser."
-  - "The chat panel test exercises a stubbed LLM endpoint end-to-end (UI input -> real HTTP call -> stub response -> UI render), with no dependency on a real model being available."
-  - "make test-e2e works locally too, for a developer who wants to run it without pushing to CI."
+  - description: "CI runs make all, boots the binary against seeded fixtures, and Playwright's suite passes against it."
+    kind: agent_executable
+  - description: "At least one test loads the dashboard and asserts real task/project data (not mocked) renders in a real browser."
+    kind: agent_executable
+  - description: "The chat panel test exercises a stubbed LLM endpoint end-to-end (UI input -> real HTTP call -> stub response -> UI render), with no dependency on a real model being available."
+    kind: agent_executable
+  - description: "make test-e2e works locally too, for a developer who wants to run it without pushing to CI."
+    kind: agent_executable
 
 open_questions:
   - "Is GitHub Actions actually the right CI target, or is there a preference for something else? Assumed as the likely default (GitHub-hosted repo) but not confirmed — worth resolving before starting, since the workflow-file step depends on it."

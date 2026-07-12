@@ -14,7 +14,7 @@ const draft: RequirementsDraft = {
     background: 'Users currently cannot log in',
     files: ['LoginPage.tsx'],
     detail: 'Some detail',
-    verification: ['Manually log in'],
+    verification: [{ description: 'Manually log in', kind: 'human_judgment' }],
     open_questions: ['What about SSO?'],
   },
 }
@@ -51,6 +51,62 @@ describe('RequirementsDraftForm', () => {
     expect(onChange).toHaveBeenCalledWith({
       ...draft,
       context: { ...draft.context, summary: 'Updated summary' },
+    })
+  })
+
+  it('renders each verification step as a description input and kind selector', () => {
+    render(<RequirementsDraftForm draft={draft} onChange={vi.fn()} />)
+    expect(screen.getByLabelText('Verification step 1 description')).toHaveValue('Manually log in')
+    expect(screen.getByLabelText('Verification step 1 kind')).toHaveValue('human_judgment')
+  })
+
+  it('editing a verification step description changes only that step', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.change(screen.getByLabelText('Verification step 1 description'), {
+      target: { value: 'Log in via SSO' },
+    })
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: { ...draft.context, verification: [{ description: 'Log in via SSO', kind: 'human_judgment' }] },
+    })
+  })
+
+  it('editing a verification step kind changes only that step', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.change(screen.getByLabelText('Verification step 1 kind'), {
+      target: { value: 'agent_executable' },
+    })
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: { ...draft.context, verification: [{ description: 'Manually log in', kind: 'agent_executable' }] },
+    })
+  })
+
+  it('adding a verification step appends an agent_executable entry', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.click(screen.getByText('Add verification step'))
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: {
+        ...draft.context,
+        verification: [
+          { description: 'Manually log in', kind: 'human_judgment' },
+          { description: '', kind: 'agent_executable' },
+        ],
+      },
+    })
+  })
+
+  it('removing a verification step drops it', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.click(screen.getByLabelText('Remove verification step 1'))
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: { ...draft.context, verification: [] },
     })
   })
 })
