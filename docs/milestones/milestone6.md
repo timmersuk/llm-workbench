@@ -287,25 +287,44 @@ not replacing it.
 Delivered as sequential PRs, matching Milestone 8's cadence — each
 independently reviewable and live-verifiable, rather than one large diff:
 
-* **PR 1 — Review backend + lifecycle.** The `context.yaml`
-  `verification: []` schema change (`[]string` → structured
-  `{description, kind}` entries, `docs/adr/0008`), the append-only
-  `reviews/review-NNN.yaml` store (`internal/task/review.go`:
+* **PR 1 — Review backend + lifecycle.** ✅ **Shipped (#23).** The
+  append-only `reviews/review-NNN.yaml` store (`internal/task/review.go`:
   `RecordReview`/`ListReviews`/`NextReviewID`, mirroring the execution
-  store), `FinalizeReview` + `ReviseToImplementation` + the
-  `execution.yaml` `review_feedback` field, and the three-way
-  `approved | rejected | needs_changes` → stage-transition wiring. The
-  first thing to ever reach `StageComplete`. No conversation or UI yet —
-  proven by unit tests over the lifecycle transitions.
-* **PR 2 — Review conversation.** The `propose_review` Draft tool
-  (`internal/drafttool`, added to `All()` so `cmd/draftmcp` picks it up
-  for free), the three `stage`-switch cases (`validateConversationStage`,
-  `stageTool`, `buildStagePrompt`), and the `reviewSystemPrompt` encoding
-  the three-phase discipline. The automated-checks phase drives a
-  `toolloop` loop with the M8 `bash` tool (test command) plus the
-  read-only toolset (Standards/Spec pass over the diff). Full-patch variant
-  of `CollectExecutionOutput` so the prompt carries the actual diff.
-  Live-verified end-to-end against a real execution, matching M8's bar.
+  store), `FinalizeReview`, and the three-way
+  `approved | rejected | needs_changes` → stage-transition wiring — the
+  first thing to ever reach `StageComplete`. `RecordReview` is pure
+  append-only storage (no stage change); `FinalizeReview` owns the
+  transition. No conversation or UI yet — proven by unit tests over the
+  public `FileStore` boundary.
+
+  Two items the original scope listed here moved out, because
+  implementation showed they don't belong in PR 1:
+  * The **`context.yaml` `verification: []` schema change** (`[]string` →
+    structured `{description, kind}`, `docs/adr/0008`) moved to **PR 2**.
+    It's independent of the review store, and it inseparably breaks the
+    existing GrillMe finalize (the frontend POSTs `verification: ["string"]`,
+    which no longer unmarshals into `[]VerificationStep`), so it must land
+    backend + frontend together — alongside PR 2, the first code to actually
+    consume `kind`.
+  * The standalone **`ReviseToImplementation` + `execution.yaml`
+    `review_feedback` field** deferred to the execute-retrigger PR that
+    populates/reads them. In PR 1 the `needs_changes` notes already live in
+    `review-NNN.yaml`; adding an unread field now would be speculative.
+    `FinalizeReview` handles the `needs_changes → implementation` transition
+    inline.
+* **PR 2 — Review conversation + verification schema.** The `context.yaml`
+  `verification` schema change (backend `[]string` → `{description, kind}`,
+  `drafttool.ProposeContext`'s schema, `FinalizeRequirements` handling, and
+  the GrillMe authoring form in the frontend — all together, per ADR 0008),
+  then the `propose_review` Draft tool (`internal/drafttool`, added to
+  `All()` so `cmd/draftmcp` picks it up for free), the three `stage`-switch
+  cases (`validateConversationStage`, `stageTool`, `buildStagePrompt`), and
+  the `reviewSystemPrompt` encoding the three-phase discipline. The
+  automated-checks phase drives a `toolloop` loop with the M8 `bash` tool
+  (test command) plus the read-only toolset (Standards/Spec pass over the
+  diff). Full-patch variant of `CollectExecutionOutput` so the prompt
+  carries the actual diff. Live-verified end-to-end against a real
+  execution, matching M8's bar.
 * **PR 3 — ReviewPanel frontend.** `ReviewPanel.tsx` +
   `ReviewDraftForm.tsx` (mirroring the GrillMe/Planning wrappers), the
   `finalizeReview` API function + `handleFinalizeReview` route, and the
@@ -314,8 +333,10 @@ independently reviewable and live-verifiable, rather than one large diff:
 
 ## Open questions for whoever executes this milestone
 
-* Exact wire shape for how `ReviseToImplementation`'s `reviewFeedback`
-  reaches the next `Execute` call's prompt — whether it's injected into
-  the executor's system prompt alongside `plan_ref`/`context_refs` (the
-  leaning) or handled some other way. A PR 1 implementation detail,
-  sketched above but not fully specified.
+* Exact wire shape for how a `needs_changes` review's notes reach the next
+  `Execute` call's prompt — whether via a standalone `ReviseToImplementation`
+  + an `execution.yaml` `review_feedback` field injected alongside
+  `plan_ref`/`context_refs` (the leaning), or by the execute-retrigger path
+  reading the latest `review-NNN.yaml` directly. Deferred to that
+  execute-retrigger PR (out of PR 1, which already persists the notes in the
+  verdict record); sketched above but not fully specified.
