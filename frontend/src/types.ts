@@ -298,3 +298,46 @@ export interface ExecuteStreamEvent {
   error?: string
   execution?: Execution
 }
+
+// ReviewDecision/Review/ReviewDraft mirror internal/task/review.go — one
+// review verdict, stored append-only as reviews/<review_id>.yaml. The
+// decision drives the stage transition on Finalize: approved → complete,
+// needs_changes → implementation, rejected → requirements.
+export type ReviewDecision = 'approved' | 'rejected' | 'needs_changes'
+
+export interface Review {
+  review_id: string
+  task_id: string
+  decision: ReviewDecision
+  notes: string
+  created_at: string
+}
+
+// ReviewDraft is the propose_review tool-call / Review Finalize body — the
+// three-way decision plus notes, never persisted as this exact shape
+// (finalizeReview turns it into a Review). Mirrors task.ReviewDraft.
+export interface ReviewDraft {
+  decision: ReviewDecision
+  notes: string
+}
+
+// FinalizeReviewResponse mirrors internal/api finalizeReviewResponse — the
+// task (moved by the verdict) plus the review-NNN.yaml just recorded.
+export interface FinalizeReviewResponse {
+  task: Task
+  review: Review
+}
+
+// ReviewsListResult mirrors handleListReviews' response — every verdict for a
+// task, oldest first. Nullable for the same reason executions is: a task with
+// no reviews yet has no reviews/ directory.
+export interface ReviewsListResult {
+  reviews: Review[] | null
+}
+
+// ReviewDiffResult mirrors handleReviewDiff's response — the raw patch of the
+// execution under review. The branch/commit/file summary shown alongside comes
+// from the executions list; this carries only the (potentially large) diff.
+export interface ReviewDiffResult {
+  patch: string
+}

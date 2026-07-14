@@ -70,6 +70,15 @@ interface StageConversationPanelProps<D> {
   emptyDraft: D
   renderDraft: (draft: D, onChange: (draft: D) => void) => ReactNode
   onFinalize: (draft: D) => Promise<void>
+  // autoStart controls whether the panel fires its opening turn the moment
+  // it mounts on an empty conversation (GrillMe/Planning, whose opening turn
+  // is just a question) or waits for an explicit Start click. Review passes
+  // false: its first turn runs the real test suite + a code-review pass in a
+  // worktree — real compute that must not fire on every panel mount/reload.
+  autoStart?: boolean
+  // startLabel names the explicit Start button shown when autoStart is false
+  // (e.g. "Start Review"); ignored when autoStart is true.
+  startLabel?: string
 }
 
 // localChatOption is always available — the local-LLM chat path
@@ -96,9 +105,20 @@ export function StageConversationPanel<D>({
   emptyDraft,
   renderDraft,
   onFinalize,
+  autoStart = true,
+  startLabel,
 }: StageConversationPanelProps<D>) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
+  // initializing is true until the mount effect has resolved the existing
+  // conversation (and models/executors) — gates the explicit-start button so
+  // it can't flash before we know whether the conversation is actually empty.
+  const [initializing, setInitializing] = useState(true)
+  // resolvedStart holds the model/executor the mount effect settled on, so a
+  // later Start click fires with the same values auto-start would have used
+  // (reading selectedModel/executor state is fine post-init, but this keeps
+  // the manual and automatic paths identical).
+  const resolvedStart = useRef({ model: '', executor: '' })
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [models, setModels] = useState<string[]>([])
@@ -155,6 +175,7 @@ export function StageConversationPanel<D>({
         // a message manually once the load error is visible.
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : String(err))
+          setInitializing(false)
         }
         return
       }
@@ -194,10 +215,17 @@ export function StageConversationPanel<D>({
         // No agent executors available — Local LLM chat stays the only option.
       }
 
+      if (cancelled) {
+        return
+      }
+      resolvedStart.current = { model: resolvedModel, executor: resolvedExecutor }
+      setInitializing(false)
+
       // A brand-new conversation has nothing for the human to reply to —
       // GrillMe/Planning Mode asks the opening question itself instead of
-      // waiting on a message that doesn't exist yet.
-      if (!cancelled && loadedEmpty) {
+      // waiting on a message that doesn't exist yet. When autoStart is false
+      // (Review), the human fires the opening turn explicitly via handleStart.
+      if (loadedEmpty && autoStart) {
         await startConversation(resolvedModel, resolvedExecutor)
       }
     }
@@ -331,6 +359,16 @@ export function StageConversationPanel<D>({
       abortControllerRef.current = null
       setSending(false)
     }
+  }
+
+  // handleStart fires the opening turn for an autoStart=false panel (Review),
+  // using the model/executor the mount effect resolved — the explicit analog
+  // of the automatic startConversation call GrillMe/Planning make on mount.
+  async function handleStart() {
+    if (sending) {
+      return
+    }
+    await startConversation(resolvedStart.current.model, resolvedStart.current.executor)
   }
 
   async function handleSend() {
@@ -485,6 +523,12 @@ export function StageConversationPanel<D>({
     }
   }
 
+  // notStarted is the pre-Start state of an autoStart=false panel (Review):
+  // the mount effect has finished, the conversation is genuinely empty, and
+  // nothing errored — so show the explicit Start button and withhold the
+  // reply box until the human fires the opening turn.
+  const notStarted = !autoStart && !initializing && messages.length === 0 && !loadError
+
   return (
     <div className="stage-conversation">
       <div className="stage-conversation-header">
@@ -518,6 +562,14 @@ export function StageConversationPanel<D>({
       </div>
 
       {loadError && <p className="error">Could not load conversation: {loadError}</p>}
+
+      {notStarted && (
+        <div className="stage-start">
+          <button type="button" onClick={handleStart} disabled={sending}>
+            {startLabel ?? 'Start'}
+          </button>
+        </div>
+      )}
 
       <div className="chat-history">
         {messages.map((message, index) => (
@@ -553,6 +605,8 @@ export function StageConversationPanel<D>({
         ))}
       </div>
 
+      {!notStarted && (
+      <>
       <div className="chat-input">
         <textarea
           value={draft}
@@ -582,6 +636,8 @@ export function StageConversationPanel<D>({
         )}
       </div>
       <p className="chat-input-hint">Enter to send &middot; Alt+Enter for a new line</p>
+      </>
+      )}
 
       {pendingDraft && (
         <div className="draft-review">

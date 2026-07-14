@@ -27,6 +27,13 @@ vi.mock('./ExecutePanel', () => ({
     </div>
   ),
 }))
+vi.mock('./ReviewPanel', () => ({
+  ReviewPanel: (props: { projectId: string; taskId: string }) => (
+    <div data-testid="review-panel">
+      review:{props.projectId}:{props.taskId}
+    </div>
+  ),
+}))
 
 const projectId = 'demo'
 
@@ -51,6 +58,11 @@ function makeTask(stage: TaskStage, overrides: Partial<Task> = {}): Task {
 function stubNoContextOrPlan() {
   vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
   vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
+  // The complete-stage effect reads the latest verdict + branch; default to
+  // empty so tests that don't care about the completion detail don't crash on
+  // an unmocked call.
+  vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
+  vi.mocked(api.listExecutions).mockResolvedValue({ executions: [] })
 }
 
 describe('TaskDetailPanel — stage-conditional rendering', () => {
@@ -116,6 +128,13 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(screen.queryByTestId('execute-panel')).not.toBeInTheDocument()
   })
 
+  it('review stage renders ReviewPanel with the right props', async () => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('review')} onBack={vi.fn()} />)
+
+    expect(await screen.findByTestId('review-panel')).toHaveTextContent('review:demo:task-a')
+  })
+
   it('complete stage renders neither stage panel nor any Revise button', async () => {
     stubNoContextOrPlan()
     render(<TaskDetailPanel projectId={projectId} task={makeTask('complete')} onBack={vi.fn()} />)
@@ -124,6 +143,38 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
     expect(screen.queryByTestId('planningmode-panel')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Revise/ })).not.toBeInTheDocument()
+  })
+
+  it('complete stage shows the verdict notes and the branch to merge by hand', async () => {
+    vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
+    vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
+    vi.mocked(api.listReviews).mockResolvedValue({
+      reviews: [
+        { review_id: 'review-001', task_id: 'task-a', decision: 'needs_changes', notes: 'first pass', created_at: '2026-01-01T00:00:00Z' },
+        { review_id: 'review-002', task_id: 'task-a', decision: 'approved', notes: 'looks great', created_at: '2026-01-02T00:00:00Z' },
+      ],
+    })
+    vi.mocked(api.listExecutions).mockResolvedValue({
+      executions: [
+        {
+          execution_id: 'exec-002',
+          task_id: 'task-a',
+          executor: { type: 'claude-code', version: '' },
+          input: { plan_ref: 'plan.yaml', context_refs: [] },
+          output: { artifacts: [], git_branch: 'wb/task-a/exec-002', commits: [] },
+          metrics: { duration_seconds: 1, tokens_used: 0, cost_estimate: 0 },
+          status: 'success',
+          created_at: '2026-01-02T00:00:00Z',
+        },
+      ],
+    })
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('complete')} onBack={vi.fn()} />)
+
+    // Shows the latest verdict, not the earlier needs_changes one.
+    expect(await screen.findByText(/Review complete — approved/)).toBeInTheDocument()
+    expect(screen.getByText('looks great')).toBeInTheDocument()
+    expect(screen.getByText('wb/task-a/exec-002')).toBeInTheDocument()
   })
 })
 

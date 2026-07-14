@@ -518,6 +518,53 @@ td button {
   margin-top: 12px;
 }
 
+.review-summary {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.review-summary h4 {
+  margin-top: 0;
+}
+
+.review-diff {
+  margin-top: 12px;
+}
+
+.review-diff pre {
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--bg-alt);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.stage-start {
+  margin: 12px 0;
+}
+
+.task-complete {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  margin-top: 16px;
+}
+
+.task-complete h4 {
+  margin-top: 0;
+}
+
+.task-complete code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
 .message-actions {
   display: flex;
   gap: 8px;

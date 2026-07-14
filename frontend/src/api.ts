@@ -8,10 +8,14 @@ import type {
   CreateTaskRequest,
   ExecuteStreamEvent,
   ExecutionsListResult,
+  FinalizeReviewResponse,
   ModelsListResult,
   Project,
   ProjectListResult,
   RequirementsDraft,
+  ReviewDiffResult,
+  ReviewDraft,
+  ReviewsListResult,
   Task,
   TaskContext,
   TaskListResult,
@@ -114,6 +118,25 @@ export function finalizeRequirements(projectId: string, taskId: string, draft: R
 
 export function finalizePlan(projectId: string, taskId: string, plan: TaskPlan): Promise<FinalizePlanResponse> {
   return mutateJSON<FinalizePlanResponse>('POST', `${taskPath(projectId, taskId)}/plan/finalize`, plan)
+}
+
+export function finalizeReview(projectId: string, taskId: string, draft: ReviewDraft): Promise<FinalizeReviewResponse> {
+  return mutateJSON<FinalizeReviewResponse>('POST', `${taskPath(projectId, taskId)}/review/finalize`, draft)
+}
+
+// listReviews returns every recorded verdict for a task, oldest first — the
+// terminal "complete" screen reads the latest to show its notes on a fresh
+// visit (ReviewsListResult).
+export function listReviews(projectId: string, taskId: string): Promise<ReviewsListResult> {
+  return getJSON<ReviewsListResult>(`${taskPath(projectId, taskId)}/reviews`)
+}
+
+// getReviewDiff returns the raw patch of the task's most recent execution —
+// the diff ReviewPanel shows in its collapsed "View diff" before the review
+// conversation starts. 404s when there's no execution yet, which the panel
+// treats as "no diff to show" rather than an error.
+export function getReviewDiff(projectId: string, taskId: string): Promise<ReviewDiffResult> {
+  return getJSON<ReviewDiffResult>(`${taskPath(projectId, taskId)}/review/diff`)
 }
 
 export function reviseRequirements(projectId: string, taskId: string): Promise<Task> {
