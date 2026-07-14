@@ -314,11 +314,70 @@ independently reviewable and live-verifiable, rather than one large diff:
   (`CollectExecutionPatch`) so the prompt carries the actual diff.
   Verified end-to-end through the real router/FileStore/git chain with a
   faked model, matching M8's bar as closely as a model-less environment allows.
-* **PR 3 — ReviewPanel frontend.** `ReviewPanel.tsx` +
-  `ReviewDraftForm.tsx` (mirroring the GrillMe/Planning wrappers), the
-  `finalizeReview` API function + `handleFinalizeReview` route, and the
-  `TaskDetailPanel` `stage === 'review'` insertion point alongside the
-  existing "Revise Plan" affordance.
+* **PR 3 — ReviewPanel frontend.** Design sharpened via a
+  `/grill-with-docs` session on 2026-07-14; the six decisions below are
+  binding on whoever executes it.
+
+  Frontend: `ReviewPanel.tsx` + `ReviewDraftForm.tsx` (a decision
+  `<select>` + notes `<textarea>`, mirroring the GrillMe/Planning
+  wrappers), the `finalizeReview` / `getReviewDiff` / `listReviews` API
+  functions, and the `TaskDetailPanel` `stage === 'review'` **and**
+  `stage === 'complete'` insertion points alongside the existing "Revise
+  Plan" affordance. Backend: three small routes — `handleFinalizeReview`
+  (`POST .../review/finalize`, returning `{task, review}`),
+  `GET .../reviews` (wrapping the existing `ListReviews`), and
+  `GET .../review/diff` (wrapping the existing `CollectExecutionPatch`).
+
+  Binding decisions:
+  1. **Diff display (A-lite).** The pre-conversation view renders a
+     summary from the existing `executions` list (branch, commit list,
+     changed-file paths) plus a collapsed `<details>` "View diff" that
+     renders the raw patch (`GET .../review/diff` → `CollectExecutionPatch`)
+     in a `<pre>`, no syntax highlighting. The full patch is thus visible
+     in-app on demand, not just fed to the agent's prompt.
+  2. **Explicit start (no auto-run).** `StageConversationPanel` gains an
+     `autoStart?: boolean` prop (default `true`, preserving GrillMe/
+     Planning behaviour); `ReviewPanel` passes `false`. The "Start Review"
+     affordance lives *inside* `StageConversationPanel` (shown when empty-
+     and-not-yet-started instead of auto-firing, keeping start logic where
+     `startConversation` already resolves model/executor), with a
+     configurable button label. Rationale: Review's first phase runs the
+     real test suite + a code-review pass — real compute that must not
+     fire on every panel mount/reload.
+  3. **`complete` screen.** A new `stage === 'complete'` block in
+     `TaskDetailPanel` (inline, not a heavyweight panel): an "approved"
+     confirmation, the verdict notes, and the execution branch name framed
+     as "merge this branch by hand" (no merge automation exists until M7).
+     This is the first screen anything ever reaches `complete` for.
+  4. **Terminal record survives reload.** `handleFinalizeReview` returns
+     `{task, review}` for the just-approved case; `GET .../reviews` (mirror
+     of `handleListExecutions`) lets a re-visited `complete` task re-read
+     its latest verdict notes rather than showing them blank.
+  5. **Propose-first Finalize.** No bespoke always-visible approve/reject
+     form — Finalize unlocks only after the agent calls `propose_review`,
+     exactly as GrillMe/Planning gate Finalize on their draft tool. The
+     agent's reasoning arrives pre-populated in the notes field for the
+     human to edit.
+  6. **Routing by stage.** `onFinalized(task, review)` just calls
+     `setTask(task)`; `TaskDetailPanel` re-routes by the new stage across
+     all three outcomes (`complete` / `implementation` / `requirements`) —
+     no per-decision special-casing in the panel.
+
+* **PR 4 — Review-cycle prompt plumbing (tracked deferral, not yet
+  scheduled).** Two backend behaviours deliberately deferred out of PR 3
+  so it stays "review UI + minimal routes." Neither is optional long-term
+  — they close the `needs_changes`/`rejected` loops end-to-end:
+  * **Execute-retrigger feedback threading.** `needs_changes` sends a task
+    back to `implementation`; the review's notes must reach the *next*
+    execution attempt's prompt via `input.review_feedback`. Notes already
+    persist in `review-NNN.yaml`, so nothing is lost meanwhile — PR 4 wires
+    them into the executor prompt the way `plan_ref`/`context_refs` already
+    seed it (see "Open questions" below for the exact wire shape).
+  * **`rejected` → requirements prompt enrichment.** `buildStagePrompt`'s
+    `StageRequirements` case should read the most recent `rejected`
+    `review-NNN.yaml` and prepend its notes, so the reopened GrillMe
+    conversation knows *why* it was reopened. No schema change — just
+    reading an artifact that already exists once Review has run.
 
 ## Open questions for whoever executes this milestone
 
