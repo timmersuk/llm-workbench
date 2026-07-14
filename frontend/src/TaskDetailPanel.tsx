@@ -1,9 +1,19 @@
 import { useEffect, useState } from 'react'
-import { getProjectTask, getTaskContext, getTaskPlan, reviseRequirements, revisePlan, updateProjectTask } from './api'
+import {
+  getProjectTask,
+  getTaskContext,
+  getTaskPlan,
+  listExecutions,
+  listReviews,
+  reviseRequirements,
+  revisePlan,
+  updateProjectTask,
+} from './api'
 import { ExecutePanel } from './ExecutePanel'
 import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
-import type { Task, TaskContext, TaskPlan, TaskStatus } from './types'
+import { ReviewPanel } from './ReviewPanel'
+import type { Review, Task, TaskContext, TaskPlan, TaskStatus } from './types'
 
 const STATUSES: TaskStatus[] = ['draft', 'ready', 'in_progress', 'blocked', 'failed', 'complete']
 
@@ -24,6 +34,12 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   const [plan, setPlan] = useState<TaskPlan | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
   const [revising, setRevising] = useState(false)
+  // review/reviewBranch back the terminal "complete" screen: the latest
+  // verdict's notes and the execution branch left for the human to merge by
+  // hand. Loaded only at stage complete (see effect below), so a re-visited
+  // completed task re-reads them rather than relying on in-session state.
+  const [review, setReview] = useState<Review | null>(null)
+  const [reviewBranch, setReviewBranch] = useState('')
 
   useEffect(() => {
     setContext(null)
@@ -37,6 +53,26 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
     getTaskPlan(projectId, task.id)
       .then(setPlan)
       .catch(() => undefined) // 404 just means planning hasn't been finalized yet
+  }, [projectId, task.id, task.stage])
+
+  useEffect(() => {
+    setReview(null)
+    setReviewBranch('')
+    if (task.stage !== 'complete') {
+      return
+    }
+    listReviews(projectId, task.id)
+      .then((r) => {
+        const list = r.reviews ?? []
+        setReview(list.length > 0 ? list[list.length - 1] : null)
+      })
+      .catch(() => undefined) // no verdict readable — the confirmation still shows
+    listExecutions(projectId, task.id)
+      .then((r) => {
+        const list = r.executions ?? []
+        setReviewBranch(list.length > 0 ? list[list.length - 1].output.git_branch : '')
+      })
+      .catch(() => undefined) // no branch to surface — omit the merge hint
   }, [projectId, task.id, task.stage])
 
   async function handleStatusChange(status: TaskStatus) {
@@ -208,11 +244,36 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
         </div>
       )}
 
+      {task.stage === 'review' && (
+        <div className="task-interview">
+          <ReviewPanel
+            projectId={projectId}
+            taskId={task.id}
+            // A verdict moves the task (approved→complete,
+            // needs_changes→implementation, rejected→requirements);
+            // re-rendering by the new stage is all the panel needs to do.
+            onFinalized={(updatedTask) => setTask(updatedTask)}
+          />
+        </div>
+      )}
+
       {(task.stage === 'implementation' || task.stage === 'review') && (
         <div className="stage-actions">
           <button type="button" disabled={revising} onClick={() => handleRevise(() => revisePlan(projectId, task.id))}>
             Revise Plan
           </button>
+        </div>
+      )}
+
+      {task.stage === 'complete' && (
+        <div className="task-complete">
+          <h4>Review complete — {review?.decision ?? 'approved'}</h4>
+          {review?.notes && <p>{review.notes}</p>}
+          {reviewBranch && (
+            <p>
+              Merge this branch by hand: <code>{reviewBranch}</code>
+            </p>
+          )}
         </div>
       )}
     </div>

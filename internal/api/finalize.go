@@ -23,6 +23,16 @@ type finalizePlanResponse struct {
 	Plan task.Plan `json:"plan"`
 }
 
+// finalizeReviewResponse is the wire shape for a Review Finalize: the task
+// (now moved by the verdict — complete/implementation/requirements) plus the
+// review-NNN.yaml just recorded. Unlike context/plan, the review record is
+// what the terminal "complete" screen reads back to show the verdict notes,
+// so it travels in the response rather than being re-fetched by id.
+type finalizeReviewResponse struct {
+	Task   task.Task   `json:"task"`
+	Review task.Review `json:"review"`
+}
+
 // closeSessions calls CloseSession(sessionKey) on every runner in
 // agentRunners — safe even for runners that never held a session under
 // that key, since a stage's conversation (or free-chat session) could
@@ -101,5 +111,49 @@ func handleFinalizePlan(projects ProjectStore, factory TaskStoreFactory, agentRu
 			return
 		}
 		writeJSON(w, http.StatusOK, finalizePlanResponse{Task: updated, Plan: savedPlan})
+	}
+}
+
+// handleFinalizeReview is the human "Finalize" action for a Review
+// conversation: records the verdict (reviews/review-NNN.yaml) and moves the
+// task by its decision — approved→complete, needs_changes→implementation,
+// rejected→requirements (task.FinalizeReview). 409 if the task isn't at
+// stage review. See handleFinalizeRequirements's comment for the CloseSession
+// rationale — a finalized review conversation is done, so its agent session
+// is torn down. The just-recorded review is read back so the response can
+// carry the verdict notes the "complete" screen shows without a second call.
+func handleFinalizeReview(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		if !ok {
+			return
+		}
+
+		var draft task.ReviewDraft
+		if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		taskId := r.PathValue("taskId")
+		updated, err := store.FinalizeReview(taskId, draft)
+		if err != nil {
+			writeMutationError(w, err)
+			return
+		}
+		closeSessions(agentRunners, taskId+":"+task.StageReview)
+
+		// FinalizeReview appended a fresh review-NNN.yaml; the last entry is
+		// that verdict (ListReviews sorts ascending by zero-padded id).
+		reviews, err := store.ListReviews(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		var latest task.Review
+		if len(reviews) > 0 {
+			latest = reviews[len(reviews)-1]
+		}
+		writeJSON(w, http.StatusOK, finalizeReviewResponse{Task: updated, Review: latest})
 	}
 }

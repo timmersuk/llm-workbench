@@ -154,6 +154,24 @@ func (m *mockTaskStore) ListExecutions(id string) ([]task.Execution, error) {
 	return executions, args.Error(1)
 }
 
+func (m *mockTaskStore) FinalizeReview(id string, draft task.ReviewDraft) (task.Task, error) {
+	args := m.Called(id, draft)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
+func (m *mockTaskStore) ListReviews(id string) ([]task.Review, error) {
+	args := m.Called(id)
+	var reviews []task.Review
+	if v := args.Get(0); v != nil {
+		reviews = v.([]task.Review)
+	}
+	return reviews, args.Error(1)
+}
+
 type mockKnowledgeReader struct{ mock.Mock }
 
 func (m *mockKnowledgeReader) Get(conceptID string) (knowledge.Concept, error) {
