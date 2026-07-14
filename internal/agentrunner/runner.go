@@ -58,6 +58,14 @@ type RunInput struct {
 	// zero value (Tool.Function.Name == "") means no tool is offered —
 	// free-chat callers leave this unset.
 	Tool chat.Tool
+	// EnableBashTool widens the loop's toolset from read-only Read/Grep/Glob
+	// to also include the confined bash tool, for the Review stage's
+	// automated-checks phase (Milestone 6) — the reviewing agent runs the
+	// project's test command over the executed change. Left false by
+	// Requirements/Planning, whose agents stay strictly read-only. bash is
+	// still confined to Workspace (the execution worktree for a review), so
+	// this never reaches the project's shared checkout.
+	EnableBashTool bool
 	// History is a stage conversation's persisted transcript so far
 	// (internal/task.Conversation, mapped to chat.Message by the caller),
 	// used to rehydrate an AgentRunner's in-memory session state after a
@@ -69,6 +77,18 @@ type RunInput struct {
 	// callers, which have no durable transcript to replay from, leave this
 	// nil.
 	History []chat.Message
+	// OnToolCall/OnToolResult, if non-nil, surface the loop's INTERMEDIATE
+	// tool activity — each executed read_file/grep_search/glob/bash call and
+	// its result — as it happens, so a stage-conversation stream can render
+	// "ran go test ./... -> ok" live rather than only the model's prose. This
+	// is distinct from RunOutput.ToolCall/RunInput.Tool: those carry the
+	// single FINAL Draft-proposing stop call, which does not flow through
+	// these hooks. Only *ChatClientRunner (engine-backed) drives them, wired
+	// to toolloop.Config.OnToolCall/OnToolResult; runners that don't use the
+	// shared engine (ClaudeRunner) leave them unobserved. Both are nil-safe:
+	// free-chat and rehydration callers leave them unset.
+	OnToolCall   func(name, argsJSON string)
+	OnToolResult func(name, result string, isError bool)
 }
 
 // RunOutput is the result of one AgentRunner.Run call: the assistant's

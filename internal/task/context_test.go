@@ -31,7 +31,7 @@ func TestFileStore_GetContext_RoundTrip(t *testing.T) {
 		Background:    "some background",
 		Files:         []string{"a.go"},
 		Detail:        "detail text",
-		Verification:  []string{"run tests"},
+		Verification:  []VerificationStep{{Description: "run tests", Kind: VerificationKindAgentExecutable}},
 		OpenQuestions: []string{"what about x?"},
 	}
 	require.NoError(t, store.writeContext("task-a", want))

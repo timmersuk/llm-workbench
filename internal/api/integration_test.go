@@ -11,6 +11,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -516,6 +518,143 @@ func fakeUpstreamProposingToolCall(t *testing.T, toolName, argumentsJSON string)
 	}))
 }
 
+// TestIntegration_ReviewConversation_CarriesDiffAndProposesReview drives the
+// full Review-stage conversation over the real router/FileStore/chat.ChatClient
+// chain: a task sitting at stage review with a real execution worktree. It
+// asserts the end-to-end wiring PR 2 adds — resolveStageRun resolves the
+// worktree, buildReviewContext puts the real diff + verification steps into the
+// system prompt, the confined bash tool is offered alongside propose_review,
+// and a propose_review tool call streams back and persists. This is the
+// closest to M8's live-verify bar reachable without a real model: the model is
+// faked, but every other collaborator (git, the stores, the tool loop) is real.
+func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.T) {
+	root := t.TempDir()
+	projectRoot := filepath.Join(root, "projects", "demo-project")
+	require.NoError(t, os.MkdirAll(projectRoot, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectRoot, "project.yaml"), []byte(integrationProjectYAML), 0o644))
+
+	// A real git repo at reposRoot/demo (integrationProjectYAML's repo is
+	// github.com/org/demo) plus an execution worktree with one extra commit.
+	reposRoot := t.TempDir()
+	repoDir := filepath.Join(reposRoot, "demo")
+	require.NoError(t, os.MkdirAll(repoDir, 0o755))
+	gitRun(t, repoDir, "init", "-q")
+	gitRun(t, repoDir, "config", "user.email", "t@example.com")
+	gitRun(t, repoDir, "config", "user.name", "T")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hi\n"), 0o644))
+	gitRun(t, repoDir, "add", ".")
+	gitRun(t, repoDir, "commit", "-q", "-m", "init")
+	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/org/demo"}, "TASK-0001", "exec-001")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "feature.go"), []byte("package main\n"), 0o644))
+	gitRun(t, ws.Path, "add", ".")
+	gitRun(t, ws.Path, "commit", "-q", "-m", "add feature")
+
+	// Seed the task straight to stage review via the public store API, in the
+	// same tasks root the router will read from.
+	tasksRoot := filepath.Join(projectRoot, "tasks")
+	seedReviewableTask(t, task.NewFileStore(tasksRoot), "TASK-0001")
+
+	// A capturing fake upstream: record the request the model saw, then answer
+	// with a propose_review tool call (the loop's stop condition).
+	var mu sync.Mutex
+	var gotReq chat.CompletionRequest
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(chat.ModelsResponse{Data: []chat.ModelInfo{{ID: "test-model"}}})
+		case "/chat/completions":
+			var req chat.CompletionRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			mu.Lock()
+			gotReq = req
+			mu.Unlock()
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			writeFrag := func(id, name, args string) {
+				chunk, _ := json.Marshal(map[string]any{
+					"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+						"tool_calls": []map[string]any{{"index": 0, "id": id, "function": map[string]string{"name": name, "arguments": args}}},
+					}}},
+				})
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				flusher.Flush()
+			}
+			writeFrag("call-1", proposeReviewToolName, "")
+			writeFrag("", "", `{"decision":"approved","notes":"tests pass"}`)
+			fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
+	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
+	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
+	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
+	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
+
+	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, testFrontendFS(), "test-build")
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	body, err := json.Marshal(stageMessageRequest{Content: "start the review", Model: "test-model", Executor: "local"})
+	require.NoError(t, err)
+	resp, err := http.Post(server.URL+"/api/v1/projects/demo-project/tasks/TASK-0001/stages/review/messages", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var sawReview bool
+	for _, line := range strings.Split(string(respBody), "\n") {
+		data, ok := strings.CutPrefix(strings.TrimSpace(line), "data: ")
+		if !ok || data == "" {
+			continue
+		}
+		var ev chatStreamEvent
+		require.NoError(t, json.Unmarshal([]byte(data), &ev))
+		if ev.ToolCall != nil {
+			sawReview = true
+			assert.Equal(t, proposeReviewToolName, ev.ToolCall.Name)
+			assert.Contains(t, ev.ToolCall.Arguments, "approved")
+		}
+	}
+	require.True(t, sawReview, "expected a propose_review tool_call SSE event")
+
+	// The model actually saw the execution's diff and verification steps in its
+	// system prompt, and was offered the confined bash tool plus propose_review.
+	mu.Lock()
+	captured := gotReq
+	mu.Unlock()
+	require.NotEmpty(t, captured.Messages)
+	system := captured.Messages[0].Content
+	assert.Contains(t, system, "feature.go", "the execution diff must reach the model")
+	assert.Contains(t, system, "run go test", "verification steps must reach the model")
+	var toolNames []string
+	for _, tl := range captured.Tools {
+		toolNames = append(toolNames, tl.Function.Name)
+	}
+	assert.Contains(t, toolNames, "bash", "review must offer the confined bash tool")
+	assert.Contains(t, toolNames, proposeReviewToolName)
+
+	// The propose_review tool call must have persisted onto conversation-review.yaml.
+	convResp, err := http.Get(server.URL + "/api/v1/projects/demo-project/tasks/TASK-0001/stages/review/conversation")
+	require.NoError(t, err)
+	defer convResp.Body.Close()
+	var conv task.Conversation
+	require.NoError(t, json.NewDecoder(convResp.Body).Decode(&conv))
+	require.Len(t, conv.Messages, 2)
+	require.NotNil(t, conv.Messages[1].ToolCall)
+	assert.Equal(t, proposeReviewToolName, conv.Messages[1].ToolCall.Name)
+}
+
 func TestIntegration_StageMessageStreamsProposedDraftAsToolCallEvent(t *testing.T) {
 	upstream := fakeUpstreamProposingToolCall(t, proposeContextToolName, `{"objective":"ship login"}`)
 	defer upstream.Close()
@@ -624,7 +763,17 @@ func TestIntegration_FullLifecycle_FinalizeAndReviseBothWays(t *testing.T) {
 
 	draft := task.RequirementsDraft{
 		Objective: "ship login",
-		Context:   task.Context{Summary: "adds a login page"},
+		Context: task.Context{
+			Summary: "adds a login page",
+			// Structured verification (docs/adr/0008): the exact wire shape
+			// the frontend now POSTs. This is the finalize break Milestone 6
+			// PR 2 has to fix — a string[] body would no longer decode into
+			// []VerificationStep — so the round-trip is asserted end-to-end.
+			Verification: []task.VerificationStep{
+				{Description: "hit POST /login and get a 200", Kind: task.VerificationKindAgentExecutable},
+				{Description: "the empty-state copy reads naturally", Kind: task.VerificationKindHumanJudgment},
+			},
+		},
 	}
 	draftBody, err := json.Marshal(draft)
 	require.NoError(t, err)
@@ -641,6 +790,7 @@ func TestIntegration_FullLifecycle_FinalizeAndReviseBothWays(t *testing.T) {
 	var gotCtx task.Context
 	require.NoError(t, json.NewDecoder(ctxResp.Body).Decode(&gotCtx))
 	assert.Equal(t, "adds a login page", gotCtx.Summary)
+	assert.Equal(t, draft.Context.Verification, gotCtx.Verification)
 
 	plan := task.Plan{Approach: "incremental", EstimatedComplexity: "low"}
 	planBody, err := json.Marshal(plan)

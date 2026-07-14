@@ -39,7 +39,8 @@ detail: |
   overhead per OS.
 
 verification:
-  - "N/A at this stage — this task's own success criterion is a documented decision, not a working feature."
+  - description: "N/A at this stage — this task's own success criterion is a documented decision, not a working feature."
+    kind: human_judgment
 
 open_questions:
   - "Is a native window worth building at all given windows-systray-icon already covers the main pain point (no manual browser tab, no port-number-remembering)? Or does it stay a browser-based UI indefinitely, with the tray as the only desktop affordance?"

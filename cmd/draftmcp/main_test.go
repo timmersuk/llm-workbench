@@ -62,6 +62,7 @@ func TestRun_ToolsList(t *testing.T) {
 	}
 	require.True(t, names[drafttool.ProposeContextName])
 	require.True(t, names[drafttool.ProposePlanName])
+	require.True(t, names[drafttool.ProposeReviewName])
 }
 
 func TestRun_ToolsCall_Acknowledges(t *testing.T) {

@@ -1,5 +1,10 @@
-import type { RequirementsDraft } from './types'
+import type { RequirementsDraft, VerificationKind, VerificationStep } from './types'
 import { linesToList, listToLines } from './listFields'
+
+const VERIFICATION_KINDS: { value: VerificationKind; label: string }[] = [
+  { value: 'agent_executable', label: 'Agent-executable' },
+  { value: 'human_judgment', label: 'Human judgment' },
+]
 
 interface RequirementsDraftFormProps {
   draft: RequirementsDraft
@@ -9,6 +14,20 @@ interface RequirementsDraftFormProps {
 // Editable form for a GrillMe Draft (CONTEXT.md) — the human can tweak any
 // field here before Finalize; nothing here is read-only.
 export function RequirementsDraftForm({ draft, onChange }: RequirementsDraftFormProps) {
+  const verification = draft.context.verification
+
+  const setVerification = (steps: VerificationStep[]) =>
+    onChange({ ...draft, context: { ...draft.context, verification: steps } })
+
+  const updateStep = (index: number, patch: Partial<VerificationStep>) =>
+    setVerification(verification.map((step, i) => (i === index ? { ...step, ...patch } : step)))
+
+  const removeStep = (index: number) =>
+    setVerification(verification.filter((_, i) => i !== index))
+
+  const addStep = () =>
+    setVerification([...verification, { description: '', kind: 'agent_executable' }])
+
   return (
     <div className="draft-form">
       <div className="form-row">
@@ -86,15 +105,41 @@ export function RequirementsDraftForm({ draft, onChange }: RequirementsDraftForm
         />
       </div>
       <div className="form-row">
-        <label htmlFor="draft-context-verification">Verification (one per line)</label>
-        <textarea
-          id="draft-context-verification"
-          value={listToLines(draft.context.verification)}
-          onChange={(e) =>
-            onChange({ ...draft, context: { ...draft.context, verification: linesToList(e.target.value) } })
-          }
-          rows={2}
-        />
+        <span className="form-label">Verification steps</span>
+        <div className="verification-steps">
+          {verification.length === 0 && <p className="verification-empty">No verification steps yet.</p>}
+          {verification.map((step, index) => (
+            <div className="verification-step" key={index}>
+              <input
+                type="text"
+                aria-label={`Verification step ${index + 1} description`}
+                value={step.description}
+                onChange={(e) => updateStep(index, { description: e.target.value })}
+              />
+              <select
+                aria-label={`Verification step ${index + 1} kind`}
+                value={step.kind}
+                onChange={(e) => updateStep(index, { kind: e.target.value as VerificationKind })}
+              >
+                {VERIFICATION_KINDS.map((k) => (
+                  <option key={k.value} value={k.value}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                aria-label={`Remove verification step ${index + 1}`}
+                onClick={() => removeStep(index)}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button type="button" onClick={addStep}>
+            Add verification step
+          </button>
+        </div>
       </div>
       <div className="form-row">
         <label htmlFor="draft-context-open-questions">Open questions (one per line)</label>

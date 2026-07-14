@@ -73,9 +73,13 @@ detail: |
   is covered here as an explicit regression case in GrillMePanel.test.tsx.
 
 verification:
-  - "pnpm run test passes locally inside frontend/ (97 tests across 14 files at time of writing)."
-  - "pnpm run build (tsc -b && vite build) still succeeds with test files present."
-  - "make test at the repo root runs both suites and fails if either fails — confirmed by deliberately breaking one Go test and one frontend test in turn and observing the failure propagate."
-  - "npm run lint (oxlint) stays clean over the new test files."
+  - description: "pnpm run test passes locally inside frontend/ (97 tests across 14 files at time of writing)."
+    kind: agent_executable
+  - description: "pnpm run build (tsc -b && vite build) still succeeds with test files present."
+    kind: agent_executable
+  - description: "make test at the repo root runs both suites and fails if either fails — confirmed by deliberately breaking one Go test and one frontend test in turn and observing the failure propagate."
+    kind: agent_executable
+  - description: "npm run lint (oxlint) stays clean over the new test files."
+    kind: agent_executable
 
 open_questions: []

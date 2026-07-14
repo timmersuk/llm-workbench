@@ -14,6 +14,7 @@ import "encoding/json"
 const (
 	ProposeContextName = "propose_context"
 	ProposePlanName    = "propose_plan"
+	ProposeReviewName  = "propose_review"
 )
 
 // Definition is one Draft tool's name, human-readable description, and
@@ -40,7 +41,17 @@ var proposeContextSchema = json.RawMessage(`{
         "background": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
         "detail": {"type": "string"},
-        "verification": {"type": "array", "items": {"type": "string"}},
+        "verification": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "description": {"type": "string"},
+              "kind": {"type": "string", "enum": ["agent_executable", "human_judgment"]}
+            },
+            "required": ["description", "kind"]
+          }
+        },
         "open_questions": {"type": "array", "items": {"type": "string"}}
       },
       "required": ["summary"]
@@ -61,6 +72,15 @@ var proposePlanSchema = json.RawMessage(`{
   "required": ["approach", "steps", "estimated_complexity"]
 }`)
 
+var proposeReviewSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "decision": {"type": "string", "enum": ["approved", "rejected", "needs_changes"]},
+    "notes": {"type": "string"}
+  },
+  "required": ["decision", "notes"]
+}`)
+
 // ProposeContext is the Requirements-stage Draft tool definition.
 var ProposeContext = Definition{
 	Name:        ProposeContextName,
@@ -75,8 +95,15 @@ var ProposePlan = Definition{
 	Schema:      proposePlanSchema,
 }
 
+// ProposeReview is the Review-stage Draft tool definition.
+var ProposeReview = Definition{
+	Name:        ProposeReviewName,
+	Description: "Propose this execution's review outcome (decision + notes) for the human to review before Finalize.",
+	Schema:      proposeReviewSchema,
+}
+
 // All returns every known Draft tool definition, in a stable order — used
 // by cmd/draftmcp to build its static tools/list response.
 func All() []Definition {
-	return []Definition{ProposeContext, ProposePlan}
+	return []Definition{ProposeContext, ProposePlan, ProposeReview}
 }

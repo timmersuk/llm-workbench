@@ -130,16 +130,40 @@ export interface ChatHistoryEntry {
 
 // ChatStreamEvent mirrors internal/api/chat.go's chatStreamEvent — one
 // incremental piece of a streamed chat completion. content, reasoning_
-// content, and tool_call are never more than one set on the same event;
-// error is only set on the final event of a stream that failed partway
-// through. tool_call is only ever populated on the stage-conversation
-// endpoint (postStageMessage) — the free-floating chat endpoint never
-// registers tools, so never sets it, but shares this event shape.
+// content, tool_call, and tool_activity are never more than one set on the
+// same event; error is only set on the final event of a stream that failed
+// partway through. tool_call (the single final Draft) and tool_activity
+// (the agent's intermediate executed tool calls/results) are only populated
+// on the stage-conversation endpoints — the free-floating chat endpoint
+// never registers tools, so never sets either, but shares this event shape.
+// Rendering tool_activity in a panel (ReviewPanel) is deferred to a later
+// PR; this contract is carried now so the stream stays typed.
 export interface ChatStreamEvent {
   content?: string
   reasoning_content?: string
   tool_call?: { name: string; arguments: string }
+  tool_activity?: {
+    phase: 'call' | 'result'
+    name: string
+    arguments?: string
+    result?: string
+    is_error?: boolean
+  }
   error?: string
+}
+
+// VerificationKind mirrors task.VerificationKind* (internal/task/context.go)
+// — who performs a verification step: agent_executable (the reviewing agent
+// attempts it directly) or human_judgment (the human performs it, the agent
+// only records their confirmation). See docs/adr/0008.
+export type VerificationKind = 'agent_executable' | 'human_judgment'
+
+// VerificationStep mirrors task.VerificationStep (internal/task/context.go) —
+// one entry in context.yaml's verification list: a human-readable description
+// plus a kind classifying who performs it.
+export interface VerificationStep {
+  description: string
+  kind: VerificationKind
 }
 
 // TaskContext mirrors task.Context (internal/task/context.go) —
@@ -150,7 +174,7 @@ export interface TaskContext {
   background: string
   files: string[]
   detail: string
-  verification: string[]
+  verification: VerificationStep[]
   open_questions: string[]
 }
 

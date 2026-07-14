@@ -82,13 +82,30 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	cfg := toolloop.Config{
 		Model:     in.Model,
 		Workspace: in.Workspace,
-		Tools:     readOnlyToolsFor(in.Workspace),
+		Tools:     loopToolsFor(in.Workspace, in.EnableBashTool),
 		MaxTurns:  claudeRunnerMaxTurns,
 		MaxTokens: chatClientMaxResponseTokens,
 	}
 	if in.Tool.Function.Name != "" {
 		tool := in.Tool
 		cfg.StopTool = &tool
+	}
+	// Surface the loop's intermediate tool activity (Read/Grep/Glob/bash) to
+	// the caller as it happens, exactly as Execute already does. Only the
+	// engine-executed tools flow through here — the final Draft stop call
+	// surfaces separately as res.StopCall, not as a tool_call/tool_result
+	// event.
+	if in.OnToolCall != nil {
+		cfg.OnToolCall = func(name, argumentsJSON string) error {
+			in.OnToolCall(name, argumentsJSON)
+			return nil
+		}
+	}
+	if in.OnToolResult != nil {
+		cfg.OnToolResult = func(name, result string, isError bool) error {
+			in.OnToolResult(name, result, isError)
+			return nil
+		}
 	}
 
 	res, err := r.engine.Run(ctx, cfg, msgs, onDelta)
@@ -120,18 +137,22 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	return RunOutput{Content: content, ToolCall: res.StopCall}, nil
 }
 
-// readOnlyToolsFor returns the read-only toolset when workspace is a usable
-// directory, else nil (a plain completion with no tools). Both callers pass a
-// workspace — stage conversations a resolved repo checkout, free chat the
-// sibling-repos root — so both gain grounded read access; a run with no valid
-// workspace degrades to text-only.
-func readOnlyToolsFor(workspace string) []toolloop.Tool {
+// loopToolsFor returns the loop toolset for a usable workspace, else nil (a
+// plain completion with no tools). When enableBash is set — the Review stage's
+// automated-checks phase (Milestone 6) — it returns the read-only set plus the
+// confined bash tool; otherwise the strictly read-only set Requirements/
+// Planning and free chat use. A run with no valid workspace degrades to
+// text-only regardless.
+func loopToolsFor(workspace string, enableBash bool) []toolloop.Tool {
 	if workspace == "" {
 		return nil
 	}
 	info, err := os.Stat(workspace)
 	if err != nil || !info.IsDir() {
 		return nil
+	}
+	if enableBash {
+		return toolloop.ReviewTools()
 	}
 	return toolloop.ReadOnlyTools()
 }

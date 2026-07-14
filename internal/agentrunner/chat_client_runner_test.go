@@ -111,6 +111,58 @@ func TestChatClientRunner_Run_BuildsMessagesAndStreams(t *testing.T) {
 	assert.Equal(t, []chat.Delta{{Content: "hi back"}}, gotDeltas)
 }
 
+func TestChatClientRunner_Run_EnableBashOffersReviewToolset(t *testing.T) {
+	dir := t.TempDir()
+	client := &fakeChatClient{streamContent: "reviewing"}
+	runner := NewChatClientRunner(client)
+
+	_, err := runner.Run(context.Background(), RunInput{
+		SessionKey:     "task-a:review",
+		Workspace:      dir,
+		SystemPrompt:   "review the change",
+		Model:          "m",
+		UserMessage:    "start",
+		EnableBashTool: true,
+	}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.gotRequests, 1)
+	var names []string
+	for _, tl := range client.gotRequests[0].Tools {
+		names = append(names, tl.Function.Name)
+	}
+	// Review adds bash to the read-only set so it can run the tests, but never
+	// the write/edit tools — review inspects an execution, it doesn't author one.
+	assert.Contains(t, names, "read_file")
+	assert.Contains(t, names, "bash")
+	assert.NotContains(t, names, "write_file")
+	assert.NotContains(t, names, "edit_file")
+}
+
+func TestChatClientRunner_Run_DefaultsToReadOnlyToolset(t *testing.T) {
+	dir := t.TempDir()
+	client := &fakeChatClient{streamContent: "planning"}
+	runner := NewChatClientRunner(client)
+
+	_, err := runner.Run(context.Background(), RunInput{
+		SessionKey:   "task-a:planning",
+		Workspace:    dir,
+		SystemPrompt: "plan the change",
+		Model:        "m",
+		UserMessage:  "start",
+	}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.gotRequests, 1)
+	var names []string
+	for _, tl := range client.gotRequests[0].Tools {
+		names = append(names, tl.Function.Name)
+	}
+	// Requirements/Planning stay strictly read-only — no bash.
+	assert.Contains(t, names, "read_file")
+	assert.NotContains(t, names, "bash")
+}
+
 func TestChatClientRunner_Run_ForwardsToolAndSurfacesToolCall(t *testing.T) {
 	toolCall := &chat.ToolCall{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{
 		Name: "propose_context", Arguments: `{"objective":"ship login"}`,
@@ -134,6 +186,87 @@ func TestChatClientRunner_Run_ForwardsToolAndSurfacesToolCall(t *testing.T) {
 	require.NotNil(t, out.ToolCall)
 	assert.Equal(t, "propose_context", out.ToolCall.Function.Name)
 	assert.Equal(t, `{"objective":"ship login"}`, out.ToolCall.Function.Arguments)
+}
+
+// A Run whose loop executes an intermediate tool (here read_file) must
+// surface both the tool_call and its tool_result through the new
+// RunInput.OnToolCall/OnToolResult callbacks — this is what lets a
+// stage-conversation stream render the reviewing agent's checks live, not
+// just its final prose. The final Draft stop call is a separate concern and
+// does not flow through these hooks.
+func TestChatClientRunner_Run_SurfacesIntermediateToolActivity(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0o644))
+
+	client := &fakeChatClient{streamTurns: []func(func(chat.Delta) error) error{
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{ToolCall: &chat.ToolCall{
+				ID: "c1", Type: "function",
+				Function: chat.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+			}})
+		},
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{Content: "the file says hello"})
+		},
+	}}
+	runner := NewChatClientRunner(client)
+
+	type activity struct {
+		phase, name, args, result string
+		isError                   bool
+	}
+	var got []activity
+	out, err := runner.Run(context.Background(), RunInput{
+		SessionKey:  "task-a:review",
+		Workspace:   dir,
+		UserMessage: "review it",
+		OnToolCall: func(name, argsJSON string) {
+			got = append(got, activity{phase: "call", name: name, args: argsJSON})
+		},
+		OnToolResult: func(name, result string, isError bool) {
+			got = append(got, activity{phase: "result", name: name, result: result, isError: isError})
+		},
+	}, func(chat.Delta) error { return nil })
+
+	require.NoError(t, err)
+	assert.Equal(t, "the file says hello", out.Content)
+
+	require.Len(t, got, 2)
+	assert.Equal(t, "call", got[0].phase)
+	assert.Equal(t, "read_file", got[0].name)
+	assert.Equal(t, `{"path":"a.txt"}`, got[0].args)
+	assert.Equal(t, "result", got[1].phase)
+	assert.Equal(t, "read_file", got[1].name)
+	assert.False(t, got[1].isError)
+	assert.Contains(t, got[1].result, "hello world")
+}
+
+// Callbacks left nil (free chat, rehydration) must be a safe no-op even when
+// the loop executes a tool.
+func TestChatClientRunner_Run_NilToolActivityCallbacksAreSafe(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hi"), 0o644))
+
+	client := &fakeChatClient{streamTurns: []func(func(chat.Delta) error) error{
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{ToolCall: &chat.ToolCall{
+				ID: "c1", Type: "function",
+				Function: chat.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+			}})
+		},
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{Content: "done"})
+		},
+	}}
+	runner := NewChatClientRunner(client)
+
+	out, err := runner.Run(context.Background(), RunInput{
+		SessionKey:  "task-a:review",
+		Workspace:   dir,
+		UserMessage: "review it",
+	}, func(chat.Delta) error { return nil })
+	require.NoError(t, err)
+	assert.Equal(t, "done", out.Content)
 }
 
 func TestChatClientRunner_Run_SeedsHistoryIntoRequest(t *testing.T) {

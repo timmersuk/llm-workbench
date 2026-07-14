@@ -339,6 +339,33 @@ td button {
   resize: vertical;
 }
 
+.form-row .form-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.verification-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.verification-step {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.verification-step input {
+  flex: 1;
+}
+
+.verification-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .form-actions {
   display: flex;
   gap: 8px;

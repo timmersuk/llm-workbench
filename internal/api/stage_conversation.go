@@ -27,6 +27,7 @@ import (
 const (
 	proposeContextToolName = drafttool.ProposeContextName
 	proposePlanToolName    = drafttool.ProposePlanName
+	proposeReviewToolName  = drafttool.ProposeReviewName
 )
 
 // grillMeSystemPrompt and planningModeSystemPrompt encode the "grilling"
@@ -58,6 +59,27 @@ Rules for this interview:
 - If the user's reply contains a fenced JSON block representing a requested change to a plan you already proposed, treat that block as the authoritative starting point for your revision — refine it, don't discard it and start over.
 
 `
+	// reviewSystemPrompt drives the Review-stage conversation (CONTEXT.md's
+	// **Review** entry, docs/milestones/milestone6.md "The review mechanism").
+	// Unlike GrillMe/Planning Mode, which interview toward a new artifact, this
+	// reviews a *prior* one — the execution's diff, supplied in the prompt
+	// addendum below — working through three phases the human can interrupt at
+	// any point. Your workspace is the execution's isolated git worktree, and
+	// bash is available (confined to it) so you actually run the project's
+	// tests rather than guessing whether they pass. A failing check is never an
+	// automatic verdict: surface findings and let the human decide via Finalize.
+	reviewSystemPrompt = `You are reviewing a completed execution of this task, conversing with the human who will make the final call. You are in the execution's isolated git worktree; you have read-only tools (read_file/grep_search/glob) and a confined bash tool that runs the project's own commands from that worktree.
+
+Work through three phases, narrating what you find as you go and pausing for the human whenever they want to weigh in:
+1. Automated checks: run the project's test suite with bash, and do a Standards + Spec pass over the diff (does the change match the codebase's conventions, and does it actually do what the task asked?). Report what passed and what didn't.
+2. Test-meaningfulness: look at what the tests in the diff actually assert, not just whether they pass — flag a test that can't fail, or one that doesn't exercise the code path it claims to cover.
+3. Per-verification-step confirmation: walk the task's verification steps below one by one. Attempt each agent_executable step yourself (run the command, hit the endpoint, drive the check) and report what you observed; for each human_judgment step, ask the human to perform it and record their confirmation.
+
+A failing check is not a rejection on its own — humans own the intent. Surface findings inside the conversation; do not decide the outcome unilaterally.
+
+Do not call propose_review until you have worked through the checks AND the human has confirmed the outcome. Propose the decision (approved | rejected | needs_changes) with notes summarizing the findings that justify it. If the human's reply contains a fenced JSON block editing a review you already proposed, treat that block as the authoritative starting point for your revision.
+
+`
 )
 
 // kickoffUserMessage drives a stage conversation's very first turn
@@ -84,6 +106,12 @@ func stageTool(stage string) (chat.Tool, bool) {
 			Name:        drafttool.ProposePlan.Name,
 			Description: drafttool.ProposePlan.Description,
 			Parameters:  drafttool.ProposePlan.Schema,
+		}}, true
+	case task.StageReview:
+		return chat.Tool{Type: "function", Function: chat.ToolSchema{
+			Name:        drafttool.ProposeReview.Name,
+			Description: drafttool.ProposeReview.Description,
+			Parameters:  drafttool.ProposeReview.Schema,
 		}}, true
 	default:
 		return chat.Tool{}, false
@@ -131,6 +159,107 @@ func handleGetStageConversation(projects ProjectStore, factory TaskStoreFactory)
 	}
 }
 
+// stageStreamTarget bundles what a streaming stage handler needs once the
+// per-request boilerplate — executor lookup plus owning-project/task
+// resolution — has run: the resolved runner, project, task store, and task.
+// The three streaming handlers all consult these, resolved once here so each
+// handler is left with only its distinct pre-stream logic.
+type stageStreamTarget struct {
+	runner agentrunner.AgentRunner
+	proj   project.Project
+	store  TaskStore
+	task   task.Task
+}
+
+// resolveStageStreamTarget selects the executor's runner (defaulting to
+// defaultChatExecutor when unset — the same convention as chat.go's
+// free-floating endpoint) and resolves the owning project and task. It writes
+// the appropriate 400/404 and returns false on any failure; every one of these
+// fires before the SSE headers are sent, so they surface as real HTTP status
+// codes. Callers must already have validated the stage and decoded their
+// request body first — the request types differ, so decode stays per-handler,
+// and validating the stage before touching the body preserves the order in
+// which those two 400s fire.
+func resolveStageStreamTarget(w http.ResponseWriter, projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, executorKey, projectId, taskId string) (stageStreamTarget, bool) {
+	if executorKey == "" {
+		executorKey = defaultChatExecutor
+	}
+	runner, ok := agentRunners[executorKey]
+	if !ok {
+		http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+		return stageStreamTarget{}, false
+	}
+
+	proj, err := projects.Get(projectId)
+	if err != nil {
+		writeGetError(w, err)
+		return stageStreamTarget{}, false
+	}
+	root, err := projects.TasksRoot(projectId)
+	if err != nil {
+		writeGetError(w, err)
+		return stageStreamTarget{}, false
+	}
+	store := factory(root)
+
+	t, err := store.Get(taskId)
+	if err != nil {
+		writeGetError(w, err)
+		return stageStreamTarget{}, false
+	}
+
+	return stageStreamTarget{runner: runner, proj: proj, store: store, task: t}, true
+}
+
+// beginStageStream confirms the ResponseWriter can stream, writes the SSE
+// response headers (200 OK), and returns the writeEvent closure the turn uses
+// to relay chatStreamEvents (the wire shape shared with chat.go). Once this
+// returns true the headers are committed: from that point a failure can no
+// longer surface as an HTTP status, only as a final SSE {Error:...} event — so
+// callers must complete every real-HTTP-status check before calling this, and
+// treat everything after it as stream-only. "streaming unsupported" itself is
+// still an HTTP 500 because it happens before any header is written.
+func beginStageStream(w http.ResponseWriter) (func(chatStreamEvent), bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return nil, false
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	return func(ev chatStreamEvent) {
+		data, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}, true
+}
+
+// stageAssistantMessage assembles the assistant turn to persist once a stream
+// has ended: its accumulated content, the stream error stamped onto .Error
+// (already surfaced to the human as an SSE event, recorded here so the durable
+// transcript keeps it too), and any Draft tool call the model proposed
+// (CONTEXT.md), flattened into the persisted ConversationToolCall shape. All
+// three streaming handlers build this identically; they differ only in how
+// they then pair or replace it in the record.
+func stageAssistantMessage(content string, proposed *chat.ToolCall, streamErr error) task.ConversationMessage {
+	msg := task.ConversationMessage{Role: "assistant", Content: content}
+	if streamErr != nil {
+		msg.Error = streamErr.Error()
+	}
+	if proposed != nil {
+		msg.ToolCall = &task.ConversationToolCall{
+			ID:        proposed.ID,
+			Name:      proposed.Function.Name,
+			Arguments: proposed.Function.Arguments,
+		}
+	}
+	return msg
+}
+
 // handlePostStageMessage posts a user message to a stage's Conversation,
 // streams the assistant's reply as SSE (reusing chatStreamEvent, same wire
 // shape as the free-floating chat endpoint in chat.go), and persists both
@@ -154,81 +283,41 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 			return
 		}
 
-		executorKey := req.Executor
-		if executorKey == "" {
-			executorKey = defaultChatExecutor
-		}
-		runner, ok := agentRunners[executorKey]
-		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
-			return
-		}
-
-		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
-
-		proj, err := projects.Get(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		root, err := projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := factory(root)
-
-		t, err := store.Get(taskId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-
-		systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
-
-		flusher, ok := w.(http.Flusher)
+		target, ok := resolveStageStreamTarget(w, projects, factory, agentRunners, req.Executor, r.PathValue("projectId"), taskId)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-
-		writeEvent := func(ev chatStreamEvent) {
-			data, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+		writeEvent, ok := beginStageStream(w)
+		if !ok {
+			return
 		}
 
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		// A project with no configured repository is a normal state (a
-		// pure-planning project with nothing to check out) — only
-		// ErrNoRepository is tolerated as "no workspace to offer", proceeding
-		// with an empty Workspace; any other ResolveWorkspace failure (an
-		// invalid or unresolvable repository identifier) still aborts the
-		// turn, since that signals real misconfiguration rather than an
-		// absent-by-design repository.
-		workspace, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
-		if wsErr != nil && !errors.Is(wsErr, agentrunner.ErrNoRepository) {
-			streamErr = fmt.Errorf("resolving workspace: %w", wsErr)
-		} else if history, convErr := store.GetConversation(taskId, stage); convErr != nil {
+		// resolveStageRun resolves the workspace and (for Review) appends the
+		// execution's diff to the prompt and enables bash. A project with no
+		// configured repository is tolerated for Requirements/Planning (an
+		// empty workspace, a text-only turn); any other resolution failure
+		// aborts the turn as an SSE error, since headers are already sent.
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
+		if runErr != nil {
+			streamErr = runErr
+		} else if history, convErr := target.store.GetConversation(taskId, stage); convErr != nil {
 			streamErr = fmt.Errorf("loading conversation history: %w", convErr)
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
-				SessionKey:   taskId + ":" + stage,
-				Workspace:    workspace,
-				SystemPrompt: systemPrompt,
-				UserMessage:  req.Content,
-				Model:        req.Model,
-				Tool:         tool,
-				History:      conversationHistoryToChatMessages(history),
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+				SessionKey:     taskId + ":" + stage,
+				Workspace:      run.Workspace,
+				SystemPrompt:   run.SystemPrompt,
+				UserMessage:    req.Content,
+				Model:          req.Model,
+				Tool:           tool,
+				EnableBashTool: run.EnableBash,
+				History:        conversationHistoryToChatMessages(history),
 			}, writeEvent)
 		}
 		if streamErr != nil {
@@ -238,19 +327,9 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
-		if streamErr != nil {
-			assistantMsg.Error = streamErr.Error()
-		}
-		if proposed != nil {
-			assistantMsg.ToolCall = &task.ConversationToolCall{
-				ID:        proposed.ID,
-				Name:      proposed.Function.Name,
-				Arguments: proposed.Function.Arguments,
-			}
-		}
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
 
-		if _, err := store.AppendConversationMessages(taskId, stage,
+		if _, err := target.store.AppendConversationMessages(taskId, stage,
 			task.ConversationMessage{Role: "user", Content: req.Content},
 			assistantMsg,
 		); err != nil {
@@ -285,38 +364,13 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 			return
 		}
 
-		executorKey := req.Executor
-		if executorKey == "" {
-			executorKey = defaultChatExecutor
-		}
-		runner, ok := agentRunners[executorKey]
-		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
-			return
-		}
-
-		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
-
-		proj, err := projects.Get(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		root, err := projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := factory(root)
-
-		t, err := store.Get(taskId)
-		if err != nil {
-			writeGetError(w, err)
+		target, ok := resolveStageStreamTarget(w, projects, factory, agentRunners, req.Executor, r.PathValue("projectId"), taskId)
+		if !ok {
 			return
 		}
 
-		existing, err := store.GetConversation(taskId, stage)
+		existing, err := target.store.GetConversation(taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -326,59 +380,36 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 			return
 		}
 
-		systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
-
-		flusher, ok := w.(http.Flusher)
+		writeEvent, ok := beginStageStream(w)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
-		}
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-
-		writeEvent := func(ev chatStreamEvent) {
-			data, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
 		}
 
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		workspace, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
-		if wsErr != nil && !errors.Is(wsErr, agentrunner.ErrNoRepository) {
-			streamErr = fmt.Errorf("resolving workspace: %w", wsErr)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
+		if runErr != nil {
+			streamErr = runErr
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
-				SessionKey:   taskId + ":" + stage,
-				Workspace:    workspace,
-				SystemPrompt: systemPrompt,
-				UserMessage:  kickoffUserMessage,
-				Model:        req.Model,
-				Tool:         tool,
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+				SessionKey:     taskId + ":" + stage,
+				Workspace:      run.Workspace,
+				SystemPrompt:   run.SystemPrompt,
+				UserMessage:    kickoffUserMessage,
+				Model:          req.Model,
+				Tool:           tool,
+				EnableBashTool: run.EnableBash,
 			}, writeEvent)
 		}
 		if streamErr != nil {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
-		if streamErr != nil {
-			assistantMsg.Error = streamErr.Error()
-		}
-		if proposed != nil {
-			assistantMsg.ToolCall = &task.ConversationToolCall{
-				ID:        proposed.ID,
-				Name:      proposed.Function.Name,
-				Arguments: proposed.Function.Arguments,
-			}
-		}
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
 
-		if _, err := store.AppendConversationMessages(taskId, stage, assistantMsg); err != nil {
+		if _, err := target.store.AppendConversationMessages(taskId, stage, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting stage conversation kickoff message")
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
@@ -472,38 +503,13 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 			return
 		}
 
-		executorKey := req.Executor
-		if executorKey == "" {
-			executorKey = defaultChatExecutor
-		}
-		runner, ok := agentRunners[executorKey]
-		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
-			return
-		}
-
-		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
-
-		proj, err := projects.Get(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		root, err := projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := factory(root)
-
-		t, err := store.Get(taskId)
-		if err != nil {
-			writeGetError(w, err)
+		target, ok := resolveStageStreamTarget(w, projects, factory, agentRunners, req.Executor, r.PathValue("projectId"), taskId)
+		if !ok {
 			return
 		}
 
-		existing, err := store.GetConversation(taskId, stage)
+		existing, err := target.store.GetConversation(taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -518,23 +524,10 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 		}
 
 		historyPrefix := append([]task.ConversationMessage{}, existing.Messages[:index]...)
-		systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
 
-		flusher, ok := w.(http.Flusher)
+		writeEvent, ok := beginStageStream(w)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
-		}
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-
-		writeEvent := func(ev chatStreamEvent) {
-			data, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
 		}
 
 		sessionKey := taskId + ":" + stage
@@ -544,42 +537,33 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		workspace, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
-		if wsErr != nil && !errors.Is(wsErr, agentrunner.ErrNoRepository) {
-			streamErr = fmt.Errorf("resolving workspace: %w", wsErr)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
+		if runErr != nil {
+			streamErr = runErr
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), runner, agentrunner.RunInput{
-				SessionKey:   sessionKey,
-				Workspace:    workspace,
-				SystemPrompt: systemPrompt,
-				UserMessage:  req.Content,
-				Model:        req.Model,
-				Tool:         tool,
-				History:      conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
+			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+				SessionKey:     sessionKey,
+				Workspace:      run.Workspace,
+				SystemPrompt:   run.SystemPrompt,
+				UserMessage:    req.Content,
+				Model:          req.Model,
+				Tool:           tool,
+				EnableBashTool: run.EnableBash,
+				History:        conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
 			}, writeEvent)
 		}
 		if streamErr != nil {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := task.ConversationMessage{Role: "assistant", Content: assistantContent}
-		if streamErr != nil {
-			assistantMsg.Error = streamErr.Error()
-		}
-		if proposed != nil {
-			assistantMsg.ToolCall = &task.ConversationToolCall{
-				ID:        proposed.ID,
-				Name:      proposed.Function.Name,
-				Arguments: proposed.Function.Arguments,
-			}
-		}
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
 
 		now := time.Now().UTC()
 		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}
 		assistantMsg.CreatedAt = now
 
 		newMessages := append(historyPrefix, userMsg, assistantMsg)
-		if _, err := store.ReplaceConversationMessages(taskId, stage, newMessages); err != nil {
+		if _, err := target.store.ReplaceConversationMessages(taskId, stage, newMessages); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting regenerated stage conversation messages")
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
@@ -593,6 +577,19 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 // they differ in what UserMessage/History they supply and what gets
 // persisted afterward, not in how a turn is actually run and streamed.
 func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, err error) {
+	// Surface the agent's intermediate tool activity (the executed
+	// read_file/grep_search/glob/bash calls and their results) live, so a
+	// client can render "ran go test ./... -> ok" as it happens. These are
+	// the loop's EXECUTED tools — kept distinct from the single final Draft
+	// (validated against in.Tool below), which is never routed here. General
+	// across all three stages: Requirements/Planning only ever make read-only
+	// calls, Review adds bash.
+	in.OnToolCall = func(name, argsJSON string) {
+		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "call", Name: name, Arguments: argsJSON}})
+	}
+	in.OnToolResult = func(name, result string, isError bool) {
+		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "result", Name: name, Result: result, IsError: isError}})
+	}
 	out, runErr := runner.Run(ctx, in, func(d chat.Delta) error {
 		writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
 		return nil
@@ -657,6 +654,8 @@ func buildStagePrompt(t task.Task, proj project.Project, stage string, knowledge
 		b.WriteString(grillMeSystemPrompt)
 	case task.StagePlanning:
 		b.WriteString(planningModeSystemPrompt)
+	case task.StageReview:
+		b.WriteString(reviewSystemPrompt)
 	}
 
 	fmt.Fprintf(&b, "## Task\nObjective: %s\n", t.Objective)
@@ -689,4 +688,101 @@ func buildStagePrompt(t task.Task, proj project.Project, stage string, knowledge
 	}
 
 	return b.String()
+}
+
+// maxReviewPatchBytes caps how much of the execution diff is inlined into the
+// review prompt, so a large change doesn't blow a small-context local model's
+// window (the same binding constraint the toolloop output caps address). The
+// agent still has read_file/grep_search over the whole worktree for anything
+// the truncated patch drops.
+const maxReviewPatchBytes = 24 * 1024
+
+// stageRun bundles the resolved workspace, the (possibly stage-augmented)
+// system prompt, and whether the confined bash tool should be offered, for one
+// stage conversation turn — the three stage-conversation handlers share it so
+// Review's extra plumbing (worktree, diff, bash) lives in exactly one place.
+type stageRun struct {
+	Workspace    string
+	SystemPrompt string
+	EnableBash   bool
+}
+
+// resolveStageRun assembles the stageRun for a turn. Requirements/Planning run
+// read-only against the project's shared checkout (a project with no repo is
+// tolerated, yielding an empty workspace and a text-only turn). Review runs
+// against the execution's isolated worktree with bash enabled and the
+// execution's diff + verification steps appended to the prompt — so the agent
+// can actually run the tests and check the real change (Milestone 6).
+func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, t task.Task, stage string, knowledgeReader KnowledgeReader) (stageRun, error) {
+	systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
+
+	if stage != task.StageReview {
+		ws, err := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
+		if err != nil && !errors.Is(err, agentrunner.ErrNoRepository) {
+			return stageRun{}, fmt.Errorf("resolving workspace: %w", err)
+		}
+		return stageRun{Workspace: ws, SystemPrompt: systemPrompt}, nil
+	}
+
+	addendum, workspace, err := buildReviewContext(ctx, reposRoot, proj, store, t.ID)
+	if err != nil {
+		return stageRun{}, err
+	}
+	return stageRun{Workspace: workspace, SystemPrompt: systemPrompt + addendum, EnableBash: true}, nil
+}
+
+// buildReviewContext resolves the worktree of the task's most recent execution
+// and builds the review prompt addendum: the execution's commits, its actual
+// diff (CollectExecutionPatch), and the task's structured verification steps
+// for the agent to walk. Returns the addendum and the worktree path bash/the
+// read-only tools are confined to.
+func buildReviewContext(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, taskID string) (addendum, workspace string, err error) {
+	executions, err := store.ListExecutions(taskID)
+	if err != nil {
+		return "", "", fmt.Errorf("listing executions for review: %w", err)
+	}
+	if len(executions) == 0 {
+		return "", "", fmt.Errorf("no execution to review for task %s", taskID)
+	}
+	// ListExecutions sorts ascending by the zero-padded id, so the last entry
+	// is the most recent attempt — the one that advanced the task to review.
+	latest := executions[len(executions)-1]
+
+	ws, err := agentrunner.ResolveReviewWorkspace(ctx, reposRoot, proj.Repositories, latest.ExecutionID)
+	if err != nil {
+		return "", "", fmt.Errorf("resolving review workspace: %w", err)
+	}
+
+	commits, patch, err := agentrunner.CollectExecutionPatch(ctx, ws)
+	if err != nil {
+		return "", "", fmt.Errorf("collecting execution diff: %w", err)
+	}
+	if len(patch) > maxReviewPatchBytes {
+		patch = patch[:maxReviewPatchBytes] + "\n[truncated: diff exceeded the inline limit — use read_file/grep_search over the worktree for the rest]"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n## Execution under review: %s\n", latest.ExecutionID)
+	fmt.Fprintf(&b, "Branch %s, based on %s.\n", ws.Branch, ws.BaseBranch)
+	if len(commits) > 0 {
+		fmt.Fprintf(&b, "Commits (oldest first): %s\n", strings.Join(commits, ", "))
+	}
+
+	// The structured verification steps are the checklist phase 3 walks. A
+	// missing/unreadable context.yaml just omits them rather than failing the
+	// whole review — the diff is the primary artifact.
+	if c, ctxErr := store.GetContext(taskID); ctxErr != nil {
+		logrus.WithError(ctxErr).WithField("task", taskID).Warn("review: skipping verification steps (context unavailable)")
+	} else if len(c.Verification) > 0 {
+		b.WriteString("\n### Verification steps to confirm\n")
+		for _, v := range c.Verification {
+			fmt.Fprintf(&b, "- [%s] %s\n", v.Kind, v.Description)
+		}
+	}
+
+	b.WriteString("\n### Diff under review\n```diff\n")
+	b.WriteString(patch)
+	b.WriteString("\n```\n")
+
+	return b.String(), ws.Path, nil
 }

@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/test"
+
 	"github.com/timmersuk/llm-workbench/internal/chat"
 )
 
@@ -261,6 +264,46 @@ func TestOnToolCallAndOnToolResultFire(t *testing.T) {
 	}
 	if len(results) != 1 || !strings.Contains(results[0], "hello") || strings.Contains(results[0], "true") {
 		t.Fatalf("OnToolResult not fired correctly: %v", results)
+	}
+}
+
+// TestToolExecutionIsLogged guards the observability contract: every tool the
+// model runs is recorded server-side at the engine's single execution point,
+// independent of whether a caller wired the OnToolCall/OnToolResult hooks (Run
+// leaves them nil). Without this record the only evidence a review's bash/tests
+// ran is the model's own prose.
+func TestToolExecutionIsLogged(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644)
+
+	hook := test.NewGlobal()
+	defer hook.Reset()
+	prev := logrus.GetLevel()
+	logrus.SetLevel(logrus.InfoLevel)
+	defer logrus.SetLevel(prev)
+
+	f := &fakeClient{turns: []func(func(chat.Delta) error) error{
+		toolTurn(call("c1", "read_file", `{"path":"a.txt"}`)),
+		textTurn("done"),
+	}}
+	// No OnToolCall/OnToolResult wired — mirrors ChatClientRunner.Run.
+	if _, err := New(f).Run(context.Background(), Config{
+		Workspace: dir, Tools: ReadOnlyTools(), MaxTurns: 5,
+	}, baseMessages(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, e := range hook.AllEntries() {
+		if e.Message == "toolloop: executing tool call" && e.Data["tool"] == "read_file" {
+			found = true
+			if ws, _ := e.Data["workspace"].(string); ws != dir {
+				t.Fatalf("expected workspace %q in log entry, got %q", dir, ws)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected an Info audit log for the executed tool call, entries: %v", hook.AllEntries())
 	}
 }
 

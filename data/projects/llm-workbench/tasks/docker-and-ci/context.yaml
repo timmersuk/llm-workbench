@@ -88,10 +88,14 @@ detail: |
   the same loop added before the docker job's multi-arch build can work.
 
 verification:
-  - "docker build . succeeds locally and docker run serves the dashboard/API on the configured port."
-  - "CI's test job passes on a PR."
-  - "CI's docker job builds a multi-arch image on a tag push (dry run without actually pushing, until the registry/credentials question below is resolved)."
-  - "make test / make all still pass locally, unaffected by the Dockerfile/CI additions."
+  - description: "docker build . succeeds locally and docker run serves the dashboard/API on the configured port."
+    kind: agent_executable
+  - description: "CI's test job passes on a PR."
+    kind: agent_executable
+  - description: "CI's docker job builds a multi-arch image on a tag push (dry run without actually pushing, until the registry/credentials question below is resolved)."
+    kind: agent_executable
+  - description: "make test / make all still pass locally, unaffected by the Dockerfile/CI additions."
+    kind: agent_executable
 
 open_questions:
   - "Which registry — Docker Hub (matching logthing's docker/login-action + secrets.DOCKERHUB_USERNAME/TOKEN) or GHCR? Not yet decided; Docker Hub requires provisioning secrets for this repo specifically."
