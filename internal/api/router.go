@@ -44,12 +44,14 @@ type TaskStore interface {
 	ReplaceConversationMessages(id, stage string, msgs []task.ConversationMessage) (task.Conversation, error)
 	FinalizeRequirements(id string, draft task.RequirementsDraft) (task.Task, error)
 	FinalizePlan(id string, plan task.Plan) (task.Task, error)
+	FinalizeReview(id string, draft task.ReviewDraft) (task.Task, error)
 	ReviseToRequirements(id string) (task.Task, error)
 	ReviseToPlanning(id string) (task.Task, error)
 
 	NextExecutionID(id string) (string, error)
 	RecordExecution(id string, exec task.Execution) (task.Execution, error)
 	ListExecutions(id string) ([]task.Execution, error)
+	ListReviews(id string) ([]task.Review, error)
 }
 
 // KnowledgeReader resolves a knowledge concept id (e.g.
@@ -102,10 +104,13 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeRead
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}/regenerate", handleRegenerateStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", handleFinalizeRequirements(projects, taskStores, agentRunners))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", handleFinalizePlan(projects, taskStores, agentRunners))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/review/finalize", handleFinalizeReview(projects, taskStores, agentRunners))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/revise", handleReviseRequirements(projects, taskStores))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", handleRevisePlan(projects, taskStores))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", handleStartExecution(projects, taskStores, agentRunners, reposRoot))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", handleListExecutions(projects, taskStores))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", handleListReviews(projects, taskStores))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", handleReviewDiff(projects, taskStores, reposRoot))
 
 	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(agentRunners, reposRoot))
 	mux.HandleFunc("POST /api/v1/chat/sessions/close", handleCloseChatSession(agentRunners))
