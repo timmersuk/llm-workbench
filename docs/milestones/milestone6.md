@@ -431,16 +431,25 @@ independently reviewable and live-verifiable, rather than one large diff:
   cheap placeholder: mostly inert for a small model today, but "room" for
   a future, bash-enabled GrillMe (or a human reading the conversation
   transcript) to go inspect the rejected attempt's actual code when a
-  harder task and a more capable model warrant it — see the deferred item
-  below.
+  harder task and a more capable model warrant it — see PR 6 below.
 
-* **Deferred, not scheduled: bash access for Requirements-stage (GrillMe)
-  conversations.** Would let a capable model actually act on the branch
-  name PR 5 surfaces (git-inspect the rejected attempt's code) instead of
-  just seeing it as a text pointer. Deliberately not bundled into PR 5: a
-  materially different capability than Review's bash, which is confined to
-  a disposable per-execution worktree — GrillMe's workspace is the
-  *shared* checkout common to every task on the project, so unrestricted
-  bash there is a different, bigger trust-boundary decision (full bash vs.
-  a narrower ref-aware read tool) deserving its own design pass. Planning
-  Mode has the identical gap if this is ever extended there too.
+* **PR 6 — bash/ref-aware read access for Requirements-stage (GrillMe)
+  conversations. Not yet designed.** Would let a capable model actually act
+  on the branch name PR 5 surfaces — git-inspect the rejected attempt's
+  actual code — instead of just seeing it as an inert text pointer.
+  Deliberately not bundled into PR 5: a materially different capability
+  than Review's bash, which is confined to a disposable per-execution
+  worktree — GrillMe's workspace is the *shared* checkout common to every
+  task on the project, so unrestricted bash there is a different, bigger
+  trust-boundary decision (full bash vs. a narrower ref-aware read tool)
+  deserving its own design pass before implementation — needs a
+  `/grill-with-docs` session of its own, following PR 3/PR 4's precedent,
+  before scoping is binding. Planning Mode has the identical gap if this is
+  ever extended there too.
+
+  **⚠ Do not implement from this bullet as-is.** It's a placeholder
+  capturing *why* the item exists, not a binding scope — no trust-boundary
+  decision (full bash vs. a narrower ref-aware read tool) has actually been
+  made yet. Run the `/grill-with-docs` session first and replace this note
+  with real binding decisions, the same way PR 3/PR 4 did, before any code
+  lands.
