@@ -1,6 +1,7 @@
 # Milestone 6 — Review
 
-**Status: Scoping (2026-07-12)** — original design scoped via a
+**Status: Shipped (2026-07-15)** — all six phased PRs merged (#23, #24,
+#26–#29). Original design scoped via a
 `/grill-with-docs` session on 2026-07-09; re-validated against `main` after
 Milestone 8 shipped. Every code anchor below still holds (verified 2026-07-12:
 `stageTool`'s two-case switch, `ExecutionInput{PlanRef, ContextRefs}`,
@@ -314,9 +315,9 @@ independently reviewable and live-verifiable, rather than one large diff:
   (`CollectExecutionPatch`) so the prompt carries the actual diff.
   Verified end-to-end through the real router/FileStore/git chain with a
   faked model, matching M8's bar as closely as a model-less environment allows.
-* **PR 3 — ReviewPanel frontend.** Design sharpened via a
-  `/grill-with-docs` session on 2026-07-14; the six decisions below are
-  binding on whoever executes it.
+* **PR 3 — ReviewPanel frontend. ✅ Shipped (#26).** Design sharpened via a
+  `/grill-with-docs` session on 2026-07-14; the six decisions below were
+  binding on the implementation.
 
   Frontend: `ReviewPanel.tsx` + `ReviewDraftForm.tsx` (a decision
   `<select>` + notes `<textarea>`, mirroring the GrillMe/Planning
@@ -411,11 +412,11 @@ independently reviewable and live-verifiable, rather than one large diff:
      review's notes, so it isn't silently dropped into a pre-populated
      directory with no explanation.
 
-* **PR 5 — `rejected` → requirements prompt enrichment.** Pure prompt-text
-  change with no worktree/git-mechanics involved, deliberately split from
-  PR 4 since it touches a different, lower-risk layer. Design sharpened via
-  a `/grill-with-docs` session on 2026-07-15; the six decisions below are
-  binding on the implementation.
+* **PR 5 — `rejected` → requirements prompt enrichment. ✅ Shipped (#28).**
+  Pure prompt-text change with no worktree/git-mechanics involved,
+  deliberately split from PR 4 since it touches a different, lower-risk
+  layer. Design sharpened via a `/grill-with-docs` session on 2026-07-15;
+  the six decisions below were binding on the implementation.
 
   When a task's most recent review (`ListReviews`, last entry) has
   `decision == rejected`, the Requirements-stage (GrillMe) conversation's
@@ -491,8 +492,9 @@ independently reviewable and live-verifiable, rather than one large diff:
   implementation choice, not a structural commitment.
 
 * **PR 6 — ref-aware read tools for Requirements-stage (GrillMe)
-  conversations.** Design sharpened via a `/grill-with-docs` session on
-  2026-07-15; the seven decisions below are binding on the implementation.
+  conversations. ✅ Shipped (#29).** Design sharpened via a `/grill-with-docs`
+  session on 2026-07-15; the seven decisions below were binding on the
+  implementation.
 
   Lets a capable model actually act on the branch name PR 5 surfaces —
   git-inspect the rejected attempt's actual code — instead of just seeing
