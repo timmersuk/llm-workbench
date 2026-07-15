@@ -15,7 +15,7 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
     execution_id: 'exec-001',
     task_id: taskId,
     executor: { type: 'claude-code', version: '' },
-    input: { plan_ref: 'plan.yaml', context_refs: [] },
+    input: { plan_ref: 'plan.yaml', context_refs: [], review_feedback: '' },
     output: { artifacts: [], git_branch: 'task-exec/task-a/exec-001', commits: ['abc123'], forked_from_branch: '' },
     metrics: { duration_seconds: 1.5, tokens_used: 0, cost_estimate: 0 },
     status: 'success',

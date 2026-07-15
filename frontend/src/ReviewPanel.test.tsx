@@ -15,7 +15,7 @@ function makeExecution(overrides: Partial<Execution['output']> = {}): Execution 
     execution_id: 'exec-001',
     task_id: taskId,
     executor: { type: 'claude-code', version: '' },
-    input: { plan_ref: 'plan.yaml', context_refs: [] },
+    input: { plan_ref: 'plan.yaml', context_refs: [], review_feedback: '' },
     output: { artifacts: ['feature.go'], git_branch: 'wb/task-a/exec-001', commits: ['add feature'], forked_from_branch: '', ...overrides },
     metrics: { duration_seconds: 1, tokens_used: 0, cost_estimate: 0 },
     status: 'success',

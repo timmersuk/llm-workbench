@@ -160,7 +160,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
           execution_id: 'exec-002',
           task_id: 'task-a',
           executor: { type: 'claude-code', version: '' },
-          input: { plan_ref: 'plan.yaml', context_refs: [] },
+          input: { plan_ref: 'plan.yaml', context_refs: [], review_feedback: '' },
           output: { artifacts: [], git_branch: 'wb/task-a/exec-002', commits: [], forked_from_branch: '' },
           metrics: { duration_seconds: 1, tokens_used: 0, cost_estimate: 0 },
           status: 'success',
