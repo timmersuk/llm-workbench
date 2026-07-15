@@ -363,10 +363,10 @@ independently reviewable and live-verifiable, rather than one large diff:
      all three outcomes (`complete` / `implementation` / `requirements`) —
      no per-decision special-casing in the panel.
 
-* **PR 4 — `needs_changes` continuation.** Design sharpened via a
-  `/grill-with-docs` session on 2026-07-15 (superseding the single "PR 4"
-  scoped 2026-07-14); the decisions below are binding on whoever executes
-  it.
+* **PR 4 — `needs_changes` continuation. ✅ Shipped (#27).** Design
+  sharpened via a `/grill-with-docs` session on 2026-07-15 (superseding the
+  single "PR 4" scoped 2026-07-14); the decisions below were binding on the
+  implementation.
 
   A `needs_changes` verdict sends a task back to `implementation` for a
   fresh execution attempt. Rather than starting that attempt from a blank
