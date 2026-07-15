@@ -119,6 +119,8 @@ executor:
 input:
   plan_ref: ""
   context_refs: []
+  review_feedback: ""  # prior review's notes, set only when this attempt
+                        # was triggered by a needs_changes verdict
 
 output:
   artifacts: []

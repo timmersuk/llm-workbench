@@ -124,6 +124,12 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 			return
 		}
 
+		forkFrom, reviewFeedback, err := resolveReviewContinuation(store, taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
 		executionID, err := store.NextExecutionID(taskId)
 		if err != nil {
 			writeGetError(w, err)
@@ -147,13 +153,13 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 			flusher.Flush()
 		}
 
-		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), reposRoot, proj.Repositories, taskId, executionID)
+		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), reposRoot, proj.Repositories, taskId, executionID, forkFrom)
 		if wsErr != nil {
 			writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("resolving execution workspace: %v", wsErr)})
 			return
 		}
 
-		systemPrompt := buildExecutionPrompt(t, plan)
+		systemPrompt := buildExecutionPrompt(t, plan, reviewFeedback)
 
 		start := time.Now()
 		out, execErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
@@ -182,7 +188,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 		exec := task.Execution{
 			ExecutionID: executionID,
 			Executor:    task.ExecutionExecutor{Type: executorKey},
-			Input:       task.ExecutionInput{PlanRef: "plan.yaml"},
+			Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback},
 			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits},
 			Metrics: task.ExecutionMetrics{
 				DurationSeconds: durationSeconds,
@@ -246,12 +252,46 @@ func handleListExecutions(projects ProjectStore, factory TaskStoreFactory) http.
 	}
 }
 
+// resolveReviewContinuation looks up the latest review recorded for taskId
+// and, only when its decision is needs_changes, resolves the branch to
+// continue from (the most recent execution's branch) and the notes to carry
+// into the new attempt's prompt — a fresh lookup done on every execute
+// rather than a persisted flag (docs/adr/0012). Any other decision (or no
+// review yet) returns both empty, so the caller forks a fresh worktree off
+// main exactly as before.
+func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, reviewFeedback string, err error) {
+	reviews, err := store.ListReviews(taskId)
+	if err != nil {
+		return "", "", fmt.Errorf("listing reviews for %s: %w", taskId, err)
+	}
+	if len(reviews) == 0 {
+		return "", "", nil
+	}
+	latest := reviews[len(reviews)-1]
+	if latest.Decision != task.ReviewDecisionNeedsChanges {
+		return "", "", nil
+	}
+
+	executions, err := store.ListExecutions(taskId)
+	if err != nil {
+		return "", "", fmt.Errorf("listing executions for %s: %w", taskId, err)
+	}
+	if len(executions) > 0 {
+		forkFrom = executions[len(executions)-1].Output.GitBranch
+	}
+	return forkFrom, latest.Notes, nil
+}
+
 // buildExecutionPrompt seeds an execution's system prompt with the task's
 // own fields and its finalized plan — the Implementation-stage analog of
 // buildStagePrompt (stage_conversation.go), but for an autonomous run
 // rather than an interview: explicit instructions to implement the plan,
 // verify it, and commit, since there is no human turn-by-turn to steer it.
-func buildExecutionPrompt(t task.Task, plan task.Plan) string {
+// reviewFeedback is non-empty only for a needs_changes retry
+// (resolveReviewContinuation) — the workspace itself already contains the
+// prior attempt's code (ResolveExecutionWorkspace's forkFrom), so this only
+// needs to explain why, not restate what changed.
+func buildExecutionPrompt(t task.Task, plan task.Plan, reviewFeedback string) string {
 	var b strings.Builder
 
 	b.WriteString("You are executing an already-approved implementation plan for this task, autonomously and to completion. You are already on an isolated git branch inside the target repository — implement the plan, run relevant tests, and commit your work as you go. Do not ask questions; make reasonable decisions and proceed.\n\n")
@@ -270,6 +310,10 @@ func buildExecutionPrompt(t task.Task, plan task.Plan) string {
 	}
 	if len(plan.Risks) > 0 {
 		fmt.Fprintf(&b, "Known risks:\n- %s\n", strings.Join(plan.Risks, "\n- "))
+	}
+
+	if reviewFeedback != "" {
+		fmt.Fprintf(&b, "\n## Continuing prior work\nYour workspace already contains your previous attempt at this plan — a reviewer looked at it and requested changes rather than approving it. Read what's already there before making changes, and address this feedback directly:\n%s\n", reviewFeedback)
 	}
 
 	return b.String()

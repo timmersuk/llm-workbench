@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -128,6 +129,7 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
 	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
@@ -187,6 +189,7 @@ func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
@@ -232,6 +235,117 @@ func TestClassifyExecutionOutcome_NoErrorIsSuccess(t *testing.T) {
 
 	assert.Equal(t, task.ExecutionStatusSuccess, exec.Status)
 	assert.Nil(t, exec.Failure)
+}
+
+// TestResolveReviewContinuation locks in the gating rules docs/adr/0012
+// describes: only the *latest* review matters, and only a needs_changes
+// decision triggers continuation — everything else (no reviews yet, or the
+// latest review being some other decision) yields a fresh-from-main attempt.
+func TestResolveReviewContinuation(t *testing.T) {
+	t.Run("no reviews yet", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		require.NoError(t, err)
+		assert.Empty(t, forkFrom)
+		assert.Empty(t, feedback)
+	})
+
+	t.Run("latest review is rejected, not needs_changes", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+			{Decision: task.ReviewDecisionRejected, Notes: "wrong approach entirely"},
+		}, nil)
+
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		require.NoError(t, err)
+		assert.Empty(t, forkFrom)
+		assert.Empty(t, feedback)
+	})
+
+	t.Run("latest review is needs_changes, uses the latest execution's branch", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+			{Decision: task.ReviewDecisionApproved, Notes: "stale, from an earlier cycle"},
+			{Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
+		}, nil)
+		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+			{ExecutionID: "exec-001", Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
+			{ExecutionID: "exec-002", Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-002"}},
+		}, nil)
+
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		require.NoError(t, err)
+		assert.Equal(t, "task-exec/TASK-0001/exec-002", forkFrom)
+		assert.Equal(t, "fix the widget", feedback)
+	})
+}
+
+// TestHandleStartExecution_NeedsChangesForksFromPriorBranch is the
+// end-to-end proof for docs/adr/0012: a needs_changes retry's worktree is
+// forked from the prior execution's real branch tip (so its file shows up
+// in the new worktree), not a blank checkout of main, and the review's
+// notes reach both the prompt and the recorded ExecutionInput.
+func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+	repoDir := filepath.Join(reposRoot, "demo-repo")
+
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "git %v: %s", args, out)
+		return string(out)
+	}
+	baseBranch := strings.TrimSpace(run("rev-parse", "--abbrev-ref", "HEAD"))
+
+	// Simulate a prior execution attempt's branch, with a file that exists
+	// only there — proves the new worktree came from this branch rather
+	// than a fresh checkout of main.
+	priorBranch := "task-exec/TASK-0001/exec-001"
+	run("checkout", "-b", priorBranch)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "wip.txt"), []byte("prior attempt\n"), 0o644))
+	run("add", ".")
+	run("commit", "-q", "-m", "prior attempt")
+	run("checkout", baseBranch)
+
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+		{Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
+	}, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		{ExecutionID: "exec-001", Output: task.ExecutionOutput{GitBranch: priorBranch}},
+	}, nil)
+	tasks.On("NextExecutionID", "TASK-0001").Return("exec-002", nil)
+
+	var recorded task.Execution
+	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+		recorded = e
+		return true
+	})).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
+
+	runner := new(mockAgentRunner)
+	var gotIn agentrunner.ExecuteInput
+	runner.On("Execute", mock.Anything, mock.MatchedBy(func(in agentrunner.ExecuteInput) bool {
+		gotIn = in
+		return true
+	}), mock.Anything).Return(nil, agentrunner.ExecuteOutput{Content: "done"}, nil)
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot)(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	assert.Equal(t, "fix the widget", recorded.Input.ReviewFeedback)
+	assert.Contains(t, gotIn.SystemPrompt, "Continuing prior work")
+	assert.Contains(t, gotIn.SystemPrompt, "fix the widget")
+
+	assert.FileExists(t, filepath.Join(reposRoot, ".worktrees", "demo-repo", "exec-002", "wip.txt"))
 }
 
 func TestHandleListExecutions_OK(t *testing.T) {

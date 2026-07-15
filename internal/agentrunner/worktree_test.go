@@ -38,7 +38,7 @@ func TestResolveExecutionWorkspace_CreatesIsolatedWorktreeOnNewBranch(t *testing
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "task-exec/task-a/exec-001", ws.Branch)
@@ -53,11 +53,43 @@ func TestResolveExecutionWorkspace_CreatesIsolatedWorktreeOnNewBranch(t *testing
 	assert.Equal(t, ws.BaseBranch, strings.TrimSpace(branch))
 }
 
+// TestResolveExecutionWorkspace_ForkFromForksNewBranchButKeepsMainAsBaseBranch
+// locks in docs/adr/0012: passing forkFrom cuts the new branch from that ref
+// (so the new worktree already contains whatever forkFrom had committed),
+// while BaseBranch on the returned ExecutionWorkspace still reports the
+// shared checkout's own branch — independent of forkFrom — so
+// CollectExecutionOutput/CollectExecutionPatch keep diffing against main.
+func TestResolveExecutionWorkspace_ForkFromForksNewBranchButKeepsMainAsBaseBranch(t *testing.T) {
+	reposRoot := t.TempDir()
+	repoDir := initTestRepo(t, reposRoot, "myrepo")
+
+	priorWs, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(priorWs.Path, "wip.txt"), []byte("prior attempt\n"), 0o644))
+	_, err = runGit(context.Background(), priorWs.Path, "add", ".")
+	require.NoError(t, err)
+	_, err = runGit(context.Background(), priorWs.Path, "commit", "-q", "-m", "prior attempt")
+	require.NoError(t, err)
+
+	retryWs, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-002", priorWs.Branch)
+	require.NoError(t, err)
+
+	assert.Equal(t, "task-exec/task-a/exec-002", retryWs.Branch)
+	assert.FileExists(t, filepath.Join(retryWs.Path, "wip.txt"))
+	assert.Equal(t, priorWs.BaseBranch, retryWs.BaseBranch)
+
+	// The shared checkout is still untouched by either resolution.
+	branch, err := runGit(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, retryWs.BaseBranch, strings.TrimSpace(branch))
+}
+
 func TestResolveExecutionWorkspace_WorktreeStaysUnderReposRoot(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 
 	rootAbs, err := filepath.Abs(reposRoot)
@@ -71,10 +103,10 @@ func TestResolveExecutionWorkspace_RejectsUnsafeIDs(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	_, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "../escape", "exec-001")
+	_, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "../escape", "exec-001", "")
 	assert.ErrorIs(t, err, ErrInvalidRepository)
 
-	_, err = ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "../escape")
+	_, err = ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "../escape", "")
 	assert.ErrorIs(t, err, ErrInvalidRepository)
 }
 
@@ -82,7 +114,7 @@ func TestCollectExecutionOutput_ReturnsCommitsAndChangedFiles(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "new-file.txt"), []byte("content\n"), 0o644))
@@ -101,7 +133,7 @@ func TestCollectExecutionOutput_EmptyWhenNoCommitsMade(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 
 	commits, artifacts, err := CollectExecutionOutput(context.Background(), ws)
@@ -114,7 +146,7 @@ func TestCollectExecutionPatch_ReturnsCommitsAndRealDiff(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "new-file.txt"), []byte("added line\n"), 0o644))
@@ -135,7 +167,7 @@ func TestResolveReviewWorkspace_LocatesExistingExecutionWorktree(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	created, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	created, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 
 	// Review resolves the same worktree the execution left in place, without

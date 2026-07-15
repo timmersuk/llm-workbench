@@ -363,26 +363,84 @@ independently reviewable and live-verifiable, rather than one large diff:
      all three outcomes (`complete` / `implementation` / `requirements`) —
      no per-decision special-casing in the panel.
 
-* **PR 4 — Review-cycle prompt plumbing (tracked deferral, not yet
-  scheduled).** Two backend behaviours deliberately deferred out of PR 3
-  so it stays "review UI + minimal routes." Neither is optional long-term
-  — they close the `needs_changes`/`rejected` loops end-to-end:
-  * **Execute-retrigger feedback threading.** `needs_changes` sends a task
-    back to `implementation`; the review's notes must reach the *next*
-    execution attempt's prompt via `input.review_feedback`. Notes already
-    persist in `review-NNN.yaml`, so nothing is lost meanwhile — PR 4 wires
-    them into the executor prompt the way `plan_ref`/`context_refs` already
-    seed it (see "Open questions" below for the exact wire shape).
-  * **`rejected` → requirements prompt enrichment.** `buildStagePrompt`'s
-    `StageRequirements` case should read the most recent `rejected`
-    `review-NNN.yaml` and prepend its notes, so the reopened GrillMe
-    conversation knows *why* it was reopened. No schema change — just
-    reading an artifact that already exists once Review has run.
+* **PR 4 — `needs_changes` continuation.** Design sharpened via a
+  `/grill-with-docs` session on 2026-07-15 (superseding the single "PR 4"
+  scoped 2026-07-14); the decisions below are binding on whoever executes
+  it.
 
-## Open questions for whoever executes this milestone
+  A `needs_changes` verdict sends a task back to `implementation` for a
+  fresh execution attempt. Rather than starting that attempt from a blank
+  worktree off `main` (forcing the agent to re-derive the entire
+  implementation from the plan text plus a paragraph of review notes), the
+  retry's worktree/branch is forked from the *prior* execution's branch
+  tip — the agent lands in a workspace that already contains what it built
+  last time and can address the specific feedback directly, the way an
+  ordinary "push a fix commit" review cycle works. See
+  `docs/adr/0012-needs-changes-continues-from-prior-execution-branch.md`
+  for the full rationale and rejected alternatives (diff-threading;
+  literal worktree reuse).
 
-* Exact wire shape for how `ReviseToImplementation`'s `reviewFeedback`
-  reaches the next `Execute` call's prompt — whether it's injected into
-  the executor's system prompt alongside `plan_ref`/`context_refs` (the
-  leaning) or handled some other way. A PR 1 implementation detail,
-  sketched above but not fully specified.
+  Binding decisions:
+  1. **New worktree per attempt, not literal resumption.** The retry still
+     gets its own fresh `ResolveExecutionWorkspace` call — its own
+     `executionID`, worktree directory, and branch — just forked from a
+     different starting ref, preserving the existing one-worktree-per-
+     attempt audit boundary.
+  2. **`ExecutionWorkspace.BaseBranch` stays `main`.**
+     `ResolveExecutionWorkspace` gains a fork-ref parameter (what ref to
+     `git worktree add -b` from), independent of `BaseBranch` (what
+     `CollectExecutionOutput`/`CollectExecutionPatch` diff against for
+     Review). A `needs_changes` retry forks from the prior execution's
+     branch but still diffs against `main` for Review — so Review's diff
+     machinery needs zero changes.
+  3. **Which branch to fork from**: no new schema field. Reuses the same
+     "last entry in `ListExecutions` is the execution under review"
+     convention `buildReviewContext` already relies on
+     (`internal/api/stage_conversation.go:747`), safe because the state
+     machine never allows two executions in flight for one task at once.
+     Gated on a *fresh* lookup of the latest review's decision at
+     execute-time being `needs_changes` — a first attempt or a
+     post-`rejected` cycle still forks from `main` as today.
+  4. **`ExecutionInput.ReviewFeedback`** (new field, `review_feedback` in
+     YAML/JSON) is archival-only — written for the record, never read back
+     to reconstruct anything — matching how `PlanRef` behaves today. The
+     live value that seeds the prompt comes from the same fresh lookup as
+     decision 3, not from this field.
+  5. **A short prompt note, not the diff.** `buildExecutionPrompt` gains a
+     line telling the agent it's continuing prior work and summarizing the
+     review's notes, so it isn't silently dropped into a pre-populated
+     directory with no explanation.
+
+* **PR 5 — `rejected` → requirements prompt enrichment.** Pure prompt-text
+  change with no worktree/git-mechanics involved, deliberately split from
+  PR 4 since it touches a different, lower-risk layer.
+  `buildStagePrompt`'s `StageRequirements` case reads the most recent
+  review; if its decision is `rejected`, prepends its notes *and* the
+  rejected execution's branch name (found the same way as PR 4 decision 3
+  — `ListExecutions`'s last entry, unambiguous here too since no new
+  execution can be recorded between a `rejected` verdict and the reopened
+  GrillMe conversation) to the system prompt.
+
+  Deliberately **notes + branch name only, not the raw diff**: GrillMe has
+  no bash tool today (`EnableBash` is `true` only for `StageReview`,
+  `internal/api/stage_conversation.go:719-731`), and its `read_file`/
+  `grep_search`/`glob` tools operate on the shared checkout's working
+  tree, not on arbitrary git refs — so a small/local model has no way to
+  act on a diff anyway, and raw diffs risk swamping a small model's
+  context for no benefit. The branch name is included regardless, as a
+  cheap placeholder: mostly inert for a small model today, but "room" for
+  a future, bash-enabled GrillMe (or a human reading the conversation
+  transcript) to go inspect the rejected attempt's actual code when a
+  harder task and a more capable model warrant it — see the deferred item
+  below.
+
+* **Deferred, not scheduled: bash access for Requirements-stage (GrillMe)
+  conversations.** Would let a capable model actually act on the branch
+  name PR 5 surfaces (git-inspect the rejected attempt's code) instead of
+  just seeing it as a text pointer. Deliberately not bundled into PR 5: a
+  materially different capability than Review's bash, which is confined to
+  a disposable per-execution worktree — GrillMe's workspace is the
+  *shared* checkout common to every task on the project, so unrestricted
+  bash there is a different, bigger trust-boundary decision (full bash vs.
+  a narrower ref-aware read tool) deserving its own design pass. Planning
+  Mode has the identical gap if this is ever extended there too.

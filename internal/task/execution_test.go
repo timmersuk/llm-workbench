@@ -137,3 +137,25 @@ func TestFileStore_RecordExecution_SetsTaskIDAndCreatedAtServerSide(t *testing.T
 	assert.Equal(t, "task-a", recorded.TaskID)
 	assert.False(t, recorded.CreatedAt.IsZero())
 }
+
+// TestFileStore_RecordExecution_ReviewFeedbackRoundTrips confirms
+// ExecutionInput.ReviewFeedback (docs/adr/0012) survives a real
+// write-then-read cycle through execution.yaml, the same way PlanRef
+// already does.
+func TestFileStore_RecordExecution_ReviewFeedbackRoundTrips(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newImplementationTask(t, store, "task-a")
+
+	_, err := store.RecordExecution("task-a", Execution{
+		ExecutionID: "exec-001",
+		Status:      ExecutionStatusSuccess,
+		Input:       ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: "fix the widget"},
+	})
+	require.NoError(t, err)
+
+	executions, err := store.ListExecutions("task-a")
+	require.NoError(t, err)
+	require.Len(t, executions, 1)
+	assert.Equal(t, "fix the widget", executions[0].Input.ReviewFeedback)
+}
