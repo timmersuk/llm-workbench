@@ -250,6 +250,7 @@ export interface ExecutionOutput {
   artifacts: string[]
   git_branch: string
   commits: string[]
+  forked_from_branch: string
 }
 
 export interface ExecutionMetrics {
@@ -309,6 +310,7 @@ export type ReviewDecision = 'approved' | 'rejected' | 'needs_changes'
 export interface Review {
   review_id: string
   task_id: string
+  execution_id: string
   decision: ReviewDecision
   notes: string
   created_at: string

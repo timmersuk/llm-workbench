@@ -806,7 +806,7 @@ func buildReviewContext(ctx context.Context, reposRoot string, proj project.Proj
 		return "", "", fmt.Errorf("resolving review workspace: %w", err)
 	}
 
-	commits, patch, err := agentrunner.CollectExecutionPatch(ctx, ws)
+	commits, patch, err := agentrunner.CollectExecutionPatch(ctx, ws, latest.Output.ForkedFromBranch)
 	if err != nil {
 		return "", "", fmt.Errorf("collecting execution diff: %w", err)
 	}

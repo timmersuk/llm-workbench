@@ -150,25 +150,37 @@ func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories 
 }
 
 // CollectExecutionOutput inspects ws after an Execute run has finished,
-// returning the commits made on ws.Branch since it diverged from
-// ws.BaseBranch (oldest first) and the paths of every file that differs
-// from ws.BaseBranch. Best-effort: callers should log a failure here
-// rather than fail the whole execution response over it, since the
-// execution itself already succeeded or failed independently of whether
-// this inspection works.
+// returning the commits this specific attempt made (oldest first) and the
+// paths of every file that differs from ws.BaseBranch. Best-effort: callers
+// should log a failure here rather than fail the whole execution response
+// over it, since the execution itself already succeeded or failed
+// independently of whether this inspection works.
 //
-// The diff (not the commit log) uses three-dot (`BaseBranch...HEAD`,
-// merge-base diff) rather than two-dot: two-dot compares the two branch
-// tips directly, which is only correct while BaseBranch is a strict
-// ancestor of HEAD. A needs_changes retry forks its worktree from the prior
-// attempt's branch tip, not from BaseBranch's current tip (docs/adr/0012),
-// so if the shared checkout's BaseBranch advances during a long-running
-// retry cycle, a two-dot diff would pick up BaseBranch's new commits as
-// spurious reverse-diff noise. `git log A..B` doesn't have this problem —
-// it already means "commits reachable from B but not A", which is what the
-// commit list wants — so only the diff calls change here.
-func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace) (commits []string, artifacts []string, err error) {
-	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", ws.BaseBranch+"..HEAD")
+// forkPoint is the ref this attempt's worktree was actually created from
+// (task.ExecutionOutput.ForkedFromBranch) — empty for a first attempt
+// forked directly from BaseBranch. The commit list is scoped to forkPoint
+// (or BaseBranch if forkPoint is empty), so a needs_changes retry's Commits
+// reports only what *this* attempt contributed, not every ancestor
+// attempt's commits too (docs/adr/0012 chains retries from the prior
+// attempt's branch tip, not from BaseBranch). The diff is deliberately kept
+// separate and always cumulative against BaseBranch regardless — Review
+// wants the full change so far, not just the latest attempt's slice of it.
+//
+// The diff uses three-dot (`BaseBranch...HEAD`, merge-base diff) rather than
+// two-dot: two-dot compares the two branch tips directly, which is only
+// correct while BaseBranch is a strict ancestor of HEAD. Since a retry's
+// worktree is forked from a fixed tip rather than BaseBranch's current tip,
+// if the shared checkout's BaseBranch advances during a long-running retry
+// cycle, a two-dot diff would pick up BaseBranch's new commits as spurious
+// reverse-diff noise. `git log A..B` doesn't have this problem — it already
+// means "commits reachable from B but not A" — so only the diff calls use
+// three-dot.
+func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace, forkPoint string) (commits []string, artifacts []string, err error) {
+	commitsRange := ws.BaseBranch
+	if forkPoint != "" {
+		commitsRange = forkPoint
+	}
+	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", commitsRange+"..HEAD")
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing commits for %s: %w", ws.Path, err)
 	}
@@ -184,15 +196,20 @@ func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace) (commits
 }
 
 // CollectExecutionPatch is the full-patch variant of CollectExecutionOutput:
-// it returns the same commits (oldest first), but instead of just the changed
-// file names it returns the actual unified diff of ws.Branch against
-// ws.BaseBranch (three-dot/merge-base — see CollectExecutionOutput's doc
-// comment for why). The Review conversation (Milestone 6) carries this real
-// diff in its prompt so the agent has the concrete change to check, rather
-// than a bare list of touched paths. Best-effort in the same way — a caller
-// should log a failure here rather than fail the whole review over it.
-func CollectExecutionPatch(ctx context.Context, ws ExecutionWorkspace) (commits []string, patch string, err error) {
-	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", ws.BaseBranch+"..HEAD")
+// it returns the same commits (see CollectExecutionOutput's doc comment for
+// how forkPoint scopes them), but instead of just the changed file names it
+// returns the actual unified diff of ws.Branch against ws.BaseBranch
+// (three-dot/merge-base — always cumulative, unaffected by forkPoint). The
+// Review conversation (Milestone 6) carries this real diff in its prompt so
+// the agent has the concrete change to check, rather than a bare list of
+// touched paths. Best-effort in the same way — a caller should log a
+// failure here rather than fail the whole review over it.
+func CollectExecutionPatch(ctx context.Context, ws ExecutionWorkspace, forkPoint string) (commits []string, patch string, err error) {
+	commitsRange := ws.BaseBranch
+	if forkPoint != "" {
+		commitsRange = forkPoint
+	}
+	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", commitsRange+"..HEAD")
 	if err != nil {
 		return nil, "", fmt.Errorf("listing commits for %s: %w", ws.Path, err)
 	}

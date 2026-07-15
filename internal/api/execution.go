@@ -175,7 +175,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 		// Best-effort: the execution itself already succeeded or failed
 		// independently of whether this inspection works, so a failure here
 		// is logged, not fatal to the response.
-		commits, artifacts, collectErr := agentrunner.CollectExecutionOutput(context.Background(), ws)
+		commits, artifacts, collectErr := agentrunner.CollectExecutionOutput(context.Background(), ws, forkFrom)
 		if collectErr != nil {
 			logrus.WithError(collectErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Warn("collecting execution output")
 		}
@@ -189,7 +189,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 			ExecutionID: executionID,
 			Executor:    task.ExecutionExecutor{Type: executorKey},
 			Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback},
-			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits},
+			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits, ForkedFromBranch: forkFrom},
 			Metrics: task.ExecutionMetrics{
 				DurationSeconds: durationSeconds,
 				TokensUsed:      out.TokensUsed,

@@ -123,7 +123,7 @@ func TestCollectExecutionOutput_ReturnsCommitsAndChangedFiles(t *testing.T) {
 	_, err = runGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
 	require.NoError(t, err)
 
-	commits, artifacts, err := CollectExecutionOutput(context.Background(), ws)
+	commits, artifacts, err := CollectExecutionOutput(context.Background(), ws, "")
 	require.NoError(t, err)
 	assert.Len(t, commits, 1)
 	assert.Equal(t, []string{"new-file.txt"}, artifacts)
@@ -136,7 +136,7 @@ func TestCollectExecutionOutput_EmptyWhenNoCommitsMade(t *testing.T) {
 	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 
-	commits, artifacts, err := CollectExecutionOutput(context.Background(), ws)
+	commits, artifacts, err := CollectExecutionOutput(context.Background(), ws, "")
 	require.NoError(t, err)
 	assert.Empty(t, commits)
 	assert.Empty(t, artifacts)
@@ -155,7 +155,7 @@ func TestCollectExecutionPatch_ReturnsCommitsAndRealDiff(t *testing.T) {
 	_, err = runGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
 	require.NoError(t, err)
 
-	commits, patch, err := CollectExecutionPatch(context.Background(), ws)
+	commits, patch, err := CollectExecutionPatch(context.Background(), ws, "")
 	require.NoError(t, err)
 	assert.Len(t, commits, 1)
 	// The full-patch variant carries the actual diff text, not just names.
@@ -190,14 +190,56 @@ func TestCollectExecutionPatch_UsesMergeBaseDiffSoAdvancingBaseBranchDoesntLeakI
 	_, err = runGit(context.Background(), repoDir, "commit", "-q", "-m", "unrelated change on main")
 	require.NoError(t, err)
 
-	_, patch, err := CollectExecutionPatch(context.Background(), ws)
+	_, patch, err := CollectExecutionPatch(context.Background(), ws, "")
 	require.NoError(t, err)
 	assert.Contains(t, patch, "new-file.txt")
 	assert.NotContains(t, patch, "unrelated.txt", "merge-base diff must not surface changes only on BaseBranch's advanced tip")
 
-	_, artifacts, err := CollectExecutionOutput(context.Background(), ws)
+	_, artifacts, err := CollectExecutionOutput(context.Background(), ws, "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"new-file.txt"}, artifacts)
+}
+
+// TestCollectExecutionOutput_ForkPointScopesCommitsButNotTheDiff proves the
+// "Commits over-reporting" fix: a retry forked from a prior attempt's branch
+// tip (docs/adr/0012) reports only its own commits when forkPoint names that
+// prior branch, not the ancestor attempt's commits too — while the diff
+// stays cumulative against BaseBranch regardless, since Review wants the
+// full change so far, not just the latest attempt's slice of it.
+func TestCollectExecutionOutput_ForkPointScopesCommitsButNotTheDiff(t *testing.T) {
+	reposRoot := t.TempDir()
+	initTestRepo(t, reposRoot, "myrepo")
+
+	priorWs, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(priorWs.Path, "first-file.txt"), []byte("first attempt\n"), 0o644))
+	_, err = runGit(context.Background(), priorWs.Path, "add", ".")
+	require.NoError(t, err)
+	_, err = runGit(context.Background(), priorWs.Path, "commit", "-q", "-m", "first attempt")
+	require.NoError(t, err)
+
+	retryWs, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-002", priorWs.Branch)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(retryWs.Path, "second-file.txt"), []byte("retry\n"), 0o644))
+	_, err = runGit(context.Background(), retryWs.Path, "add", ".")
+	require.NoError(t, err)
+	_, err = runGit(context.Background(), retryWs.Path, "commit", "-q", "-m", "retry attempt")
+	require.NoError(t, err)
+
+	commits, artifacts, err := CollectExecutionOutput(context.Background(), retryWs, priorWs.Branch)
+	require.NoError(t, err)
+	assert.Len(t, commits, 1, "only this attempt's own commit, not the prior attempt's too")
+	// The diff/artifacts list is unaffected by forkPoint — still cumulative
+	// against BaseBranch, so it shows both attempts' files.
+	assert.ElementsMatch(t, []string{"first-file.txt", "second-file.txt"}, artifacts)
+
+	// Passing no forkPoint (as a first attempt would) falls back to
+	// BaseBranch, which for this same retry workspace would report both
+	// commits — confirming forkPoint is what does the scoping, not some
+	// property of the workspace itself.
+	allCommits, _, err := CollectExecutionOutput(context.Background(), retryWs, "")
+	require.NoError(t, err)
+	assert.Len(t, allCommits, 2)
 }
 
 func TestResolveReviewWorkspace_LocatesExistingExecutionWorktree(t *testing.T) {

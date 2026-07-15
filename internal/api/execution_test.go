@@ -380,6 +380,7 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 
 	assert.Equal(t, "fix the widget", recorded.Input.ReviewFeedback)
+	assert.Equal(t, priorBranch, recorded.Output.ForkedFromBranch, "recorded so a later retry's Commits can be scoped to just its own contribution")
 	assert.Contains(t, gotIn.SystemPrompt, "Continuing prior work")
 	assert.Contains(t, gotIn.SystemPrompt, "fix the widget")
 

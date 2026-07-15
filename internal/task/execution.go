@@ -60,6 +60,16 @@ type ExecutionOutput struct {
 	Artifacts []string `yaml:"artifacts" json:"artifacts"`
 	GitBranch string   `yaml:"git_branch" json:"git_branch"`
 	Commits   []string `yaml:"commits" json:"commits"`
+	// ForkedFromBranch is the branch/ref this attempt's worktree was
+	// actually created from (docs/adr/0012) — empty for a first attempt
+	// forked directly from the shared checkout's own branch. Unlike
+	// ExecutionInput.ReviewFeedback (archival only), this field is read
+	// back later: CollectExecutionOutput/CollectExecutionPatch use it to
+	// scope an execution's own Commits to just what this attempt
+	// contributed, rather than every ancestor attempt's commits too, since
+	// the diff (unlike the commit list) is deliberately always cumulative
+	// against BaseBranch/main.
+	ForkedFromBranch string `yaml:"forked_from_branch" json:"forked_from_branch"`
 }
 
 // ExecutionMetrics records measurements about an Execution's run.

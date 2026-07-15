@@ -126,6 +126,13 @@ output:
   artifacts: []
   git_branch: ""
   commits: []
+  forked_from_branch: ""  # the branch this attempt's worktree was actually
+                           # created from (docs/adr/0012), empty for a first
+                           # attempt forked directly from the shared
+                           # checkout's own branch. Read back later to scope
+                           # a retry's `commits` to just its own contribution
+                           # (its diff still always stays cumulative against
+                           # the shared checkout's branch, deliberately).
 
 metrics:
   duration_seconds: 0

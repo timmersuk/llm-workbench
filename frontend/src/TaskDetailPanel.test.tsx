@@ -150,8 +150,8 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
     vi.mocked(api.listReviews).mockResolvedValue({
       reviews: [
-        { review_id: 'review-001', task_id: 'task-a', decision: 'needs_changes', notes: 'first pass', created_at: '2026-01-01T00:00:00Z' },
-        { review_id: 'review-002', task_id: 'task-a', decision: 'approved', notes: 'looks great', created_at: '2026-01-02T00:00:00Z' },
+        { review_id: 'review-001', task_id: 'task-a', execution_id: 'exec-001', decision: 'needs_changes', notes: 'first pass', created_at: '2026-01-01T00:00:00Z' },
+        { review_id: 'review-002', task_id: 'task-a', execution_id: 'exec-002', decision: 'approved', notes: 'looks great', created_at: '2026-01-02T00:00:00Z' },
       ],
     })
     vi.mocked(api.listExecutions).mockResolvedValue({
@@ -161,7 +161,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
           task_id: 'task-a',
           executor: { type: 'claude-code', version: '' },
           input: { plan_ref: 'plan.yaml', context_refs: [] },
-          output: { artifacts: [], git_branch: 'wb/task-a/exec-002', commits: [] },
+          output: { artifacts: [], git_branch: 'wb/task-a/exec-002', commits: [], forked_from_branch: '' },
           metrics: { duration_seconds: 1, tokens_used: 0, cost_estimate: 0 },
           status: 'success',
           created_at: '2026-01-02T00:00:00Z',

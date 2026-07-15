@@ -83,7 +83,7 @@ func handleReviewDiff(projects ProjectStore, factory TaskStoreFactory, reposRoot
 			http.Error(w, fmt.Sprintf("resolving review workspace: %v", err), http.StatusInternalServerError)
 			return
 		}
-		_, patch, err := agentrunner.CollectExecutionPatch(r.Context(), ws)
+		_, patch, err := agentrunner.CollectExecutionPatch(r.Context(), ws, latest.Output.ForkedFromBranch)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("collecting execution diff: %v", err), http.StatusInternalServerError)
 			return

@@ -16,7 +16,7 @@ function makeExecution(overrides: Partial<Execution['output']> = {}): Execution 
     task_id: taskId,
     executor: { type: 'claude-code', version: '' },
     input: { plan_ref: 'plan.yaml', context_refs: [] },
-    output: { artifacts: ['feature.go'], git_branch: 'wb/task-a/exec-001', commits: ['add feature'], ...overrides },
+    output: { artifacts: ['feature.go'], git_branch: 'wb/task-a/exec-001', commits: ['add feature'], forked_from_branch: '', ...overrides },
     metrics: { duration_seconds: 1, tokens_used: 0, cost_estimate: 0 },
     status: 'success',
     created_at: '2026-01-01T00:00:00Z',
@@ -73,6 +73,7 @@ describe('ReviewPanel', () => {
     const resultReview: Review = {
       review_id: 'review-001',
       task_id: taskId,
+      execution_id: 'exec-001',
       decision: 'approved',
       notes: 'lgtm',
       created_at: '2026-01-01T00:00:00Z',
