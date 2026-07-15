@@ -490,23 +490,80 @@ independently reviewable and live-verifiable, rather than one large diff:
   modeling's own bar for offering one) — each is a small, locally-scoped
   implementation choice, not a structural commitment.
 
-* **PR 6 — bash/ref-aware read access for Requirements-stage (GrillMe)
-  conversations. Not yet designed.** Would let a capable model actually act
-  on the branch name PR 5 surfaces — git-inspect the rejected attempt's
-  actual code — instead of just seeing it as an inert text pointer.
-  Deliberately not bundled into PR 5: a materially different capability
-  than Review's bash, which is confined to a disposable per-execution
-  worktree — GrillMe's workspace is the *shared* checkout common to every
-  task on the project, so unrestricted bash there is a different, bigger
-  trust-boundary decision (full bash vs. a narrower ref-aware read tool)
-  deserving its own design pass before implementation — needs a
-  `/grill-with-docs` session of its own, following PR 3/PR 4's precedent,
-  before scoping is binding. Planning Mode has the identical gap if this is
-  ever extended there too.
+* **PR 6 — ref-aware read tools for Requirements-stage (GrillMe)
+  conversations.** Design sharpened via a `/grill-with-docs` session on
+  2026-07-15; the seven decisions below are binding on the implementation.
 
-  **⚠ Do not implement from this bullet as-is.** It's a placeholder
-  capturing *why* the item exists, not a binding scope — no trust-boundary
-  decision (full bash vs. a narrower ref-aware read tool) has actually been
-  made yet. Run the `/grill-with-docs` session first and replace this note
-  with real binding decisions, the same way PR 3/PR 4 did, before any code
-  lands.
+  Lets a capable model actually act on the branch name PR 5 surfaces —
+  git-inspect the rejected attempt's actual code — instead of just seeing
+  it as an inert text pointer. Deliberately not bundled into PR 5: a
+  materially different capability than Review's `bash`, which is confined
+  to a disposable per-execution worktree — GrillMe's workspace is the
+  *shared* checkout common to every task on the project, so unrestricted
+  bash there is a different, bigger trust-boundary decision than Review's.
+
+  Binding decisions:
+  1. **Scoped to the `local` executor (`internal/toolloop`) only.** The
+     three registered executors (`internal/agentrunner`) have fundamentally
+     different, independently-controlled tool mechanisms: `local` runs our
+     own hand-rolled Go tools; `claude-code` gates Claude Code's *own*
+     built-in tools behind a `--allowedTools` name allow-list; `codex`
+     gates Codex's *own* built-in tools behind a coarse
+     `SandboxReadOnly`/`SandboxWorkspaceWrite` toggle (and notably,
+     `CodexRunner.Run` never even reads `EnableBashTool` today — Review's
+     automated-checks phase is already a silent no-op under the `codex`
+     executor, a pre-existing gap unrelated to this PR). `claude-code`/
+     `codex` GrillMe conversations are unaffected by PR 6 — same read-only
+     behavior as today. A follow-up PR would need to design a Claude-Code
+     custom tool via the SDK-MCP mechanism the Draft tool already uses, and
+     check what Codex's `SandboxReadOnly` actually permits, before
+     extending this there.
+  2. **A new narrow tool, not `bash`.** `bashTool`'s only confinement is
+     pinning its working directory (ADR 0010) — no sandboxing at all. Given
+     to the shared checkout, a model could run `git checkout`/
+     `git reset --hard`/`rm -rf` against state every other Requirements/
+     Planning conversation for the project (and a human) depends on. The
+     new tools shell out via argv (`exec.Command("git", "show", ...)`),
+     never a shell string, so there's no injection surface the way
+     `bashTool`'s `bash -c` has — see ADR 0013.
+  3. **File-content-only — no diff/changed-files view.** Review already
+     gets a full diff for free via `CollectExecutionPatch`; duplicating
+     that diff-collection/truncation logic for GrillMe would meaningfully
+     grow this PR's scope for a feature whose actual ask (PR 5) was just
+     "let a model read the code," not re-derive Review's diff summary.
+  4. **Two new tools, mirroring `read_file`/`grep_search`/`glob`'s
+     one-tool-one-job shape** (`internal/toolloop`):
+     - `read_file_at_ref(ref, path)` → `git show <ref>:<path>`, paginated
+       like `read_file` (`offset`/`limit`, same `truncateResult` cap). Git
+       tree paths can't escape the workspace the way filesystem paths can
+       (an invalid path just fails as "does not exist in `<ref>`"), so no
+       `resolveInWorkspace`-style traversal guard is needed.
+     - `list_files_at_ref(ref)` → `git ls-tree -r --name-only <ref>`,
+       capped/truncated like `glob`. Needed because file-content-only
+       (decision 3) leaves a gap — the model has no way to discover a
+       brand-new path the branch added that `main` doesn't have — this
+       closes it without reintroducing a diff view.
+  5. **Added to the shared `toolloop.ReadOnlyTools()`**, not gated behind a
+     new stage-conditional `RunInput` flag the way `EnableBashTool` gates
+     Review's `bash`. Consequence, not just for Requirements: since
+     `ExecutionTools()`/`ReviewTools()` both compose on top of
+     `ReadOnlyTools()`, Review and Execute get these two tools as well
+     (redundant but harmless there — both already have full `bash`, which
+     subsumes this capability). Planning Mode and free-chat gain it too,
+     with no rejected-branch concept of their own to apply it to.
+  6. **`ref` is unrestricted** — any local ref/branch/commit in the shared
+     checkout, not validated against the current task's own execution
+     branches. It's all the same project's own git history; restricting by
+     branch-name pattern would add validation logic for a boundary that
+     isn't protecting anything sensitive (unlike `bash`, this tool only
+     ever reads git objects, never writes).
+  7. **No worktree resolution needed.** `git worktree add -b branch`
+     (`ResolveExecutionWorkspace`) creates the branch as a ref in the same
+     repository object database every worktree of that repo shares, so
+     `git show <branch>:<path>` run from the shared checkout already sees
+     it — confirmed in code, not assumed — even though that branch is
+     currently checked out into a different worktree directory entirely.
+
+  ADR: see `docs/adr/0013-grillme-gets-ref-aware-read-tools-not-bash.md` —
+  decision 2 meets domain-modeling's bar for one (hard to reverse,
+  surprising without context, a real trade-off with `bash`).

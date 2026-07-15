@@ -15,9 +15,13 @@ import (
 // ReadOnlyTools returns the Read/Grep/Glob toolset offered to the read-only
 // Run instantiation — the same trust boundary agentrunner.readOnlyTools
 // establishes for ClaudeRunner (no Write/Edit/Bash), enforced here by which
-// Tools the engine is given rather than by a second implementation.
+// Tools the engine is given rather than by a second implementation. Also
+// includes the ref-aware read tools (docs/adr/0013): read_file/grep_search/
+// glob only ever see the current working tree, so a Requirements-stage
+// conversation reopened after a rejected review (milestone6.md's PR 5/PR 6)
+// has no way to inspect that rejected attempt's actual code without them.
 func ReadOnlyTools() []Tool {
-	return []Tool{readTool{}, grepTool{}, globTool{}}
+	return []Tool{readTool{}, grepTool{}, globTool{}, readAtRefTool{}, listFilesAtRefTool{}}
 }
 
 // --- read_file ---
