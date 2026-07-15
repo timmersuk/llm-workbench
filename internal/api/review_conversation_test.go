@@ -128,3 +128,45 @@ func TestBuildReviewContext_NoExecutionIsAnError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no execution to review")
 }
+
+func TestBuildRejectedReviewContext_NoReviewsYet_ReturnsEmpty(t *testing.T) {
+	store := task.NewFileStore(t.TempDir())
+	_, err := store.Create(task.Task{ID: "task-c", Title: "C"})
+	require.NoError(t, err)
+
+	addendum, err := buildRejectedReviewContext(store, "task-c")
+	require.NoError(t, err)
+	assert.Empty(t, addendum)
+}
+
+func TestBuildRejectedReviewContext_LatestApproved_ReturnsEmpty(t *testing.T) {
+	store := task.NewFileStore(t.TempDir())
+	seedReviewableTask(t, store, "task-d")
+	_, err := store.FinalizeReview("task-d", task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: "looks good"})
+	require.NoError(t, err)
+
+	addendum, err := buildRejectedReviewContext(store, "task-d")
+	require.NoError(t, err)
+	assert.Empty(t, addendum)
+}
+
+func TestBuildRejectedReviewContext_LatestRejected_IncludesNotesAndBranch(t *testing.T) {
+	store := task.NewFileStore(t.TempDir())
+	seedReviewableTask(t, store, "task-e")
+	_, err := store.FinalizeReview("task-e", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "wrong requirements entirely"})
+	require.NoError(t, err)
+
+	addendum, err := buildRejectedReviewContext(store, "task-e")
+	require.NoError(t, err)
+	assert.Contains(t, addendum, "wrong requirements entirely")
+	assert.Contains(t, addendum, "task-exec/task-e/exec-001")
+	assert.Contains(t, addendum, "no bash or ref-aware tools")
+}
+
+func TestBuildRejectedReviewContext_InvalidTaskID_PropagatesError(t *testing.T) {
+	store := task.NewFileStore(t.TempDir())
+
+	_, err := buildRejectedReviewContext(store, "../evil")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listing reviews")
+}

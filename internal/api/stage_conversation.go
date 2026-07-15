@@ -721,6 +721,13 @@ func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project
 		if err != nil && !errors.Is(err, agentrunner.ErrNoRepository) {
 			return stageRun{}, fmt.Errorf("resolving workspace: %w", err)
 		}
+		if stage == task.StageRequirements {
+			addendum, err := buildRejectedReviewContext(store, t.ID)
+			if err != nil {
+				return stageRun{}, err
+			}
+			systemPrompt += addendum
+		}
 		return stageRun{Workspace: ws, SystemPrompt: systemPrompt}, nil
 	}
 
@@ -729,6 +736,52 @@ func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project
 		return stageRun{}, err
 	}
 	return stageRun{Workspace: workspace, SystemPrompt: systemPrompt + addendum, EnableBash: true}, nil
+}
+
+// buildRejectedReviewContext returns a Requirements-stage prompt addendum
+// surfacing the most recent review's notes when it was rejected —
+// CONTEXT.md's **Review** entry already promises this ("rejected... with
+// the review's notes surfaced into the reopened conversation"); this is
+// what implements it (docs/milestones/milestone6.md's PR 5). Returns "" (no
+// error) when the task has no reviews yet or the latest one wasn't
+// rejected — StageRequirements is reachable from a rejected review or from
+// the separate, unrelated "Revise Requirements" action (ReviseToRequirements),
+// so this can also fire on that second path while an old rejection is still
+// the latest one on record; that staleness is accepted rather than guarded
+// against (docs/milestones/milestone6.md's PR 5, decision 1).
+//
+// ListExecutions's last entry is used for the rejected attempt's branch
+// name without re-resolving a real workspace (ResolveReviewWorkspace would
+// require a working git checkout just to read one string) — safe because as
+// long as the latest review is rejected, no new execution can have been
+// recorded since (executions are only created from StageImplementation,
+// unreachable again without a fresh FinalizePlan first).
+func buildRejectedReviewContext(store TaskStore, taskID string) (string, error) {
+	reviews, err := store.ListReviews(taskID)
+	if err != nil {
+		return "", fmt.Errorf("listing reviews for %s: %w", taskID, err)
+	}
+	if len(reviews) == 0 {
+		return "", nil
+	}
+	latest := reviews[len(reviews)-1]
+	if latest.Decision != task.ReviewDecisionRejected {
+		return "", nil
+	}
+
+	executions, err := store.ListExecutions(taskID)
+	if err != nil {
+		return "", fmt.Errorf("listing executions for %s: %w", taskID, err)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n## This task was reopened after a rejected review\n")
+	fmt.Fprintf(&b, "Review notes: %s\n", latest.Notes)
+	if len(executions) > 0 {
+		branch := agentrunner.ExecutionBranchName(taskID, executions[len(executions)-1].ExecutionID)
+		fmt.Fprintf(&b, "The rejected attempt's branch was %s — for reference only; you have no bash or ref-aware tools to inspect it, so treat this as inert context, not something to act on.\n", branch)
+	}
+	return b.String(), nil
 }
 
 // buildReviewContext resolves the worktree of the task's most recent execution
