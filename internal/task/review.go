@@ -36,11 +36,23 @@ var ErrReviewAlreadyExists = errors.New("review already exists")
 // execution attempt already is. Field-for-field mirror of
 // docs/task schema v0.md's review.yaml.
 type Review struct {
-	ReviewID  string    `yaml:"review_id" json:"review_id"`
-	TaskID    string    `yaml:"task_id" json:"task_id"`
-	Decision  string    `yaml:"decision" json:"decision"` // approved | rejected | needs_changes
-	Notes     string    `yaml:"notes" json:"notes"`
-	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
+	ReviewID string `yaml:"review_id" json:"review_id"`
+	TaskID   string `yaml:"task_id" json:"task_id"`
+	// ExecutionID names the specific execution attempt this verdict is
+	// about, set by FinalizeReview (lifecycle.go) at the one moment it's
+	// unambiguous: the task is confirmed at StageReview when FinalizeReview
+	// runs, and only a successful execution ever advances Stage there, with
+	// no new execution recordable while still at review — so
+	// ListExecutions' last entry at that exact moment is guaranteed to be
+	// the reviewed attempt. Recording it explicitly here means later
+	// consumers (resolveReviewContinuation, internal/api/execution.go) look
+	// this up directly instead of re-inferring "which execution was this
+	// review about" after however many further stage transitions or failed
+	// retries have happened since.
+	ExecutionID string    `yaml:"execution_id" json:"execution_id"`
+	Decision    string    `yaml:"decision" json:"decision"` // approved | rejected | needs_changes
+	Notes       string    `yaml:"notes" json:"notes"`
+	CreatedAt   time.Time `yaml:"created_at" json:"created_at"`
 }
 
 // ReviewDraft is the wire shape the propose_review tool call and the Review

@@ -27,14 +27,28 @@ retry forks from the prior execution's branch but still records/diffs
 against `main`, so Review's diff machinery needed zero changes to support
 this.
 
-Which branch to fork from is resolved the same way `buildReviewContext`
-already finds "the execution under review" — the last entry of
-`ListExecutions` — rather than adding an explicit `execution_id` field to
-`Review`. This is safe only because the state machine never allows two
-executions to be in flight for the same task at once; if that constraint
-changes, this lookup needs revisiting.
-
 Scoped to `needs_changes` only: `rejected` still forks fresh from `main`
 (the plan/requirements are being redone from scratch), gated on a fresh
 lookup of the latest review's decision at execute-time, not a persisted
 flag.
+
+**Correction (2026-07-15):** the paragraph above originally read "which
+branch to fork from is resolved the same way `buildReviewContext` already
+finds 'the execution under review' — the last entry of `ListExecutions` —
+rather than adding an explicit `execution_id` field to `Review`," with the
+safety argument that this holds only because the state machine never
+allows two executions in flight for one task at once. That argument missed
+a real case: `RecordExecution` only advances `Stage` to `review` on
+success, so a `needs_changes` retry that itself *fails* is still recorded
+under `executions/` without ever producing a new review — at that point
+`ListExecutions`' last entry is that failed retry, not the execution the
+latest review actually reviewed, and a further retry would fork from (and
+carry stale feedback about) the wrong attempt. An independent structural
+review of the shipped code caught this as a real, reachable, previously
+untested bug. Fixed by doing the thing this ADR originally talked itself
+out of: `Review` now has an `execution_id` field (`docs/task schema
+v0.md`), set by `FinalizeReview` at the one moment the link is
+unambiguous — the task is confirmed at `stage: review` right there, and no
+new execution can have been recorded since. `resolveReviewContinuation`
+(`internal/api/execution.go`) now reads this field directly instead of
+inferring it from `ListExecutions`' last entry.

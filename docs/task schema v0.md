@@ -152,6 +152,7 @@ verdict is a first-class queryable fact.
 ```yaml
 review_id: review-001
 task_id: fix-login-bug
+execution_id: exec-001
 decision: approved | rejected | needs_changes
 notes: ""
 created_at: 2026-07-09T00:00:00Z
@@ -160,6 +161,18 @@ created_at: 2026-07-09T00:00:00Z
 `decision` drives the stage transition on Finalize: `approved` → `complete`,
 `needs_changes` → `implementation` (a fresh execution attempt), `rejected` →
 `requirements` (reopening GrillMe).
+
+`execution_id` names the specific execution attempt this verdict is about,
+set at Finalize time — the task is confirmed at `stage: review` when a
+review is finalized, and only a successful execution ever advances a task
+there with no new execution recordable while still at review, so which
+execution that is is unambiguous at that exact moment. A `needs_changes`
+retry that itself fails is still recorded under `executions/` without
+producing a new review, so later code (deciding which branch a further
+retry should continue from) reads this field directly rather than
+re-inferring "which execution did the latest review verdict actually
+review" from `executions/`'s most recent entry, which could by then be that
+failed retry instead.
 
 ---
 

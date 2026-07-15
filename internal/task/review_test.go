@@ -108,6 +108,7 @@ func TestFileStore_FinalizeReview_ApprovedAdvancesToComplete(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
 	assert.Equal(t, "review-001", reviews[0].ReviewID)
+	assert.Equal(t, "exec-001", reviews[0].ExecutionID, "the execution this verdict is about is captured at Finalize time")
 	assert.Equal(t, ReviewDecisionApproved, reviews[0].Decision)
 	assert.Equal(t, "ship it", reviews[0].Notes)
 }
@@ -124,6 +125,7 @@ func TestFileStore_FinalizeReview_NeedsChangesReturnsToImplementation(t *testing
 	reviews, err := store.ListReviews("task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
+	assert.Equal(t, "exec-001", reviews[0].ExecutionID, "the execution this verdict is about is captured at Finalize time")
 	assert.Equal(t, ReviewDecisionNeedsChanges, reviews[0].Decision)
 	assert.Equal(t, "handle the empty case", reviews[0].Notes, "notes preserved for the execute-retrigger path")
 }

@@ -124,14 +124,30 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 		return Task{}, fmt.Errorf("finalizing review for %s: unknown decision %q", id, draft.Decision)
 	}
 
+	// The task is confirmed at StageReview above, so the execution this
+	// review is about is unambiguous right now: only a successful execution
+	// ever advances Stage to review, and RecordExecution requires
+	// StageImplementation for a success, so no new execution can have been
+	// recorded since. Capturing that link now (Review.ExecutionID) is safer
+	// than reconstructing it later after further stage transitions/retries.
+	executions, err := s.ListExecutions(id)
+	if err != nil {
+		return Task{}, err
+	}
+	var executionID string
+	if len(executions) > 0 {
+		executionID = executions[len(executions)-1].ExecutionID
+	}
+
 	reviewID, err := s.NextReviewID(id)
 	if err != nil {
 		return Task{}, err
 	}
 	if _, err := s.RecordReview(id, Review{
-		ReviewID: reviewID,
-		Decision: draft.Decision,
-		Notes:    strings.TrimSpace(draft.Notes),
+		ReviewID:    reviewID,
+		ExecutionID: executionID,
+		Decision:    draft.Decision,
+		Notes:       strings.TrimSpace(draft.Notes),
 	}); err != nil {
 		return Task{}, err
 	}

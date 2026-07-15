@@ -259,14 +259,15 @@ func handleListExecutions(projects ProjectStore, factory TaskStoreFactory) http.
 // (docs/adr/0012). Any other decision (or no review yet) returns both
 // empty, so the caller forks a fresh worktree off main exactly as before.
 //
-// The branch to continue from is the most recent *successful* execution's
-// branch, not simply the last entry in ListExecutions. RecordExecution only
-// advances Stage to review on success (internal/task/execution.go), so a
-// needs_changes retry that itself fails is still recorded here without ever
-// producing a new review — a subsequent execute would otherwise see the
-// same stale needs_changes review paired with that failed attempt's branch,
-// forking from a run nobody actually reviewed while citing feedback about a
-// different one.
+// The branch to continue from is the specific execution named by the
+// review's own ExecutionID (internal/task/review.go), not simply the last
+// entry in ListExecutions. RecordExecution only advances Stage to review on
+// success, so a needs_changes retry that itself fails is still recorded
+// here without ever producing a new review — the last entry in
+// ListExecutions could then be that failed retry rather than the one the
+// latest review actually reviewed. ExecutionID is captured by FinalizeReview
+// at the one moment that ambiguity can't exist, so this just looks it up
+// directly instead of re-inferring it here.
 func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, reviewFeedback string, err error) {
 	reviews, err := store.ListReviews(taskId)
 	if err != nil {
@@ -284,9 +285,9 @@ func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, review
 	if err != nil {
 		return "", "", fmt.Errorf("listing executions for %s: %w", taskId, err)
 	}
-	for i := len(executions) - 1; i >= 0; i-- {
-		if executions[i].Status == task.ExecutionStatusSuccess {
-			forkFrom = executions[i].Output.GitBranch
+	for _, e := range executions {
+		if e.ExecutionID == latest.ExecutionID {
+			forkFrom = e.Output.GitBranch
 			break
 		}
 	}
