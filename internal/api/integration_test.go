@@ -544,7 +544,7 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hi\n"), 0o644))
 	gitRun(t, repoDir, "add", ".")
 	gitRun(t, repoDir, "commit", "-q", "-m", "init")
-	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/org/demo"}, "TASK-0001", "exec-001")
+	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/org/demo"}, "TASK-0001", "exec-001", "")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "feature.go"), []byte("package main\n"), 0o644))
 	gitRun(t, ws.Path, "add", ".")

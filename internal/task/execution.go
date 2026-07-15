@@ -47,6 +47,12 @@ type ExecutionExecutor struct {
 type ExecutionInput struct {
 	PlanRef     string   `yaml:"plan_ref" json:"plan_ref"`
 	ContextRefs []string `yaml:"context_refs" json:"context_refs"`
+	// ReviewFeedback is the prior review's notes when this execution was
+	// triggered by a needs_changes verdict, empty otherwise. Archival only,
+	// like PlanRef/ContextRefs — the prompt that actually primes the
+	// execution is built from a fresh review lookup at execute-time
+	// (docs/adr/0012), not read back from this field.
+	ReviewFeedback string `yaml:"review_feedback" json:"review_feedback"`
 }
 
 // ExecutionOutput records what an Execution produced.

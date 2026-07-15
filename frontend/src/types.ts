@@ -243,6 +243,7 @@ export interface ExecutionExecutor {
 export interface ExecutionInput {
   plan_ref: string
   context_refs: string[]
+  review_feedback: string
 }
 
 export interface ExecutionOutput {

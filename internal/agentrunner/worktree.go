@@ -30,18 +30,27 @@ type ExecutionWorkspace struct {
 // execution attempt: resolves the project's shared checkout via the
 // existing ResolveWorkspace (reusing its "only place a workspace is
 // decided, never escapes reposRoot" contract), then creates a fresh `git
-// worktree` for taskID/executionID on a new branch cut from the shared
-// checkout's current branch — so the execution can write, run tests, and
-// commit without ever touching the shared checkout a human (or a
-// Requirements/Planning agent) might have open. taskID and executionID are
-// expected to already be validated slugs (task/execution store ids) by the
-// caller; this function still rejects path separators/".." defensively
-// since both are joined into filesystem paths and a git branch name here.
+// worktree` for taskID/executionID on a new branch cut from forkFrom (or
+// the shared checkout's current branch, if forkFrom is empty) — so the
+// execution can write, run tests, and commit without ever touching the
+// shared checkout a human (or a Requirements/Planning agent) might have
+// open. taskID and executionID are expected to already be validated slugs
+// (task/execution store ids) by the caller; this function still rejects
+// path separators/".." defensively since both are joined into filesystem
+// paths and a git branch name here.
+//
+// forkFrom lets a needs_changes retry continue from its prior attempt's
+// branch tip instead of starting blank (docs/adr/0012): the new branch is
+// cut from forkFrom, but the returned ExecutionWorkspace.BaseBranch is
+// still always the shared checkout's own branch (typically "main"),
+// independent of forkFrom — so CollectExecutionOutput/CollectExecutionPatch
+// keep diffing the cumulative change against main regardless of which ref
+// the worktree actually started from.
 //
 // The worktree is left in place on return regardless of what happens
 // afterward — no automatic cleanup — so a human can inspect it, and a
 // future Review-stage UI can read its diff.
-func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositories []string, taskID, executionID string) (ExecutionWorkspace, error) {
+func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositories []string, taskID, executionID, forkFrom string) (ExecutionWorkspace, error) {
 	if strings.ContainsAny(taskID, `/\`) || strings.Contains(taskID, "..") {
 		return ExecutionWorkspace{}, fmt.Errorf("%w: task id %q", ErrInvalidRepository, taskID)
 	}
@@ -68,11 +77,16 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 	worktreePath := filepath.Join(root, ".worktrees", repoName, executionID)
 	branch := "task-exec/" + taskID + "/" + executionID
 
+	forkRef := baseBranch
+	if forkFrom != "" {
+		forkRef = forkFrom
+	}
+
 	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 		return ExecutionWorkspace{}, fmt.Errorf("creating worktree parent directory: %w", err)
 	}
 
-	if _, err := runGit(ctx, base, "worktree", "add", "-b", branch, worktreePath, baseBranch); err != nil {
+	if _, err := runGit(ctx, base, "worktree", "add", "-b", branch, worktreePath, forkRef); err != nil {
 		return ExecutionWorkspace{}, fmt.Errorf("creating git worktree for execution %s: %w", executionID, err)
 	}
 

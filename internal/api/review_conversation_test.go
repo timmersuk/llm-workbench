@@ -59,7 +59,7 @@ func initReviewRepo(t *testing.T, reposRoot string) agentrunner.ExecutionWorkspa
 	gitRun(t, dir, "add", ".")
 	gitRun(t, dir, "commit", "-q", "-m", "init")
 
-	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001")
+	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "feature.go"), []byte("package main\n"), 0o644))
 	gitRun(t, ws.Path, "add", ".")
