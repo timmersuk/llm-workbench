@@ -1,8 +1,13 @@
 # Milestone 7 — Merge and PR Cycle
 
 **Status: Scoping (2026-07-15)** — general shape scoped via a
-`/grill-with-docs` session on 2026-07-15; per-section detail (exact tool
-shapes, HTTP routes, frontend wiring) to be sharpened in follow-up
+`/grill-with-docs` session on 2026-07-15, then independently reviewed
+against the codebase by a second model pass, which caught two real
+mechanism gaps (both now folded in: the review-record reuse for
+`pr_review`'s reject actions, and the refspec-push approach for PR
+continuity across a rejection cycle — see "The push/PR/rejection
+mechanism" and "Schema changes"). Per-section detail (exact tool shapes,
+HTTP routes, frontend wiring) is still to be sharpened in follow-up
 `/grill-with-docs` sessions the way Milestone 6's PRs 3, 5, and 6 each
 were. **Knowledge-base promotion, previously bundled into this milestone
 by Milestone 6's "Out of scope" section, has been split out** — see "Out
@@ -48,18 +53,27 @@ sync with that outcome rather than trying to perform the merge itself.
   that cycles through more than one execution attempt against the same
   logical PR (see the rejection cycle below) pushes more commits to the
   *same* PR rather than opening a duplicate.
-* **Two human-recorded resolutions from `pr_review`**:
+* **Two human-recorded resolutions from `pr_review`**, implemented by
+  **widening `FinalizeReview` to also be valid from `StagePRReview`** (not
+  just `StageReview`) rather than a parallel mechanism:
   * **"Mark as merged"** — a human assertion, no GitHub polling in this
-    milestone — advances to `StageMerged`.
-  * **Reject** — the human chooses to reopen `requirements` or
-    `implementation`, mirroring Review's existing `rejected`/
-    `needs_changes` split (`FinalizeReview`, `internal/task/lifecycle.go`)
-    rather than inventing a new decision shape. Reopening to
-    `implementation` reuses Milestone 6 PR 4's continuation mechanics
-    as-is — the fresh execution attempt forks from the prior attempt's
-    branch tip (ADR 0012) — since the underlying problem (a task whose
-    branch needs more work before it can land) is the same one PR 4
-    already solved for internally-rejected reviews.
+    milestone, and no review-record write (there's no approved/rejected/
+    needs_changes decision being made — the PR already got its verdict
+    externally) — advances to `StageMerged` directly.
+  * **Reject** — the human chooses `needs_changes` (→ `implementation`)
+    or `rejected` (→ `requirements`), which **writes a new
+    `reviews/review-NNN.yaml` entry** through the widened `FinalizeReview`
+    — the exact same decision shape and stage-transition logic an
+    internal Review verdict already produces, deliberately reused rather
+    than reimplemented. This isn't just a naming parallel: PR 4's
+    fork-from-prior-branch gate (`resolveReviewContinuation`,
+    `internal/api/execution.go:262-283`) keys off the *latest recorded
+    review's decision*, not which stage produced it — so a
+    `needs_changes` review written from `pr_review` correctly re-triggers
+    that existing gate with zero new logic, and a `rejected` review
+    written from `pr_review` gets PR 5's "surface prior rejection into
+    the reopened Requirements prompt" addendum for free, for the same
+    reason.
 * **A new GitHub PR-comment read tool**, extending Milestone 6 PR 6's
   precedent (a narrow, argv-only, read-only tool over an artifact the
   agent couldn't otherwise see — ADR 0013) one layer further out: to the
@@ -76,16 +90,30 @@ PR" action — explicit, not automatic, the same reasoning as Review's own
 `autoStart: false` (Milestone 6 PR 3 decision 2): this is a real,
 externally-visible, hard-to-reverse action (a team-visible PR, not a
 disposable local worktree), so it must not fire on a panel mount.
-Clicking it pushes the execution's branch and runs `gh pr create`,
-recording the resulting URL/number onto the task.
+The first time it's clicked for a task, it pushes the execution's branch
+and runs `gh pr create`, recording the resulting URL, number, and
+**branch name** onto the task's `pull_request` field.
+
+Because every execution attempt gets its own freshly-named branch by
+design (`ExecutionBranchName`, ADR 0012 decision 1 — deliberate
+per-attempt audit isolation, not something this milestone should touch),
+a later attempt continuing after a PR rejection cycle (below) lands on a
+*different* local branch than the one the existing PR already points at.
+Rather than opening a second PR, a push for a task that already has a
+`pull_request` field uses an explicit refspec —
+`git push origin <new-attempt-branch>:<pull_request.branch>` — landing
+the new attempt's commits onto the *remote* branch the PR already
+tracks, without renaming or reusing the local branch itself. This keeps
+Milestone 6's one-worktree-per-attempt invariant fully intact while still
+keeping one PR per task.
 
 From `pr_review`, the task sits until a human records what actually
 happened on GitHub — there is no live polling or webhook integration in
 this milestone (see "Out of scope"). Two paths forward:
 
 * **Merged** — a "Mark as merged" action moves `Stage` to `StageMerged`
-  directly; there is no separate "PR approved but not yet merged"
-  waypoint. That waypoint was in an earlier draft of this scoping pass
+  directly, with no review-record write (see "Introduces"); there is no
+  separate "PR approved but not yet merged" waypoint. That waypoint was in an earlier draft of this scoping pass
   and was deliberately dropped: it's a clean, unambiguous state only in
   the specific case of exactly one external approver (a two-person
   team), and a Schrödinger's-cat state everywhere else (a solo project
@@ -99,14 +127,17 @@ this milestone (see "Out of scope"). Two paths forward:
   status (open / N of M approved / changes requested / merged) and a
   hint, without the workbench's own state machine claiming to know
   "approved" as a discrete fact.
-* **Rejected / changes requested** — the human picks a destination,
-  `requirements` or `implementation`, the same two destinations Review's
-  own `rejected`/`needs_changes` already use internally. Both destination
-  conversations gain the new PR-comment tool so the agent can pull the
-  actual review discussion on demand rather than the human transcribing
-  it — reason this superseded an earlier "human pastes feedback as free
-  text" sketch: transcription doesn't scale and the tool precedent (PR 6)
-  already existed for exactly this shape of problem.
+* **Rejected / changes requested** — the human picks `needs_changes`
+  (→ `implementation`) or `rejected` (→ `requirements`), recorded as a
+  new review verdict through the widened `FinalizeReview` (see
+  "Introduces" for why this reuse — not a parallel mechanism — is what
+  makes PR 4's fork gate and PR 5's rejected-context addendum both fire
+  correctly). Both destination conversations gain the new PR-comment tool
+  so the agent can pull the actual review discussion on demand rather
+  than the human transcribing it — this superseded an earlier "human
+  pastes feedback as free text" sketch: transcription doesn't scale and
+  the tool precedent (PR 6) already existed for exactly this shape of
+  problem.
 * Because reality can diverge from the tool regardless of which of the
   above happens first (someone merges the PR by hand outside the
   workbench, or a second reviewer requests changes after a first
@@ -127,24 +158,36 @@ opened:
 pull_request:
   url: https://github.com/org/repo/pull/123
   number: 123
+  branch: task-exec/fix-login-bug/exec-001
 ```
 
-Populated by the "Push & Open PR" action; left absent until then. Unlike
-`reviews/review-NNN.yaml`/`executions/exec-NNN.yaml`, this is **not** an
-append-only store — a task has at most one open PR at a time by
-construction (a fresh PR only gets created if this field is absent), so
-there's nothing to enumerate the way multiple review verdicts or
-execution attempts can pile up.
+Populated by the "Push & Open PR" action; left absent until then. The
+`branch` field records which remote branch the PR actually tracks —
+needed because a later execution attempt continuing after a rejection
+cycle lands on a *different* local branch (ADR 0012 decision 1) and must
+push onto this recorded branch via refspec, not its own name (see
+mechanism section above). Unlike `reviews/review-NNN.yaml`/
+`executions/exec-NNN.yaml`, this is **not** an append-only store — a task
+has at most one open PR at a time by construction (a fresh PR only gets
+created if this field is absent), so there's nothing to enumerate the way
+multiple review verdicts or execution attempts can pile up.
 
 **`internal/task/task.go`**: `StageComplete` → `StageMerged`, plus the
 new `StagePRReview` (or better name — open question below) constant.
+Also needed for the same rename: `frontend/src/types.ts`'s `TaskStage`
+union and `TaskKanbanBoard.tsx`'s `STAGES` array/label map both hardcode
+stage names today and need the rename plus a new column for `pr_review`.
 
 **`internal/task/lifecycle.go`**: `FinalizeReview`'s `approved` branch
-now targets `StagePRReview` instead of `StageComplete`. New functions
-alongside `ReviseToRequirements`/`ReviseToPlanning`/
-`ReviseToImplementation`, valid only from `StagePRReview`, for the two
-rejection destinations, and a `MarkPRMerged`-shaped function moving
-`StagePRReview` → `StageMerged`.
+now targets `StagePRReview` instead of `StageComplete`, and its
+stage-guard widens to accept `StagePRReview` alongside `StageReview` —
+the same function handles both an internal Review verdict and a
+`pr_review` rejection (see mechanism section). There is no
+`ReviseToImplementation` to model this on: `needs_changes` has always
+been handled inline inside `FinalizeReview` itself, never a sibling
+function, so this milestone shouldn't invent one either. Separately, a
+`MarkPRMerged`-shaped function moves `StagePRReview` → `StageMerged`
+directly, with no review-record write.
 
 ## Out of scope
 
@@ -193,7 +236,12 @@ rejection destinations, and a `MarkPRMerged`-shaped function moving
   implementation yet to abstract against.
 * **Credential/token management.** Relies entirely on `gh auth`/git
   credentials already configured on the host machine; this milestone
-  never stores, requests, or handles a credential itself.
+  never stores, requests, or handles a credential itself. Relatedly,
+  `gh` being absent, `gh auth` having expired, or the push itself failing
+  (branch protection rules, a non-fast-forward push) are known,
+  unhandled-by-design risks — expected to surface as an ordinary action
+  failure, not something this milestone tries to detect or work around in
+  advance.
 * **The GitHub-side merge itself.** Reaching `StageMerged` only records
   that a human has asserted the PR was merged — the workbench never
   clicks GitHub's merge button, opens the merge automatically, or
@@ -208,14 +256,14 @@ rejection destinations, and a `MarkPRMerged`-shaped function moving
   subcommand/`--json` fields it wraps, pagination/truncation) — deferred
   to a per-section grill session the way Milestone 6 PR 6's seven binding
   decisions were sharpened separately from its initial scoping mention.
-* Whether "Push & Open PR" needs idempotency handling beyond "the
-  `pull_request` field is already set, so push more commits to the
-  existing branch/PR instead of calling `gh pr create` again" — e.g. what
-  happens if that existing PR was closed (not merged) on GitHub by a
-  human in the meantime.
+* The refspec-push approach (mechanism section) handles the common case
+  of landing a new attempt on an existing open PR's branch, but not what
+  happens if that PR was closed (not merged) on GitHub by a human in the
+  meantime — pushing to its branch wouldn't reopen it. Needs a decision:
+  detect that and open a fresh PR, or surface an error for the human to
+  resolve on GitHub directly.
 * Exact HTTP routes and frontend surface for the new `pr_review` screen
   and its actions — likely following `ReviewPanel`'s shape (Milestone 6
   PR 3) but not designed here.
-* Whether `MarkPRMerged`/the rejection-destination functions need any
-  validation beyond "task is currently in `StagePRReview`" — e.g.
-  requiring `pull_request` to already be set.
+* Whether `MarkPRMerged` needs any validation beyond "task is currently
+  in `StagePRReview`" — e.g. requiring `pull_request` to already be set.
