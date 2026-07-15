@@ -140,6 +140,7 @@ func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t 
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Objective: "ship login"}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{Stage: task.StageRequirements}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	var persistedMsgs []task.ConversationMessage
 	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
@@ -216,6 +217,7 @@ func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 	}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeReader)
 	knowledgeReader.On("Get", "standards/logging").Return(knowledge.Concept{Type: "Coding Standard", Body: "use logrus"}, nil)
@@ -277,6 +279,7 @@ func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.
 		},
 	}, nil)
 	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeReader)
 
@@ -351,6 +354,7 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeReader)
 
@@ -409,6 +413,7 @@ func TestHandlePostStageMessage_IgnoresMismatchedToolCallName(t *testing.T) {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeReader)
 
@@ -607,6 +612,7 @@ func TestHandlePostStageMessage_PersistsErrorOnFailedTurn(t *testing.T) {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	runner := new(mockAgentRunner)
 	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).
@@ -787,6 +793,7 @@ func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t
 			{Role: "assistant", Content: "stale reply"},
 		},
 	}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	var replaced []task.ConversationMessage
 	tasks.On("ReplaceConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
@@ -846,6 +853,7 @@ func TestHandleRegenerateStageMessage_EditUsesNewContent(t *testing.T) {
 			{Role: "assistant", Content: "stale reply"},
 		},
 	}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
 	var replaced []task.ConversationMessage
 	tasks.On("ReplaceConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {

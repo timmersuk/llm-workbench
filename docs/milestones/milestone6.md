@@ -413,13 +413,19 @@ independently reviewable and live-verifiable, rather than one large diff:
 
 * **PR 5 — `rejected` → requirements prompt enrichment.** Pure prompt-text
   change with no worktree/git-mechanics involved, deliberately split from
-  PR 4 since it touches a different, lower-risk layer.
-  `buildStagePrompt`'s `StageRequirements` case reads the most recent
-  review; if its decision is `rejected`, prepends its notes *and* the
-  rejected execution's branch name (found the same way as PR 4 decision 3
-  — `ListExecutions`'s last entry, unambiguous here too since no new
-  execution can be recorded between a `rejected` verdict and the reopened
-  GrillMe conversation) to the system prompt.
+  PR 4 since it touches a different, lower-risk layer. Design sharpened via
+  a `/grill-with-docs` session on 2026-07-15; the six decisions below are
+  binding on the implementation.
+
+  When a task's most recent review (`ListReviews`, last entry) has
+  `decision == rejected`, the Requirements-stage (GrillMe) conversation's
+  system prompt gets an addendum: the review's notes *and* the rejected
+  execution's branch name, surfaced the moment the reopened conversation
+  starts — `CONTEXT.md`'s **Review** entry already promises this
+  ("`rejected`... with the review's notes surfaced into the reopened
+  conversation"); PR 5 is what implements it. No schema change and no new
+  `CONTEXT.md` entry — this only wires up language the glossary already
+  commits to.
 
   Deliberately **notes + branch name only, not the raw diff**: GrillMe has
   no bash tool today (`EnableBash` is `true` only for `StageReview`,
@@ -432,6 +438,57 @@ independently reviewable and live-verifiable, rather than one large diff:
   a future, bash-enabled GrillMe (or a human reading the conversation
   transcript) to go inspect the rejected attempt's actual code when a
   harder task and a more capable model warrant it — see PR 6 below.
+
+  Binding decisions:
+  1. **Always surface it when the latest review is rejected, staleness
+     accepted.** `StageRequirements` is reachable two ways —
+     `FinalizeReview`'s `rejected` branch, or the pre-existing manual
+     "Revise Requirements" action from Planning (`ReviseToRequirements`,
+     `internal/api/revise.go`, `POST .../requirements/revise`) — and a
+     human could revisit Requirements a second time, unrelated to the
+     rejection, while that old review is still the latest one on record.
+     No guard against this: it's inert prompt text a human is present to
+     correct, and there's no cheap staleness signal without a schema/
+     bookkeeping addition (`Task.UpdatedAt` is bumped by every transition,
+     not just review-caused ones). Verified safe regardless: as long as
+     `ListReviews`'s last entry is `rejected`, no new execution can have
+     been recorded since (executions are only created from
+     `StageImplementation`, and reaching it again requires passing back
+     through a fresh `FinalizePlan` first) — so `ListExecutions`'s last
+     entry always still names the same rejected attempt.
+  2. **New addendum function, not a `buildStagePrompt` signature change.**
+     `buildStagePrompt(t, proj, stage, knowledgeReader)` stays store-free.
+     A new `buildRejectedReviewContext(store, taskID)` (`internal/api/
+     stage_conversation.go`, alongside `buildReviewContext`) is called from
+     `resolveStageRun`'s existing non-Review branch and appended the same
+     way Review's addendum is: `systemPrompt + addendum`.
+  3. **Branch name constructed directly, not via `ResolveReviewWorkspace`.**
+     Requirements-stage GrillMe has no worktree/bash needs at all today;
+     calling `ResolveReviewWorkspace` just to read `.Branch` would pull in
+     real git subprocess calls (and a working-checkout dependency) into a
+     stage that otherwise never touches git.
+  4. **New shared helper: `agentrunner.ExecutionBranchName(taskID,
+     executionID string) string`**, returning
+     `"task-exec/"+taskID+"/"+executionID`. `internal/agentrunner/
+     worktree.go`'s existing `branch := "task-exec/" + taskID + "/" +
+     executionID` (worktree.go:78) is updated to call it too, so the format
+     has exactly one source of truth instead of being duplicated.
+  5. **Explicit inertness caveat in the addendum text.** The branch name is
+     accompanied by a sentence stating it isn't inspectable with the
+     conversation's current tools (no bash; `read_file`/`grep_search`/
+     `glob` operate on the shared checkout's working tree, not arbitrary
+     git refs) — heading off a capable model wasting a turn trying to
+     inspect it.
+  6. **A lookup failure fails the turn.** `buildRejectedReviewContext`
+     propagates `ListReviews`/`ListExecutions` errors rather than logging
+     and degrading gracefully — matching `buildReviewContext`'s stricter
+     style rather than `buildStagePrompt`'s "one bad knowledge concept
+     doesn't fail everything" style (the two disagree elsewhere in the same
+     file; this PR picks the stricter one deliberately).
+
+  No ADR: none of the six decisions above are hard to reverse (domain-
+  modeling's own bar for offering one) — each is a small, locally-scoped
+  implementation choice, not a structural commitment.
 
 * **PR 6 — bash/ref-aware read access for Requirements-stage (GrillMe)
   conversations. Not yet designed.** Would let a capable model actually act

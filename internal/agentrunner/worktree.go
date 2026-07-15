@@ -9,6 +9,16 @@ import (
 	"strings"
 )
 
+// ExecutionBranchName returns the deterministic branch name
+// ResolveExecutionWorkspace creates for one execution attempt, without
+// touching git or the filesystem. Callers that only need the name — e.g.
+// Requirements-stage prompt text referencing a rejected attempt's branch
+// (docs/milestones/milestone6.md's PR 5) — can call this instead of
+// resolving a real workspace just to read .Branch off it.
+func ExecutionBranchName(taskID, executionID string) string {
+	return "task-exec/" + taskID + "/" + executionID
+}
+
 // ExecutionWorkspace is the isolated git worktree an Execute run works in —
 // never the shared checkout ResolveWorkspace returns for
 // Requirements/Planning stage conversations, since Execute writes to disk
@@ -75,7 +85,7 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 	root := filepath.Dir(base)
 	repoName := filepath.Base(base)
 	worktreePath := filepath.Join(root, ".worktrees", repoName, executionID)
-	branch := "task-exec/" + taskID + "/" + executionID
+	branch := ExecutionBranchName(taskID, executionID)
 
 	forkRef := baseBranch
 	if forkFrom != "" {
