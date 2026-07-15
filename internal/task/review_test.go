@@ -47,6 +47,26 @@ func TestFileStore_RecordReview_RoundTripsAndListsSorted(t *testing.T) {
 	assert.Equal(t, "review-002", reviews[1].ReviewID)
 }
 
+func TestFileStore_ListReviews_SortedNumericallyPastThreeDigits(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newReviewTask(t, store, "task-a")
+
+	_, err := store.RecordReview("task-a", Review{ReviewID: "review-1000", Decision: ReviewDecisionNeedsChanges, Notes: "later cycle"})
+	require.NoError(t, err)
+	_, err = store.RecordReview("task-a", Review{ReviewID: "review-999", Decision: ReviewDecisionApproved, Notes: "earlier cycle"})
+	require.NoError(t, err)
+
+	reviews, err := store.ListReviews("task-a")
+	require.NoError(t, err)
+	require.Len(t, reviews, 2)
+	// Lexical string comparison ("review-1000" < "review-999", since '1' <
+	// '9') would put review-1000 first — wrong, since it's chronologically
+	// the later verdict. Numeric ordering must put review-999 first.
+	assert.Equal(t, "review-999", reviews[0].ReviewID)
+	assert.Equal(t, "review-1000", reviews[1].ReviewID)
+}
+
 func TestFileStore_NextReviewID_StartsAtReview001AndIncrements(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)

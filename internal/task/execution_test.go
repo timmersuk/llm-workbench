@@ -122,6 +122,26 @@ func TestFileStore_ListExecutions_SortedByExecutionID(t *testing.T) {
 	assert.Equal(t, "exec-002", executions[1].ExecutionID)
 }
 
+func TestFileStore_ListExecutions_SortedNumericallyPastThreeDigits(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newImplementationTask(t, store, "task-a")
+
+	_, err := store.RecordExecution("task-a", Execution{ExecutionID: "exec-1000", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
+	require.NoError(t, err)
+	_, err = store.RecordExecution("task-a", Execution{ExecutionID: "exec-999", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
+	require.NoError(t, err)
+
+	executions, err := store.ListExecutions("task-a")
+	require.NoError(t, err)
+	require.Len(t, executions, 2)
+	// Lexical string comparison ("exec-1000" < "exec-999", since '1' < '9')
+	// would put exec-1000 first — wrong, since it's chronologically the
+	// later attempt. Numeric ordering must put exec-999 first.
+	assert.Equal(t, "exec-999", executions[0].ExecutionID)
+	assert.Equal(t, "exec-1000", executions[1].ExecutionID)
+}
+
 func TestFileStore_RecordExecution_SetsTaskIDAndCreatedAtServerSide(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)

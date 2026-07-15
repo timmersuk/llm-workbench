@@ -254,11 +254,19 @@ func handleListExecutions(projects ProjectStore, factory TaskStoreFactory) http.
 
 // resolveReviewContinuation looks up the latest review recorded for taskId
 // and, only when its decision is needs_changes, resolves the branch to
-// continue from (the most recent execution's branch) and the notes to carry
-// into the new attempt's prompt — a fresh lookup done on every execute
-// rather than a persisted flag (docs/adr/0012). Any other decision (or no
-// review yet) returns both empty, so the caller forks a fresh worktree off
-// main exactly as before.
+// continue from and the notes to carry into the new attempt's prompt — a
+// fresh lookup done on every execute rather than a persisted flag
+// (docs/adr/0012). Any other decision (or no review yet) returns both
+// empty, so the caller forks a fresh worktree off main exactly as before.
+//
+// The branch to continue from is the most recent *successful* execution's
+// branch, not simply the last entry in ListExecutions. RecordExecution only
+// advances Stage to review on success (internal/task/execution.go), so a
+// needs_changes retry that itself fails is still recorded here without ever
+// producing a new review — a subsequent execute would otherwise see the
+// same stale needs_changes review paired with that failed attempt's branch,
+// forking from a run nobody actually reviewed while citing feedback about a
+// different one.
 func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, reviewFeedback string, err error) {
 	reviews, err := store.ListReviews(taskId)
 	if err != nil {
@@ -276,8 +284,11 @@ func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, review
 	if err != nil {
 		return "", "", fmt.Errorf("listing executions for %s: %w", taskId, err)
 	}
-	if len(executions) > 0 {
-		forkFrom = executions[len(executions)-1].Output.GitBranch
+	for i := len(executions) - 1; i >= 0; i-- {
+		if executions[i].Status == task.ExecutionStatusSuccess {
+			forkFrom = executions[i].Output.GitBranch
+			break
+		}
 	}
 	return forkFrom, latest.Notes, nil
 }

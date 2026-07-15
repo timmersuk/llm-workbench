@@ -264,20 +264,56 @@ func TestResolveReviewContinuation(t *testing.T) {
 		assert.Empty(t, feedback)
 	})
 
-	t.Run("latest review is needs_changes, uses the latest execution's branch", func(t *testing.T) {
+	t.Run("latest review is needs_changes, uses the latest successful execution's branch", func(t *testing.T) {
 		tasks := new(mockTaskStore)
 		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
 			{Decision: task.ReviewDecisionApproved, Notes: "stale, from an earlier cycle"},
 			{Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 		}, nil)
 		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
-			{ExecutionID: "exec-001", Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
-			{ExecutionID: "exec-002", Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-002"}},
+			{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
+			{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-002"}},
 		}, nil)
 
 		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
 		require.NoError(t, err)
 		assert.Equal(t, "task-exec/TASK-0001/exec-002", forkFrom)
+		assert.Equal(t, "fix the widget", feedback)
+	})
+
+	t.Run("a failed retry after needs_changes doesn't desync the fork branch from the review", func(t *testing.T) {
+		// exec-001 succeeded and was reviewed (needs_changes). The retry,
+		// exec-002, itself failed — RecordExecution records it but never
+		// advances Stage on failure, so no new review exists. A further
+		// execute attempt must still fork from exec-001 (what needs_changes
+		// actually reviewed), not exec-002 (a failed run nobody reviewed).
+		tasks := new(mockTaskStore)
+		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+			{Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
+		}, nil)
+		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+			{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
+			{ExecutionID: "exec-002", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-002"}},
+		}, nil)
+
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		require.NoError(t, err)
+		assert.Equal(t, "task-exec/TASK-0001/exec-001", forkFrom)
+		assert.Equal(t, "fix the widget", feedback)
+	})
+
+	t.Run("no successful execution at all yields no fork branch", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+			{Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
+		}, nil)
+		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+			{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
+		}, nil)
+
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		require.NoError(t, err)
+		assert.Empty(t, forkFrom)
 		assert.Equal(t, "fix the widget", feedback)
 	})
 }
@@ -317,7 +353,7 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 		{Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 	}, nil)
 	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
-		{ExecutionID: "exec-001", Output: task.ExecutionOutput{GitBranch: priorBranch}},
+		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: priorBranch}},
 	}, nil)
 	tasks.On("NextExecutionID", "TASK-0001").Return("exec-002", nil)
 

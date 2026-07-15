@@ -258,6 +258,33 @@ func (s *FileStore) ListExecutions(id string) ([]Execution, error) {
 		executions = append(executions, exec)
 	}
 
-	sort.Slice(executions, func(i, j int) bool { return executions[i].ExecutionID < executions[j].ExecutionID })
+	sort.Slice(executions, func(i, j int) bool {
+		ni, iOK := executionSeq(executions[i].ExecutionID)
+		nj, jOK := executionSeq(executions[j].ExecutionID)
+		if iOK && jOK {
+			return ni < nj
+		}
+		return executions[i].ExecutionID < executions[j].ExecutionID
+	})
 	return executions, nil
+}
+
+// executionSeq extracts the numeric sequence from an "exec-NNN" id, for
+// numeric (not lexical) ordering: past exec-999, lexical string comparison
+// puts "exec-1000" before "exec-999", silently breaking every "the last
+// entry in ListExecutions is the latest attempt" convention this codebase
+// relies on (e.g. resolveReviewContinuation in internal/api/execution.go).
+// Returns false for anything that doesn't match executionIDPattern, so
+// callers can fall back to the old string comparison rather than treat an
+// unparseable id as an error.
+func executionSeq(id string) (int, bool) {
+	m := executionIDPattern.FindStringSubmatch(id)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }

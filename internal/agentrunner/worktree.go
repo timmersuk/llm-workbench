@@ -156,6 +156,17 @@ func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories 
 // rather than fail the whole execution response over it, since the
 // execution itself already succeeded or failed independently of whether
 // this inspection works.
+//
+// The diff (not the commit log) uses three-dot (`BaseBranch...HEAD`,
+// merge-base diff) rather than two-dot: two-dot compares the two branch
+// tips directly, which is only correct while BaseBranch is a strict
+// ancestor of HEAD. A needs_changes retry forks its worktree from the prior
+// attempt's branch tip, not from BaseBranch's current tip (docs/adr/0012),
+// so if the shared checkout's BaseBranch advances during a long-running
+// retry cycle, a two-dot diff would pick up BaseBranch's new commits as
+// spurious reverse-diff noise. `git log A..B` doesn't have this problem —
+// it already means "commits reachable from B but not A", which is what the
+// commit list wants — so only the diff calls change here.
 func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace) (commits []string, artifacts []string, err error) {
 	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", ws.BaseBranch+"..HEAD")
 	if err != nil {
@@ -163,7 +174,7 @@ func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace) (commits
 	}
 	commits = splitNonEmptyLines(commitsOut)
 
-	artifactsOut, err := runGit(ctx, ws.Path, "diff", "--name-only", ws.BaseBranch+"..HEAD")
+	artifactsOut, err := runGit(ctx, ws.Path, "diff", "--name-only", ws.BaseBranch+"...HEAD")
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing changed files for %s: %w", ws.Path, err)
 	}
@@ -175,10 +186,11 @@ func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace) (commits
 // CollectExecutionPatch is the full-patch variant of CollectExecutionOutput:
 // it returns the same commits (oldest first), but instead of just the changed
 // file names it returns the actual unified diff of ws.Branch against
-// ws.BaseBranch. The Review conversation (Milestone 6) carries this real diff
-// in its prompt so the agent has the concrete change to check, rather than a
-// bare list of touched paths. Best-effort in the same way — a caller should
-// log a failure here rather than fail the whole review over it.
+// ws.BaseBranch (three-dot/merge-base — see CollectExecutionOutput's doc
+// comment for why). The Review conversation (Milestone 6) carries this real
+// diff in its prompt so the agent has the concrete change to check, rather
+// than a bare list of touched paths. Best-effort in the same way — a caller
+// should log a failure here rather than fail the whole review over it.
 func CollectExecutionPatch(ctx context.Context, ws ExecutionWorkspace) (commits []string, patch string, err error) {
 	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", ws.BaseBranch+"..HEAD")
 	if err != nil {
@@ -186,7 +198,7 @@ func CollectExecutionPatch(ctx context.Context, ws ExecutionWorkspace) (commits 
 	}
 	commits = splitNonEmptyLines(commitsOut)
 
-	patchOut, err := runGit(ctx, ws.Path, "diff", ws.BaseBranch+"..HEAD")
+	patchOut, err := runGit(ctx, ws.Path, "diff", ws.BaseBranch+"...HEAD")
 	if err != nil {
 		return nil, "", fmt.Errorf("collecting patch for %s: %w", ws.Path, err)
 	}

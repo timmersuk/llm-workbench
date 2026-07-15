@@ -163,6 +163,43 @@ func TestCollectExecutionPatch_ReturnsCommitsAndRealDiff(t *testing.T) {
 	assert.Contains(t, patch, "+added line")
 }
 
+// TestCollectExecutionPatch_UsesMergeBaseDiffSoAdvancingBaseBranchDoesntLeakIn
+// proves the two-dot-to-three-dot fix: if BaseBranch advances with an
+// unrelated commit after the execution's worktree forked (e.g. during a
+// long-running needs_changes retry cycle), a two-dot diff would compare the
+// two branch tips directly and show the unrelated commit's file as removed;
+// a three-dot (merge-base) diff must not.
+func TestCollectExecutionPatch_UsesMergeBaseDiffSoAdvancingBaseBranchDoesntLeakIn(t *testing.T) {
+	reposRoot := t.TempDir()
+	repoDir := initTestRepo(t, reposRoot, "myrepo")
+
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "new-file.txt"), []byte("added line\n"), 0o644))
+	_, err = runGit(context.Background(), ws.Path, "add", ".")
+	require.NoError(t, err)
+	_, err = runGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
+	require.NoError(t, err)
+
+	// Advance the shared checkout's own branch with an unrelated commit
+	// after the worktree already forked.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "unrelated.txt"), []byte("unrelated\n"), 0o644))
+	_, err = runGit(context.Background(), repoDir, "add", ".")
+	require.NoError(t, err)
+	_, err = runGit(context.Background(), repoDir, "commit", "-q", "-m", "unrelated change on main")
+	require.NoError(t, err)
+
+	_, patch, err := CollectExecutionPatch(context.Background(), ws)
+	require.NoError(t, err)
+	assert.Contains(t, patch, "new-file.txt")
+	assert.NotContains(t, patch, "unrelated.txt", "merge-base diff must not surface changes only on BaseBranch's advanced tip")
+
+	_, artifacts, err := CollectExecutionOutput(context.Background(), ws)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"new-file.txt"}, artifacts)
+}
+
 func TestResolveReviewWorkspace_LocatesExistingExecutionWorktree(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")

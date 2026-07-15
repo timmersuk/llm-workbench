@@ -186,6 +186,31 @@ func (s *FileStore) ListReviews(id string) ([]Review, error) {
 		reviews = append(reviews, review)
 	}
 
-	sort.Slice(reviews, func(i, j int) bool { return reviews[i].ReviewID < reviews[j].ReviewID })
+	sort.Slice(reviews, func(i, j int) bool {
+		ni, iOK := reviewSeq(reviews[i].ReviewID)
+		nj, jOK := reviewSeq(reviews[j].ReviewID)
+		if iOK && jOK {
+			return ni < nj
+		}
+		return reviews[i].ReviewID < reviews[j].ReviewID
+	})
 	return reviews, nil
+}
+
+// reviewSeq extracts the numeric sequence from a "review-NNN" id, for
+// numeric (not lexical) ordering — mirrors execution.go's executionSeq and
+// exists for the same reason: past review-999, lexical string comparison
+// would put "review-1000" before "review-999", silently breaking every
+// "the last entry in ListReviews is the latest verdict" convention this
+// codebase relies on.
+func reviewSeq(id string) (int, bool) {
+	m := reviewIDPattern.FindStringSubmatch(id)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
