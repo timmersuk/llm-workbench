@@ -1,13 +1,13 @@
 import type { Task, TaskStage } from './types'
 
-const STAGES: TaskStage[] = ['requirements', 'planning', 'implementation', 'review', 'complete']
+const STAGES: TaskStage[] = ['requirements', 'planning', 'implementation', 'review', 'merged']
 
 const STAGE_LABELS: Record<TaskStage, string> = {
   requirements: 'Requirements',
   planning: 'Planning',
   implementation: 'Implementation',
   review: 'Review',
-  complete: 'Complete',
+  merged: 'Merged',
 }
 
 interface TaskKanbanBoardProps {

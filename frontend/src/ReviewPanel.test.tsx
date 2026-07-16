@@ -69,7 +69,7 @@ describe('ReviewPanel', () => {
     vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
     vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: '' })
 
-    const resultTask = { id: taskId, stage: 'complete' } as Task
+    const resultTask = { id: taskId, stage: 'merged' } as Task
     const resultReview: Review = {
       review_id: 'review-001',
       task_id: taskId,

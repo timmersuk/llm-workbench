@@ -1,16 +1,19 @@
 # Milestone 7 — Merge and PR Cycle
 
-**Status: Scoping (2026-07-15)** — general shape scoped via a
+**Status: Scoping (2026-07-16)** — general shape scoped via a
 `/grill-with-docs` session on 2026-07-15, then independently reviewed
 against the codebase by a second model pass, which caught two real
 mechanism gaps (both now folded in: the review-record reuse for
 `pr_review`'s reject actions, and the refspec-push approach for PR
 continuity across a rejection cycle — see "The push/PR/rejection
-mechanism" and "Schema changes"). Per-section detail (exact tool shapes,
-HTTP routes, frontend wiring) is still to be sharpened in follow-up
-`/grill-with-docs` sessions the way Milestone 6's PRs 3, 5, and 6 each
-were. **Knowledge-base promotion, previously bundled into this milestone
-by Milestone 6's "Out of scope" section, has been split out** — see "Out
+mechanism" and "Schema changes"). **PR 1 scoped via a follow-up
+`/grill-with-docs` session on 2026-07-16** — see "Phasing" below;
+`pr_review`/`StagePRReview` naming is now final, not a placeholder.
+Remaining per-section detail (exact tool shapes, HTTP routes, frontend
+wiring for later PRs) is still to be sharpened in further follow-up
+sessions the way Milestone 6's PRs 3, 5, and 6 each were. **Knowledge-base
+promotion, previously bundled into this milestone by Milestone 6's "Out of
+scope" section, has been split out** — see "Out
 of scope" below for why and where it goes instead.
 
 ## Why now
@@ -172,22 +175,28 @@ has at most one open PR at a time by construction (a fresh PR only gets
 created if this field is absent), so there's nothing to enumerate the way
 multiple review verdicts or execution attempts can pile up.
 
-**`internal/task/task.go`**: `StageComplete` → `StageMerged`, plus the
-new `StagePRReview` (or better name — open question below) constant.
+**`internal/task/task.go`**: `StageComplete` → `StageMerged` (final name,
+`pr_review`/`StagePRReview` naming resolved 2026-07-16 — see "Phasing").
 Also needed for the same rename: `frontend/src/types.ts`'s `TaskStage`
 union and `TaskKanbanBoard.tsx`'s `STAGES` array/label map both hardcode
 stage names today and need the rename plus a new column for `pr_review`.
 
 **`internal/task/lifecycle.go`**: `FinalizeReview`'s `approved` branch
-now targets `StagePRReview` instead of `StageComplete`, and its
-stage-guard widens to accept `StagePRReview` alongside `StageReview` —
-the same function handles both an internal Review verdict and a
-`pr_review` rejection (see mechanism section). There is no
-`ReviseToImplementation` to model this on: `needs_changes` has always
-been handled inline inside `FinalizeReview` itself, never a sibling
-function, so this milestone shouldn't invent one either. Separately, a
-`MarkPRMerged`-shaped function moves `StagePRReview` → `StageMerged`
-directly, with no review-record write.
+**eventually** targets `StagePRReview` instead of `StageComplete`/
+`StageMerged` — but not in PR 1 (see "Phasing" decision 3): retargeting
+`approved` before there's a `pr_review` screen for a human to land on
+would break the already-shipped approve flow, so PR 1 keeps `approved`
+targeting the renamed terminal stage (`StageMerged`) and only a later PR,
+landing together with "Push & Open PR" and its frontend, flips the
+target. PR 1's stage-guard does widen to accept `StagePRReview` alongside
+`StageReview` right away (for the reject path — see mechanism section),
+guarded so `approved` specifically is rejected from `StagePRReview` (only
+valid from `StageReview`). There is no `ReviseToImplementation` to model
+the reject path on: `needs_changes` has always been handled inline inside
+`FinalizeReview` itself, never a sibling function, so this milestone
+shouldn't invent one either. Separately, a `MarkPRMerged` function moves
+`StagePRReview` → `StageMerged` directly, with no review-record write,
+requiring `Task.PullRequest != nil`.
 
 ## Out of scope
 
@@ -247,11 +256,96 @@ directly, with no review-record write.
   clicks GitHub's merge button, opens the merge automatically, or
   performs the merge itself under any circumstance.
 
+## Phasing
+
+Delivered as sequential PRs, matching Milestone 6's cadence — each
+independently reviewable and live-verifiable, rather than one large diff.
+Only PR 1 is scoped in detail so far (via a `/grill-with-docs` session on
+2026-07-16); later PRs will each get their own follow-up session the way
+Milestone 6's PRs 3, 5, and 6 did.
+
+* **PR 1 — Stage machinery for the PR cycle.** Backend-only in spirit,
+  plus the one mechanical rename that has to land in lockstep with the
+  frontend. Proven the way Milestone 6 PR 1 proved `RecordReview` before
+  any UI existed: construct a fixture task already in `StagePRReview` and
+  call the new functions directly. No HTTP routes, no `pr_review` UI, no
+  `gh`/git push mechanics — those all wait for later PRs.
+
+  Binding decisions:
+  1. **Naming final.** `pr_review` / `StagePRReview` are the shipped
+     names, not placeholders — they already match the existing
+     short-lowercase-noun convention (`requirements`, `planning`,
+     `implementation`, `review`) and stay unambiguous next to the
+     existing internal `review` stage.
+  2. **`StageComplete` → `StageMerged` ships fully in PR 1, backend and
+     frontend together.** The wire value itself changes
+     (`stage: complete` → `stage: merged`), so `internal/task/task.go`'s
+     constant, both `review_test.go` files, `TaskDetailPanel.tsx`,
+     `TaskKanbanBoard.tsx`, `frontend/src/types.ts`'s `TaskStage` union,
+     and the frontend test fixtures hardcoding `'complete'`
+     (`ReviewPanel.test.tsx`, `TaskDetailPanel.test.tsx`) all update
+     together. This is the one piece of "frontend" PR 1 touches — pure
+     rename, not new UI.
+  3. **`FinalizeReview`'s `approved` branch keeps targeting the renamed
+     terminal stage (`StageMerged`) in PR 1** — retargeting it to
+     `StagePRReview` is deferred to the later PR that ships "Push & Open
+     PR" together with its frontend. Retargeting now, before a
+     `pr_review` screen exists to land a human on, would silently break
+     the already-shipped approve flow (the frontend would receive a stage
+     string it has no case for).
+  4. **`StagePRReview`, the widened `FinalizeReview` guard, and
+     `MarkPRMerged` all ship in PR 1 as real, unit-tested machinery that
+     stays unreachable through any live path** until the later PR (3)
+     defers to exists. This mirrors how M6 PR 1 shipped a fully-working,
+     unit-tested store and lifecycle months before any conversation or
+     UI consumed it.
+  5. **`FinalizeReview`'s widened guard explicitly rejects `decision ==
+     approved` when `t.Stage == StagePRReview`** (new check, reusing
+     `ErrWrongStage`). Without it, an `approved` verdict sent while
+     already at `StagePRReview` would silently succeed as a same-stage
+     no-op that still writes a spurious `reviews/review-NNN.yaml` entry —
+     `approved` only ever makes sense from `StageReview`; `needs_changes`/
+     `rejected` remain valid from both stages unchanged. (A broader audit
+     of other "trust the caller" gaps like this one elsewhere in the
+     codebase's lifecycle functions was spun off as a separate follow-up,
+     not part of this milestone.)
+  6. **`pull_request` lands in PR 1** as `*PullRequest` (pointer,
+     `omitempty`) — `{URL, Number, Branch}` — `nil`/absent until "Push &
+     Open PR" ships in a later PR. No producer yet; it exists purely so
+     `MarkPRMerged` has something real to check. Pointer, not a value
+     struct, so absence is an unambiguous `nil` check rather than a
+     zero-value-struct ambiguity.
+  7. **`MarkPRMerged` requires `t.PullRequest != nil`**, erroring
+     otherwise — same defensive posture as decision 5, even though
+     nothing populates the field until a later PR. Untestable
+     end-to-end until then, but directly unit-testable against a fixture
+     task with `PullRequest` set by hand.
+
+* **A later PR (not yet numbered/scoped in detail) — stage-conversation
+  URL/actual-stage guard.** Surfaced by the same "trusts the caller" audit
+  that motivated PR 1 binding decision 5: none of the five handlers in
+  `internal/api/stage_conversation.go` (`handlePostStageMessage`,
+  `handleStartStageConversation`, `handleGetStageConversation`,
+  `handleDeleteStageMessage`, `handleRegenerateStageMessage`)
+  cross-validate the URL's `stage` path segment against the task's actual
+  current `Stage` — only that it names *a* valid stage at all
+  (`stageTool()`'s check). A task at `implementation` can still be posted
+  to via `.../stage/requirements/message`: the handler proceeds with the
+  Requirements system prompt and `propose_context` tool, appends to that
+  stale conversation, and can return a live Draft proposal over SSE that no
+  longer means anything. Damage is bounded today (`FinalizeRequirements`/
+  `FinalizePlan`/`FinalizeReview` still independently gate on the real
+  `Stage` before anything can advance), but it lets a client pollute a
+  "dead" stage's conversation file indefinitely. Scope for whoever picks
+  this up: a 409 on mismatch, reusing `ErrWrongStage`
+  (`internal/task/lifecycle.go`) for consistency with `Finalize*`/
+  `Revise*`; confirm first that no frontend call site legitimately reads/
+  posts to a stage other than the task's current one (assumed true —
+  `GetConversation` is only ever called for the current stage from
+  `TaskDetailPanel.tsx` — but not yet verified against every call site).
+
 ## Open questions for whoever executes this milestone
 
-* Naming: `pr_review` / `StagePRReview` are working names from this
-  scoping session, not final — worth a naming pass alongside the
-  `StageMerged` rename.
 * Exact shape of the new PR-comment tool (name, arguments, what `gh`
   subcommand/`--json` fields it wraps, pagination/truncation) — deferred
   to a per-section grill session the way Milestone 6 PR 6's seven binding
@@ -265,5 +359,24 @@ directly, with no review-record write.
 * Exact HTTP routes and frontend surface for the new `pr_review` screen
   and its actions — likely following `ReviewPanel`'s shape (Milestone 6
   PR 3) but not designed here.
-* Whether `MarkPRMerged` needs any validation beyond "task is currently
-  in `StagePRReview`" — e.g. requiring `pull_request` to already be set.
+* Which later PR actually retargets `FinalizeReview`'s `approved` branch
+  to `StagePRReview` and ships the "Push & Open PR" action + its
+  frontend — not split into its own PR boundary yet (Phasing above only
+  scopes PR 1).
+
+## Follow-ups
+
+Tracked here so they aren't lost between PRs; doesn't block Milestone 7's
+remaining scope. (The stage-conversation URL/actual-stage guard finding
+from the same audit is scoped as a future PR in "Phasing" above instead —
+it's milestone-tracked work, not a standalone workbench Task.)
+
+* **`FinalizeReview`'s execution-lookup assumption is coupled to
+  `RecordExecution`'s guard, not independently enforced.** The same audit
+  confirmed `FinalizeReview`'s "no new execution can have been recorded
+  since Review" comment (`internal/task/lifecycle.go:127-132`) holds today
+  only because `RecordExecution` separately guards success writes to
+  `StageImplementation` (`internal/task/execution.go:180-198`) — true by
+  construction across two functions, not verified by either one. No bug
+  today; not yet worth its own task, but worth a second look if either
+  function changes. Noted here rather than filed, so it isn't forgotten.

@@ -4,7 +4,13 @@ export interface TaskReferences {
 }
 
 export type TaskStatus = 'draft' | 'ready' | 'in_progress' | 'blocked' | 'failed' | 'complete'
-export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'complete'
+export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'merged'
+
+export interface PullRequest {
+  url: string
+  number: number
+  branch: string
+}
 
 export interface Task {
   id: string
@@ -19,6 +25,7 @@ export interface Task {
   assumptions: string[]
   success_criteria: string[]
   references: TaskReferences
+  pull_request?: PullRequest
 }
 
 export interface Project {
