@@ -125,7 +125,7 @@ export function finalizeReview(projectId: string, taskId: string, draft: ReviewD
 }
 
 // listReviews returns every recorded verdict for a task, oldest first — the
-// terminal "complete" screen reads the latest to show its notes on a fresh
+// terminal "merged" screen reads the latest to show its notes on a fresh
 // visit (ReviewsListResult).
 export function listReviews(projectId: string, taskId: string): Promise<ReviewsListResult> {
   return getJSON<ReviewsListResult>(`${taskPath(projectId, taskId)}/reviews`)

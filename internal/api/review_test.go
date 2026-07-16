@@ -22,7 +22,7 @@ func TestHandleFinalizeReview_OK(t *testing.T) {
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: "looks good"}
-	updated := task.Task{ID: "TASK-0001", Stage: task.StageComplete}
+	updated := task.Task{ID: "TASK-0001", Stage: task.StageMerged}
 	recorded := task.Review{ReviewID: "review-001", TaskID: "TASK-0001", Decision: task.ReviewDecisionApproved, Notes: "looks good"}
 
 	tasks := new(mockTaskStore)
@@ -38,7 +38,7 @@ func TestHandleFinalizeReview_OK(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizeReviewResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, task.StageComplete, got.Task.Stage)
+	assert.Equal(t, task.StageMerged, got.Task.Stage)
 	assert.Equal(t, task.ReviewDecisionApproved, got.Review.Decision)
 	assert.Equal(t, "looks good", got.Review.Notes)
 }

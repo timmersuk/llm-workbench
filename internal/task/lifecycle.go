@@ -87,11 +87,20 @@ func (s *FileStore) FinalizePlan(id string, plan Plan) (Task, error) {
 // FinalizeReview is the human "Finalize" action for Review: it records an
 // append-only reviews/review-NNN.yaml verdict (RecordReview) and moves Stage
 // according to the draft's three-way decision. The task must currently be in
-// "review" stage. Unlike GrillMe/Planning Finalize (which only ever advance
-// one step), Review's Finalize can move Stage in either direction, because
-// its decision encodes which direction is correct (CONTEXT.md's **Review**):
+// "review" stage, or (Milestone 7) "pr_review" — the same function handles
+// both an internal Review verdict and a pr_review rejection, since PR 4's
+// fork-from-prior-branch gate and PR 5's rejected-context addendum both key
+// off the latest recorded review's decision, not which stage produced it.
+// Unlike GrillMe/Planning Finalize (which only ever advance one step),
+// Review's Finalize can move Stage in either direction, because its decision
+// encodes which direction is correct (CONTEXT.md's **Review**):
 //
-//   - approved      → "complete" (the terminal stage; nothing else reaches it)
+//   - approved      → "merged" (the terminal stage; nothing else reaches it
+//     this way). Only valid from "review" — "pr_review" only ever
+//     surfaces the reject decisions below; a bare "approved" reaching
+//     FinalizeReview from "pr_review" would otherwise silently no-op the
+//     stage while still writing a spurious review record, since "pr_review"
+//     is itself the stage an approval already landed on.
 //   - needs_changes → "implementation" (a fresh execution attempt; the
 //     verdict's notes are preserved in the review record for the
 //     execute-retrigger path to surface)
@@ -108,14 +117,17 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	if t.Stage != StageReview {
+	if t.Stage != StageReview && t.Stage != StagePRReview {
 		return Task{}, fmt.Errorf("finalizing review for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+	if draft.Decision == ReviewDecisionApproved && t.Stage != StageReview {
+		return Task{}, fmt.Errorf("finalizing review for %s (stage %q): approved is only valid from %q: %w", id, t.Stage, StageReview, ErrWrongStage)
 	}
 
 	var nextStage string
 	switch draft.Decision {
 	case ReviewDecisionApproved:
-		nextStage = StageComplete
+		nextStage = StageMerged
 	case ReviewDecisionNeedsChanges:
 		nextStage = StageImplementation
 	case ReviewDecisionRejected:
@@ -124,12 +136,15 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 		return Task{}, fmt.Errorf("finalizing review for %s: unknown decision %q", id, draft.Decision)
 	}
 
-	// The task is confirmed at StageReview above, so the execution this
-	// review is about is unambiguous right now: only a successful execution
-	// ever advances Stage to review, and RecordExecution requires
-	// StageImplementation for a success, so no new execution can have been
-	// recorded since. Capturing that link now (Review.ExecutionID) is safer
-	// than reconstructing it later after further stage transitions/retries.
+	// The task is confirmed at StageReview or StagePRReview above, so the
+	// execution this review is about is unambiguous right now: only a
+	// successful execution ever advances Stage to review, and
+	// RecordExecution requires StageImplementation for a success, so no new
+	// execution can have been recorded since — true whether the task has
+	// since moved on to StagePRReview or not, since reaching StageImplementation
+	// again requires passing back through a fresh FinalizePlan first.
+	// Capturing that link now (Review.ExecutionID) is safer than
+	// reconstructing it later after further stage transitions/retries.
 	executions, err := s.ListExecutions(id)
 	if err != nil {
 		return Task{}, err
@@ -153,6 +168,34 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 	}
 
 	t.Stage = nextStage
+	t.UpdatedAt = time.Now().UTC()
+	if err := s.writeTask(t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// MarkPRMerged is the human "Mark as merged" action for pr_review
+// (docs/milestones/milestone7.md): a human assertion that the PR was merged
+// on GitHub, with no polling and no review-record write — there's no
+// approved/rejected/needs_changes decision being made, the PR already got
+// its verdict externally. Moves Stage directly from "pr_review" to "merged".
+// Requires PullRequest to already be set: a task shouldn't be markable
+// "merged" if the system never recorded a PR against it, even though nothing
+// populates the field until the "Push & Open PR" action ships.
+func (s *FileStore) MarkPRMerged(id string) (Task, error) {
+	t, err := s.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StagePRReview {
+		return Task{}, fmt.Errorf("marking PR merged for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+	if t.PullRequest == nil {
+		return Task{}, fmt.Errorf("marking PR merged for %s: no pull_request recorded", id)
+	}
+
+	t.Stage = StageMerged
 	t.UpdatedAt = time.Now().UTC()
 	if err := s.writeTask(t); err != nil {
 		return Task{}, err

@@ -11,12 +11,19 @@ import "time"
 // Stage values, per docs/task schema v0.md §2. Declared as constants so
 // lifecycle.go's transitions don't rely on string literals scattered across
 // the package.
+//
+// StagePRReview is introduced by Milestone 7 PR 1 (docs/milestones/milestone7.md)
+// as real, unit-tested machinery, but is not yet reachable through any live
+// path: FinalizeReview's approved branch still targets StageMerged until a
+// later PR retargets it alongside the "Push & Open PR" action and its
+// frontend.
 const (
 	StageRequirements   = "requirements"
 	StagePlanning       = "planning"
 	StageImplementation = "implementation"
 	StageReview         = "review"
-	StageComplete       = "complete"
+	StagePRReview       = "pr_review"
+	StageMerged         = "merged"
 )
 
 // Task is a versioned intent object stored as <task root>/<id>/task.yaml
@@ -41,6 +48,25 @@ type Task struct {
 	SuccessCriteria []string `yaml:"success_criteria" json:"success_criteria"`
 
 	References References `yaml:"references" json:"references"`
+
+	// PullRequest is set once the (not-yet-built) "Push & Open PR" action
+	// has pushed this task's execution branch and opened a PR. Absent
+	// (nil) until then — a task has at most one open PR at a time by
+	// construction, so this is not an append-only store the way
+	// reviews/executions are.
+	PullRequest *PullRequest `yaml:"pull_request,omitempty" json:"pull_request,omitempty"`
+}
+
+// PullRequest records the GitHub PR opened for a task's approved execution,
+// per docs/milestones/milestone7.md's "Schema changes".
+type PullRequest struct {
+	URL    string `yaml:"url" json:"url"`
+	Number int    `yaml:"number" json:"number"`
+	// Branch is the remote branch the PR actually tracks — needed because
+	// a later execution attempt continuing after a rejection cycle lands
+	// on a different local branch (ADR 0012 decision 1) and must push onto
+	// this recorded branch via refspec, not its own name.
+	Branch string `yaml:"branch" json:"branch"`
 }
 
 // References links a task to durable knowledge and code repositories.

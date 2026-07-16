@@ -58,7 +58,7 @@ function makeTask(stage: TaskStage, overrides: Partial<Task> = {}): Task {
 function stubNoContextOrPlan() {
   vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
   vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
-  // The complete-stage effect reads the latest verdict + branch; default to
+  // The merged-stage effect reads the latest verdict + branch; default to
   // empty so tests that don't care about the completion detail don't crash on
   // an unmocked call.
   vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
@@ -135,9 +135,9 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(await screen.findByTestId('review-panel')).toHaveTextContent('review:demo:task-a')
   })
 
-  it('complete stage renders neither stage panel nor any Revise button', async () => {
+  it('merged stage renders neither stage panel nor any Revise button', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('complete')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('merged')} onBack={vi.fn()} />)
 
     await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
     expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
@@ -145,7 +145,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(screen.queryByRole('button', { name: /Revise/ })).not.toBeInTheDocument()
   })
 
-  it('complete stage shows the verdict notes and the branch to merge by hand', async () => {
+  it('merged stage shows the verdict notes and the branch to merge by hand', async () => {
     vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
     vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
     vi.mocked(api.listReviews).mockResolvedValue({
@@ -169,7 +169,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
       ],
     })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('complete')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('merged')} onBack={vi.fn()} />)
 
     // Shows the latest verdict, not the earlier needs_changes one.
     expect(await screen.findByText(/Review complete — approved/)).toBeInTheDocument()

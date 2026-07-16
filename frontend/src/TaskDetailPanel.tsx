@@ -34,9 +34,9 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   const [plan, setPlan] = useState<TaskPlan | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
   const [revising, setRevising] = useState(false)
-  // review/reviewBranch back the terminal "complete" screen: the latest
+  // review/reviewBranch back the terminal "merged" screen: the latest
   // verdict's notes and the execution branch left for the human to merge by
-  // hand. Loaded only at stage complete (see effect below), so a re-visited
+  // hand. Loaded only at stage merged (see effect below), so a re-visited
   // completed task re-reads them rather than relying on in-session state.
   const [review, setReview] = useState<Review | null>(null)
   const [reviewBranch, setReviewBranch] = useState('')
@@ -58,7 +58,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   useEffect(() => {
     setReview(null)
     setReviewBranch('')
-    if (task.stage !== 'complete') {
+    if (task.stage !== 'merged') {
       return
     }
     listReviews(projectId, task.id)
@@ -249,7 +249,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
           <ReviewPanel
             projectId={projectId}
             taskId={task.id}
-            // A verdict moves the task (approved→complete,
+            // A verdict moves the task (approved→merged,
             // needs_changes→implementation, rejected→requirements);
             // re-rendering by the new stage is all the panel needs to do.
             onFinalized={(updatedTask) => setTask(updatedTask)}
@@ -265,7 +265,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
         </div>
       )}
 
-      {task.stage === 'complete' && (
+      {task.stage === 'merged' && (
         <div className="task-complete">
           <h4>Review complete — {review?.decision ?? 'approved'}</h4>
           {review?.notes && <p>{review.notes}</p>}

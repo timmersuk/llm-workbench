@@ -24,9 +24,9 @@ type finalizePlanResponse struct {
 }
 
 // finalizeReviewResponse is the wire shape for a Review Finalize: the task
-// (now moved by the verdict — complete/implementation/requirements) plus the
+// (now moved by the verdict — merged/implementation/requirements) plus the
 // review-NNN.yaml just recorded. Unlike context/plan, the review record is
-// what the terminal "complete" screen reads back to show the verdict notes,
+// what the terminal "merged" screen reads back to show the verdict notes,
 // so it travels in the response rather than being re-fetched by id.
 type finalizeReviewResponse struct {
 	Task   task.Task   `json:"task"`
@@ -116,12 +116,14 @@ func handleFinalizePlan(projects ProjectStore, factory TaskStoreFactory, agentRu
 
 // handleFinalizeReview is the human "Finalize" action for a Review
 // conversation: records the verdict (reviews/review-NNN.yaml) and moves the
-// task by its decision — approved→complete, needs_changes→implementation,
+// task by its decision — approved→merged, needs_changes→implementation,
 // rejected→requirements (task.FinalizeReview). 409 if the task isn't at
-// stage review. See handleFinalizeRequirements's comment for the CloseSession
-// rationale — a finalized review conversation is done, so its agent session
-// is torn down. The just-recorded review is read back so the response can
-// carry the verdict notes the "complete" screen shows without a second call.
+// stage review (or, for needs_changes/rejected, pr_review — see
+// task.FinalizeReview's doc comment). See handleFinalizeRequirements's
+// comment for the CloseSession rationale — a finalized review conversation
+// is done, so its agent session is torn down. The just-recorded review is
+// read back so the response can carry the verdict notes the "merged" screen
+// shows without a second call.
 func handleFinalizeReview(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
