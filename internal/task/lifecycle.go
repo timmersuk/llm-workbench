@@ -95,12 +95,12 @@ func (s *FileStore) FinalizePlan(id string, plan Plan) (Task, error) {
 // Review's Finalize can move Stage in either direction, because its decision
 // encodes which direction is correct (CONTEXT.md's **Review**):
 //
-//   - approved      → "merged" (the terminal stage; nothing else reaches it
-//     this way). Only valid from "review" — "pr_review" only ever
-//     surfaces the reject decisions below; a bare "approved" reaching
-//     FinalizeReview from "pr_review" would otherwise silently no-op the
-//     stage while still writing a spurious review record, since "pr_review"
-//     is itself the stage an approval already landed on.
+//   - approved      → "pr_review" (Milestone 7 PR 2; was "merged" through PR 1).
+//     Only valid from "review" — "pr_review" only ever surfaces the reject
+//     decisions below; a bare "approved" reaching FinalizeReview from
+//     "pr_review" would otherwise silently no-op the stage while still
+//     writing a spurious review record, since "pr_review" is itself the
+//     stage an approval already landed on.
 //   - needs_changes → "implementation" (a fresh execution attempt; the
 //     verdict's notes are preserved in the review record for the
 //     execute-retrigger path to surface)
@@ -127,7 +127,7 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 	var nextStage string
 	switch draft.Decision {
 	case ReviewDecisionApproved:
-		nextStage = StageMerged
+		nextStage = StagePRReview
 	case ReviewDecisionNeedsChanges:
 		nextStage = StageImplementation
 	case ReviewDecisionRejected:
@@ -180,9 +180,9 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 // on GitHub, with no polling and no review-record write — there's no
 // approved/rejected/needs_changes decision being made, the PR already got
 // its verdict externally. Moves Stage directly from "pr_review" to "merged".
-// Requires PullRequest to already be set: a task shouldn't be markable
-// "merged" if the system never recorded a PR against it, even though nothing
-// populates the field until the "Push & Open PR" action ships.
+// Requires PullRequest to already be set (populated by RecordPullRequest,
+// below): a task shouldn't be markable "merged" if the system never
+// recorded a PR against it.
 func (s *FileStore) MarkPRMerged(id string) (Task, error) {
 	t, err := s.Get(id)
 	if err != nil {
@@ -196,6 +196,32 @@ func (s *FileStore) MarkPRMerged(id string) (Task, error) {
 	}
 
 	t.Stage = StageMerged
+	t.UpdatedAt = time.Now().UTC()
+	if err := s.writeTask(t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// RecordPullRequest is the "Push & Open PR" action's persistence step
+// (docs/milestones/milestone7.md PR 2): records the PR
+// agentrunner.PushAndOpenPR just pushed/opened onto the task, without
+// changing Stage. Guarded to StagePRReview like MarkPRMerged — a PR is only
+// ever meaningful for a task actually sitting in pr_review. Called
+// uniformly whether this is the first PR opened for the task or a later
+// refspec-push continuing an existing one (see PushAndOpenPR's doc
+// comment): the persisted shape is the same either way, so there's no
+// special-casing at this layer.
+func (s *FileStore) RecordPullRequest(id string, pr PullRequest) (Task, error) {
+	t, err := s.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StagePRReview {
+		return Task{}, fmt.Errorf("recording pull request for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+
+	t.PullRequest = &pr
 	t.UpdatedAt = time.Now().UTC()
 	if err := s.writeTask(t); err != nil {
 		return Task{}, err

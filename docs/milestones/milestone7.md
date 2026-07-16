@@ -6,12 +6,12 @@ against the codebase by a second model pass, which caught two real
 mechanism gaps (both now folded in: the review-record reuse for
 `pr_review`'s reject actions, and the refspec-push approach for PR
 continuity across a rejection cycle — see "The push/PR/rejection
-mechanism" and "Schema changes"). **PR 1 scoped via a follow-up
-`/grill-with-docs` session on 2026-07-16** — see "Phasing" below;
+mechanism" and "Schema changes"). **PR 1 and PR 2 scoped via follow-up
+`/grill-with-docs` sessions on 2026-07-16** — see "Phasing" below;
 `pr_review`/`StagePRReview` naming is now final, not a placeholder.
-Remaining per-section detail (exact tool shapes, HTTP routes, frontend
-wiring for later PRs) is still to be sharpened in further follow-up
-sessions the way Milestone 6's PRs 3, 5, and 6 each were. **Knowledge-base
+Remaining per-section detail (the PR-comment tool, PR 3's routes/frontend)
+is still to be sharpened in further follow-up sessions the way Milestone
+6's PRs 3, 5, and 6 each were. **Knowledge-base
 promotion, previously bundled into this milestone by Milestone 6's "Out of
 scope" section, has been split out** — see "Out
 of scope" below for why and where it goes instead.
@@ -182,16 +182,17 @@ union and `TaskKanbanBoard.tsx`'s `STAGES` array/label map both hardcode
 stage names today and need the rename plus a new column for `pr_review`.
 
 **`internal/task/lifecycle.go`**: `FinalizeReview`'s `approved` branch
-**eventually** targets `StagePRReview` instead of `StageComplete`/
-`StageMerged` — but not in PR 1 (see "Phasing" decision 3): retargeting
-`approved` before there's a `pr_review` screen for a human to land on
-would break the already-shipped approve flow, so PR 1 keeps `approved`
-targeting the renamed terminal stage (`StageMerged`) and only a later PR,
-landing together with "Push & Open PR" and its frontend, flips the
-target. PR 1's stage-guard does widen to accept `StagePRReview` alongside
-`StageReview` right away (for the reject path — see mechanism section),
-guarded so `approved` specifically is rejected from `StagePRReview` (only
-valid from `StageReview`). There is no `ReviseToImplementation` to model
+targets `StagePRReview` instead of `StageComplete`/`StageMerged` — landed
+in PR 2, not PR 1 (see "Phasing" decisions): retargeting `approved` before
+there's a `pr_review` screen for a human to land on would break the
+already-shipped approve flow, so PR 1 kept `approved` targeting the
+renamed terminal stage (`StageMerged`) and PR 2 flips the target instead —
+ahead of PR 3's routes/frontend, a deliberate accepted gap since the
+system isn't run/deployed between those two PRs merging. PR 1's
+stage-guard does widen to accept `StagePRReview` alongside `StageReview`
+right away (for the reject path — see mechanism section), guarded so
+`approved` specifically is rejected from `StagePRReview` (only valid from
+`StageReview`). There is no `ReviseToImplementation` to model
 the reject path on: `needs_changes` has always been handled inline inside
 `FinalizeReview` itself, never a sibling function, so this milestone
 shouldn't invent one either. Separately, a `MarkPRMerged` function moves
@@ -260,9 +261,10 @@ requiring `Task.PullRequest != nil`.
 
 Delivered as sequential PRs, matching Milestone 6's cadence — each
 independently reviewable and live-verifiable, rather than one large diff.
-Only PR 1 is scoped in detail so far (via a `/grill-with-docs` session on
-2026-07-16); later PRs will each get their own follow-up session the way
-Milestone 6's PRs 3, 5, and 6 did.
+PR 1 and PR 2 are scoped in detail so far (both via `/grill-with-docs`
+sessions on 2026-07-16); PR 3 (routes + `pr_review` frontend) and later
+PRs will each get their own follow-up session the way Milestone 6's PRs 3,
+5, and 6 did.
 
 * **PR 1 — Stage machinery for the PR cycle.** Backend-only in spirit,
   plus the one mechanical rename that has to land in lockstep with the
@@ -288,17 +290,18 @@ Milestone 6's PRs 3, 5, and 6 did.
      rename, not new UI.
   3. **`FinalizeReview`'s `approved` branch keeps targeting the renamed
      terminal stage (`StageMerged`) in PR 1** — retargeting it to
-     `StagePRReview` is deferred to the later PR that ships "Push & Open
-     PR" together with its frontend. Retargeting now, before a
+     `StagePRReview` is deferred to PR 2 below. Retargeting now, before a
      `pr_review` screen exists to land a human on, would silently break
      the already-shipped approve flow (the frontend would receive a stage
-     string it has no case for).
+     string it has no case for). (PR 2 does the retarget anyway, ahead of
+     PR 3's routes/frontend — see PR 2's own notes on that tradeoff.)
   4. **`StagePRReview`, the widened `FinalizeReview` guard, and
      `MarkPRMerged` all ship in PR 1 as real, unit-tested machinery that
-     stays unreachable through any live path** until the later PR (3)
-     defers to exists. This mirrors how M6 PR 1 shipped a fully-working,
-     unit-tested store and lifecycle months before any conversation or
-     UI consumed it.
+     stays unreachable through any live path** until PR 2 retargets
+     `approved` (making `pr_review` live-reachable) and PR 3 ships the
+     routes/frontend that let a human actually act on it. This mirrors
+     how M6 PR 1 shipped a fully-working, unit-tested store and lifecycle
+     months before any conversation or UI consumed it.
   5. **`FinalizeReview`'s widened guard explicitly rejects `decision ==
      approved` when `t.Stage == StagePRReview`** (new check, reusing
      `ErrWrongStage`). Without it, an `approved` verdict sent while
@@ -320,6 +323,78 @@ Milestone 6's PRs 3, 5, and 6 did.
      nothing populates the field until a later PR. Untestable
      end-to-end until then, but directly unit-testable against a fixture
      task with `PullRequest` set by hand.
+
+* **PR 2 — Push & Open PR mechanism.** Scoped via a `/grill-with-docs`
+  session on 2026-07-16. Backend-mechanism-only, same as PR 1: no HTTP
+  routes, no frontend — those are deferred to PR 3 (below). Proven by
+  direct unit/integration tests against fixture tasks already at
+  `StagePRReview` (PR 1's technique), a local bare repo standing in for
+  `origin` for the real git push mechanics, and a fake `GitHubPRClient`
+  for the parts that would otherwise need real GitHub auth/network.
+
+  Binding decisions:
+  1. **`FinalizeReview`'s `approved` branch retargets `StageMerged` →
+     `StagePRReview` in this PR** — a one-line change; the "approved only
+     valid from `StageReview`" guard (PR 1 decision 5) stays correct
+     unchanged, since once a task *is* at `StagePRReview`, `approved` is
+     still correctly rejected there. **Deliberately not deferred to PR 3
+     alongside the routes/frontend**, unlike PR 1's own retarget
+     deferral: a live approval between PR 2 and PR 3 merging would land a
+     task on `pr_review` with nothing yet to act on it — accepted, since
+     the system isn't run/deployed in that window.
+  2. **New `agentrunner.PushAndOpenPR(ctx, dir, newBranch, baseBranch,
+     title, body string, existingNumber int, existingBranch string,
+     client GitHubPRClient) (url string, number int, branch string, err
+     error)`** — runs from the shared checkout (`ResolveWorkspace`), not a
+     resolved execution/review worktree: a branch created via `git
+     worktree add -b` is a ref in the same shared object database every
+     worktree of that repo uses (established fact, not a new assumption —
+     this is exactly what let M6 PR 6's `git show <branch>:<path>` work
+     from the shared checkout for a branch checked out elsewhere), so
+     pushing it by name needs no worktree lookup.
+     - `existingNumber == 0` (no PR recorded yet): plain `git push origin
+       newBranch`, then `client.Create(...)`.
+     - `existingNumber != 0`: `client.State(existingNumber)` first — if
+       not closed, refspec-push `newBranch:existingBranch` and reuse the
+       existing URL/number (no new `Create` call); if closed, treat as if
+       there were no existing PR (fresh push + `Create`, the returned
+       values overwrite the stale record entirely).
+  3. **The closed-PR check (decision 2's `client.State` call) is in
+     scope for this PR**, not punted — a refspec push onto a closed PR's
+     branch would succeed at the git level while GitHub silently doesn't
+     reopen the PR, landing commits nobody's reviewing behind a success
+     response. Worse than the "unhandled-by-design" risks already
+     accepted for `gh auth`/non-fast-forward failures (an ordinary
+     failure vs. a silent wrong-state success), and cheap to add behind
+     the same fake-able seam.
+  4. **New `GitHubPRClient` interface** (`Create(ctx, dir, head, base,
+     title, body string) (url string, number int, err error)` and
+     `State(ctx, dir string, number int) (state string, err error)`) —
+     one interface for both operations, not two independent function
+     types, since they're always used together on this one path and a
+     single fake implements both for tests. Production implementation
+     shells to real `gh` via argv (never a shell string, continuing ADR
+     0013's discipline).
+  5. **New `task.FileStore.RecordPullRequest(id string, pr PullRequest)
+     (Task, error)`**, mirroring `MarkPRMerged`'s shape exactly: guards
+     `t.Stage == StagePRReview` (reusing `ErrWrongStage`), sets
+     `t.PullRequest`, no Stage change. Called uniformly for both the
+     fresh-PR and refspec-continuity paths — the persisted shape is the
+     same either way, so no special-casing belongs at the persistence
+     layer.
+  6. **Package boundary: `agentrunner` takes/returns plain strings, never
+     `task.PullRequest`.** `agentrunner` has zero dependency on the
+     `task` package today (confirmed, not assumed) and this PR keeps it
+     that way — mirrors the existing `execution.go` pattern where
+     `internal/api`'s handler is what glues `agentrunner`'s output into a
+     `task` persistence call.
+  7. **PR title = `t.Title`, falling back to `t.ID`** (matching the
+     kanban board's existing `task.title || task.id` fallback). **Body =
+     `t.Objective` plus the approving review's `Notes`** (if non-empty,
+     under a short heading) **plus a plain marker that the workbench
+     opened it** — giving an external reviewer the context a human would
+     normally write into a PR description by hand, no templating beyond
+     that.
 
 * **A later PR (not yet numbered/scoped in detail) — stage-conversation
   URL/actual-stage guard.** Surfaced by the same "trusts the caller" audit
@@ -350,19 +425,11 @@ Milestone 6's PRs 3, 5, and 6 did.
   subcommand/`--json` fields it wraps, pagination/truncation) — deferred
   to a per-section grill session the way Milestone 6 PR 6's seven binding
   decisions were sharpened separately from its initial scoping mention.
-* The refspec-push approach (mechanism section) handles the common case
-  of landing a new attempt on an existing open PR's branch, but not what
-  happens if that PR was closed (not merged) on GitHub by a human in the
-  meantime — pushing to its branch wouldn't reopen it. Needs a decision:
-  detect that and open a fresh PR, or surface an error for the human to
-  resolve on GitHub directly.
 * Exact HTTP routes and frontend surface for the new `pr_review` screen
   and its actions — likely following `ReviewPanel`'s shape (Milestone 6
-  PR 3) but not designed here.
-* Which later PR actually retargets `FinalizeReview`'s `approved` branch
-  to `StagePRReview` and ships the "Push & Open PR" action + its
-  frontend — not split into its own PR boundary yet (Phasing above only
-  scopes PR 1).
+  PR 3) but not designed here. This is PR 3 (see "Phasing"): the routes
+  wrap PR 2's `agentrunner.PushAndOpenPR`/`MarkPRMerged`/`FinalizeReview`
+  reject path, none of which need new backend logic to expose over HTTP.
 
 ## Follow-ups
 
