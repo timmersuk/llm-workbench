@@ -39,9 +39,10 @@ project: auth-service
 
 status: draft  # draft | ready | in_progress | blocked | failed | complete
 
-stage: requirements  # requirements | planning | implementation | review | merged
-# pr_review also exists (Milestone 7 PR 1) but isn't reachable via any live
-# transition yet — see docs/milestones/milestone7.md's "Phasing" section.
+stage: requirements  # requirements | planning | implementation | review | pr_review | merged
+# pr_review (Milestone 7) is live-reachable from an approved review as of
+# PR 2, but has no route/UI to act on it until PR 3 ships — see
+# docs/milestones/milestone7.md's "Phasing" section.
 
 created_at: 2026-07-05T00:00:00Z
 updated_at: 2026-07-05T00:00:00Z
@@ -57,9 +58,9 @@ references:
   repo: []
 
 pull_request:  # optional, absent until Milestone 7's "Push & Open PR" action
-  url: ""      # runs (not yet built as of PR 1) — at most one open PR per
-  number: 0    # task, so unlike executions/reviews this isn't an
-  branch: ""   # append-only store.
+  url: ""      # runs (mechanism landed in PR 2; no route/UI to trigger it
+  number: 0    # until PR 3) — at most one open PR per task, so unlike
+  branch: ""   # executions/reviews this isn't an append-only store.
 ```
 
 ---
@@ -172,12 +173,12 @@ notes: ""
 created_at: 2026-07-09T00:00:00Z
 ```
 
-`decision` drives the stage transition on Finalize: `approved` → `merged`,
+`decision` drives the stage transition on Finalize: `approved` → `pr_review`
+(Milestone 7 PR 2 — see `docs/milestones/milestone7.md`; a human then pushes
+the branch and opens a GitHub PR, eventually reaching `merged`),
 `needs_changes` → `implementation` (a fresh execution attempt), `rejected` →
-`requirements` (reopening GrillMe). (Milestone 7 will retarget `approved` to
-a new `pr_review` stage once "Push & Open PR" ships — see
-`docs/milestones/milestone7.md`. `needs_changes`/`rejected` are also valid
-from `pr_review` as of PR 1, reusing this same transition.)
+`requirements` (reopening GrillMe). `needs_changes`/`rejected` are also valid
+from `pr_review`, reusing this same transition.
 
 `execution_id` names the specific execution attempt this verdict is about,
 set at Finalize time — the task is confirmed at `stage: review` when a

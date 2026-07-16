@@ -25,9 +25,10 @@ func newReviewTask(t *testing.T, store *FileStore, id string) Task {
 	return tk
 }
 
-// newPRReviewTask drives a task to StagePRReview directly (Milestone 7 PR 1:
-// no live path reaches this stage yet, since FinalizeReview's approved
-// branch still targets StageMerged until a later PR retargets it).
+// newPRReviewTask drives a task to StagePRReview via direct mutation rather
+// than a real FinalizeReview(approved) call — equivalent since Milestone 7
+// PR 2, but avoids coupling these fixtures to FinalizeReview's own behavior
+// (already covered by TestFileStore_FinalizeReview_ApprovedAdvancesToPRReview).
 func newPRReviewTask(t *testing.T, store *FileStore, id string) Task {
 	t.Helper()
 	newReviewTask(t, store, id)
@@ -110,14 +111,14 @@ func TestFileStore_ListReviews_EmptyWhenNoneRecorded(t *testing.T) {
 	assert.Empty(t, reviews)
 }
 
-func TestFileStore_FinalizeReview_ApprovedAdvancesToMerged(t *testing.T) {
+func TestFileStore_FinalizeReview_ApprovedAdvancesToPRReview(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
 	tk, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionApproved, Notes: "ship it"})
 	require.NoError(t, err)
-	assert.Equal(t, StageMerged, tk.Stage)
+	assert.Equal(t, StagePRReview, tk.Stage)
 
 	// The verdict is recorded append-only as review-001.
 	reviews, err := store.ListReviews("task-a")
@@ -272,6 +273,52 @@ func TestFileStore_MarkPRMerged_RequiresPullRequestSet(t *testing.T) {
 	tk, err := store.Get("task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StagePRReview, tk.Stage, "stage unchanged")
+}
+
+func TestFileStore_RecordPullRequest_SetsFieldWithoutChangingStage(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newPRReviewTask(t, store, "task-a")
+
+	pr := PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"}
+	tk, err := store.RecordPullRequest("task-a", pr)
+	require.NoError(t, err)
+	assert.Equal(t, StagePRReview, tk.Stage, "stage unchanged — this is not a stage transition")
+	require.NotNil(t, tk.PullRequest)
+	assert.Equal(t, pr, *tk.PullRequest)
+
+	reloaded, err := store.Get("task-a")
+	require.NoError(t, err)
+	require.NotNil(t, reloaded.PullRequest)
+	assert.Equal(t, pr, *reloaded.PullRequest)
+}
+
+func TestFileStore_RecordPullRequest_CalledAgainOverwritesPriorRecord(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newPRReviewTask(t, store, "task-a")
+
+	_, err := store.RecordPullRequest("task-a", PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"})
+	require.NoError(t, err)
+
+	second := PullRequest{URL: "https://github.com/org/repo/pull/2", Number: 2, Branch: "task-exec/task-a/exec-002"}
+	tk, err := store.RecordPullRequest("task-a", second)
+	require.NoError(t, err)
+	require.NotNil(t, tk.PullRequest)
+	assert.Equal(t, second, *tk.PullRequest, "the refspec-continuity path calls this again with the same PR reused or a fresh one after a close")
+}
+
+func TestFileStore_RecordPullRequest_WrongStageErrors(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newReviewTask(t, store, "task-a") // at review, not pr_review
+
+	_, err := store.RecordPullRequest("task-a", PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "b"})
+	require.ErrorIs(t, err, ErrWrongStage)
+
+	tk, err := store.Get("task-a")
+	require.NoError(t, err)
+	assert.Nil(t, tk.PullRequest, "no PR recorded on a wrong-stage call")
 }
 
 func TestFileStore_RecordReview_AppendOnlyRejectsDuplicateID(t *testing.T) {
