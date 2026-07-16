@@ -93,7 +93,7 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -198,7 +198,7 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -256,7 +256,7 @@ func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
-	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -598,7 +598,7 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 

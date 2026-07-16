@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // initTestRepo creates a real git repository under reposRoot/repoName with
@@ -21,7 +23,7 @@ func initTestRepo(t *testing.T, reposRoot, repoName string) string {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 
 	run := func(args ...string) {
-		out, err := runGit(context.Background(), dir, args...)
+		out, err := gitutil.RunGit(context.Background(), dir, args...)
 		require.NoErrorf(t, err, "git %v: %s", args, out)
 	}
 	run("init", "-q")
@@ -48,7 +50,7 @@ func TestResolveExecutionWorkspace_CreatesIsolatedWorktreeOnNewBranch(t *testing
 
 	// The shared checkout itself must be untouched: still on its original
 	// branch, not the new one.
-	branch, err := runGit(context.Background(), filepath.Join(reposRoot, "myrepo"), "rev-parse", "--abbrev-ref", "HEAD")
+	branch, err := gitutil.RunGit(context.Background(), filepath.Join(reposRoot, "myrepo"), "rev-parse", "--abbrev-ref", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, ws.BaseBranch, strings.TrimSpace(branch))
 }
@@ -67,9 +69,9 @@ func TestResolveExecutionWorkspace_ForkFromForksNewBranchButKeepsMainAsBaseBranc
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(priorWs.Path, "wip.txt"), []byte("prior attempt\n"), 0o644))
-	_, err = runGit(context.Background(), priorWs.Path, "add", ".")
+	_, err = gitutil.RunGit(context.Background(), priorWs.Path, "add", ".")
 	require.NoError(t, err)
-	_, err = runGit(context.Background(), priorWs.Path, "commit", "-q", "-m", "prior attempt")
+	_, err = gitutil.RunGit(context.Background(), priorWs.Path, "commit", "-q", "-m", "prior attempt")
 	require.NoError(t, err)
 
 	retryWs, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-002", priorWs.Branch)
@@ -80,7 +82,7 @@ func TestResolveExecutionWorkspace_ForkFromForksNewBranchButKeepsMainAsBaseBranc
 	assert.Equal(t, priorWs.BaseBranch, retryWs.BaseBranch)
 
 	// The shared checkout is still untouched by either resolution.
-	branch, err := runGit(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+	branch, err := gitutil.RunGit(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, retryWs.BaseBranch, strings.TrimSpace(branch))
 }
@@ -118,9 +120,9 @@ func TestCollectExecutionOutput_ReturnsCommitsAndChangedFiles(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "new-file.txt"), []byte("content\n"), 0o644))
-	_, err = runGit(context.Background(), ws.Path, "add", ".")
+	_, err = gitutil.RunGit(context.Background(), ws.Path, "add", ".")
 	require.NoError(t, err)
-	_, err = runGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
+	_, err = gitutil.RunGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
 	require.NoError(t, err)
 
 	commits, artifacts, err := CollectExecutionOutput(context.Background(), ws, "")
@@ -150,9 +152,9 @@ func TestCollectExecutionPatch_ReturnsCommitsAndRealDiff(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "new-file.txt"), []byte("added line\n"), 0o644))
-	_, err = runGit(context.Background(), ws.Path, "add", ".")
+	_, err = gitutil.RunGit(context.Background(), ws.Path, "add", ".")
 	require.NoError(t, err)
-	_, err = runGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
+	_, err = gitutil.RunGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
 	require.NoError(t, err)
 
 	commits, patch, err := CollectExecutionPatch(context.Background(), ws, "")
@@ -177,17 +179,17 @@ func TestCollectExecutionPatch_UsesMergeBaseDiffSoAdvancingBaseBranchDoesntLeakI
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "new-file.txt"), []byte("added line\n"), 0o644))
-	_, err = runGit(context.Background(), ws.Path, "add", ".")
+	_, err = gitutil.RunGit(context.Background(), ws.Path, "add", ".")
 	require.NoError(t, err)
-	_, err = runGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
+	_, err = gitutil.RunGit(context.Background(), ws.Path, "commit", "-q", "-m", "add new file")
 	require.NoError(t, err)
 
 	// Advance the shared checkout's own branch with an unrelated commit
 	// after the worktree already forked.
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "unrelated.txt"), []byte("unrelated\n"), 0o644))
-	_, err = runGit(context.Background(), repoDir, "add", ".")
+	_, err = gitutil.RunGit(context.Background(), repoDir, "add", ".")
 	require.NoError(t, err)
-	_, err = runGit(context.Background(), repoDir, "commit", "-q", "-m", "unrelated change on main")
+	_, err = gitutil.RunGit(context.Background(), repoDir, "commit", "-q", "-m", "unrelated change on main")
 	require.NoError(t, err)
 
 	_, patch, err := CollectExecutionPatch(context.Background(), ws, "")
@@ -213,17 +215,17 @@ func TestCollectExecutionOutput_ForkPointScopesCommitsButNotTheDiff(t *testing.T
 	priorWs, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(priorWs.Path, "first-file.txt"), []byte("first attempt\n"), 0o644))
-	_, err = runGit(context.Background(), priorWs.Path, "add", ".")
+	_, err = gitutil.RunGit(context.Background(), priorWs.Path, "add", ".")
 	require.NoError(t, err)
-	_, err = runGit(context.Background(), priorWs.Path, "commit", "-q", "-m", "first attempt")
+	_, err = gitutil.RunGit(context.Background(), priorWs.Path, "commit", "-q", "-m", "first attempt")
 	require.NoError(t, err)
 
 	retryWs, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-002", priorWs.Branch)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(retryWs.Path, "second-file.txt"), []byte("retry\n"), 0o644))
-	_, err = runGit(context.Background(), retryWs.Path, "add", ".")
+	_, err = gitutil.RunGit(context.Background(), retryWs.Path, "add", ".")
 	require.NoError(t, err)
-	_, err = runGit(context.Background(), retryWs.Path, "commit", "-q", "-m", "retry attempt")
+	_, err = gitutil.RunGit(context.Background(), retryWs.Path, "commit", "-q", "-m", "retry attempt")
 	require.NoError(t, err)
 
 	commits, artifacts, err := CollectExecutionOutput(context.Background(), retryWs, priorWs.Branch)

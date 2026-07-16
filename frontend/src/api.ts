@@ -139,6 +139,22 @@ export function getReviewDiff(projectId: string, taskId: string): Promise<Review
   return getJSON<ReviewDiffResult>(`${taskPath(projectId, taskId)}/review/diff`)
 }
 
+// pushPR is the "Push & Open PR" action for pr_review: pushes the task's
+// latest execution branch and opens (or continues) a PR, returning the
+// updated Task now carrying pull_request. Empty body — everything the
+// backend needs is derived server-side from the task/execution/review
+// (docs/milestones/milestone7.md PR 3).
+export function pushPR(projectId: string, taskId: string): Promise<Task> {
+  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/pr/push`, {})
+}
+
+// markPRMerged is the "Mark as merged" action for pr_review: a human
+// assertion that the PR was merged on GitHub, advancing the task straight
+// to merged with no review-record write.
+export function markPRMerged(projectId: string, taskId: string): Promise<Task> {
+  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/pr/merged`, {})
+}
+
 export function reviseRequirements(projectId: string, taskId: string): Promise<Task> {
   return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/requirements/revise`, {})
 }

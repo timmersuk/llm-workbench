@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // GitHubPRClient is the seam between PushAndOpenPR and the real `gh` CLI,
@@ -95,6 +97,13 @@ func parsePRNumber(url string) (int, error) {
 // show <branch>:<path>` from the shared checkout for a branch checked out
 // elsewhere), so pushing it by name needs no worktree lookup.
 //
+// The PR's base branch is dir's own currently-checked-out branch
+// (gitutil.CurrentBranch) — the shared checkout's own branch (typically
+// "main"), the same fact worktree.go already relies on to derive
+// ExecutionWorkspace.BaseBranch. There's no caller-supplied baseBranch
+// parameter (Milestone 7 PR 3): the shared checkout is the one place this
+// is unambiguous, so callers don't need their own way to determine it.
+//
 // existingNumber == 0 means no PR has been recorded for this task yet:
 // newBranch is pushed as-is, then client.Create opens a fresh PR.
 //
@@ -110,14 +119,14 @@ func parsePRNumber(url string) (int, error) {
 // treated as if there were no existing PR: a fresh push of newBranch plus
 // a new Create call, and the returned values overwrite the stale record
 // entirely.
-func PushAndOpenPR(ctx context.Context, dir, newBranch, baseBranch, title, body string, existingURL string, existingNumber int, existingBranch string, client GitHubPRClient) (url string, number int, branch string, err error) {
+func PushAndOpenPR(ctx context.Context, dir, newBranch, title, body string, existingURL string, existingNumber int, existingBranch string, client GitHubPRClient) (url string, number int, branch string, err error) {
 	if existingNumber != 0 {
 		state, err := client.State(ctx, dir, existingNumber)
 		if err != nil {
 			return "", 0, "", fmt.Errorf("checking PR #%d state: %w", existingNumber, err)
 		}
 		if !strings.EqualFold(state, "CLOSED") {
-			if _, err := runGit(ctx, dir, "push", "origin", newBranch+":"+existingBranch); err != nil {
+			if _, err := gitutil.RunGit(ctx, dir, "push", "origin", newBranch+":"+existingBranch); err != nil {
 				return "", 0, "", fmt.Errorf("pushing %s onto existing PR branch %s: %w", newBranch, existingBranch, err)
 			}
 			return existingURL, existingNumber, existingBranch, nil
@@ -125,7 +134,12 @@ func PushAndOpenPR(ctx context.Context, dir, newBranch, baseBranch, title, body 
 		// Closed: fall through to the fresh-push-and-create path below.
 	}
 
-	if _, err := runGit(ctx, dir, "push", "origin", newBranch); err != nil {
+	baseBranch, err := gitutil.CurrentBranch(ctx, dir)
+	if err != nil {
+		return "", 0, "", err
+	}
+
+	if _, err := gitutil.RunGit(ctx, dir, "push", "origin", newBranch); err != nil {
 		return "", 0, "", fmt.Errorf("pushing %s: %w", newBranch, err)
 	}
 	url, number, err = client.Create(ctx, dir, newBranch, baseBranch, title, body)

@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // --- read_file_at_ref ---
@@ -47,7 +47,7 @@ func (readAtRefTool) Execute(ctx context.Context, workspace, argumentsJSON strin
 		return "", fmt.Errorf("path is required")
 	}
 
-	content, err := runGit(ctx, workspace, "show", args.Ref+":"+args.Path)
+	content, err := gitutil.RunGit(ctx, workspace, "show", args.Ref+":"+args.Path)
 	if err != nil {
 		return "", err
 	}
@@ -105,7 +105,7 @@ func (listFilesAtRefTool) Execute(ctx context.Context, workspace, argumentsJSON 
 		return "", fmt.Errorf("ref is required")
 	}
 
-	out, err := runGit(ctx, workspace, "ls-tree", "-r", "--name-only", args.Ref)
+	out, err := gitutil.RunGit(ctx, workspace, "ls-tree", "-r", "--name-only", args.Ref)
 	if err != nil {
 		return "", err
 	}
@@ -126,20 +126,4 @@ func (listFilesAtRefTool) Execute(ctx context.Context, workspace, argumentsJSON 
 		result += "\n[truncated: hit the match cap — narrow with a more specific ref, or read known paths directly]"
 	}
 	return truncateResult(result), nil
-}
-
-// runGit runs a read-only git plumbing command from workspace via argv (never
-// a shell string, unlike bashTool — the model supplies a ref/path, never a
-// command), returning stdout+stderr trimmed. Reading a git object never
-// touches the working tree, so this is safe to run concurrently with
-// anything else happening in workspace, including the shared checkout every
-// Requirements/Planning conversation for a project uses (docs/adr/0013).
-func runGit(ctx context.Context, workspace string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = workspace
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
 }

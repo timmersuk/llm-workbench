@@ -1,12 +1,13 @@
 import type { Task, TaskStage } from './types'
 
-const STAGES: TaskStage[] = ['requirements', 'planning', 'implementation', 'review', 'merged']
+const STAGES: TaskStage[] = ['requirements', 'planning', 'implementation', 'review', 'pr_review', 'merged']
 
 const STAGE_LABELS: Record<TaskStage, string> = {
   requirements: 'Requirements',
   planning: 'Planning',
   implementation: 'Implementation',
   review: 'Review',
+  pr_review: 'PR Review',
   merged: 'Merged',
 }
 

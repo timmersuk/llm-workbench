@@ -4,7 +4,7 @@ export interface TaskReferences {
 }
 
 export type TaskStatus = 'draft' | 'ready' | 'in_progress' | 'blocked' | 'failed' | 'complete'
-export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'merged'
+export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'pr_review' | 'merged'
 
 export interface PullRequest {
   url: string

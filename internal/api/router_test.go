@@ -29,7 +29,7 @@ func TestRouter_Healthcheck(t *testing.T) {
 	runner.On("CheckHealth", mock.Anything).Return(nil)
 
 	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader),
-		map[string]agentrunner.AgentRunner{"local": runner}, "", testFrontendFS(), "test-build")
+		map[string]agentrunner.AgentRunner{"local": runner}, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthcheck", nil)
 	w := httptest.NewRecorder()
@@ -46,7 +46,7 @@ func TestRouter_Healthcheck_WhenLLMProbeFails(t *testing.T) {
 	runner.On("CheckHealth", mock.Anything).Return(errors.New("llm unavailable"))
 
 	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader),
-		map[string]agentrunner.AgentRunner{"local": runner}, "", testFrontendFS(), "test-build")
+		map[string]agentrunner.AgentRunner{"local": runner}, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthcheck", nil)
 	w := httptest.NewRecorder()
@@ -62,7 +62,7 @@ func TestRouter_Healthcheck_ReportsPerSubsystemStatusForAgentRunners(t *testing.
 	runner.On("CheckHealth", mock.Anything).Return(nil)
 
 	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, "", testFrontendFS(), "test-build")
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthcheck", nil)
 	w := httptest.NewRecorder()
@@ -79,7 +79,7 @@ func TestRouter_Healthcheck_WhenOneAgentRunnerFailsAnotherStaysIndependentlyOK(t
 	claudeRunner.On("CheckHealth", mock.Anything).Return(errors.New("claude CLI not found on PATH"))
 
 	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader),
-		map[string]agentrunner.AgentRunner{"claude-code": claudeRunner, "local": localRunner}, "", testFrontendFS(), "test-build")
+		map[string]agentrunner.AgentRunner{"claude-code": claudeRunner, "local": localRunner}, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthcheck", nil)
 	w := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func TestRouter_Healthcheck_WhenOneAgentRunnerFailsAnotherStaysIndependentlyOK(t
 }
 
 func TestRouter_Version(t *testing.T) {
-	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
 	w := httptest.NewRecorder()
@@ -102,7 +102,7 @@ func TestRouter_Version(t *testing.T) {
 }
 
 func TestRouter_FrontendServesRealFile(t *testing.T) {
-	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
 	w := httptest.NewRecorder()
@@ -113,7 +113,7 @@ func TestRouter_FrontendServesRealFile(t *testing.T) {
 }
 
 func TestRouter_FrontendFallsBackToIndexForUnknownPath(t *testing.T) {
-	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/tasks/some-client-route", nil)
 	w := httptest.NewRecorder()
@@ -131,7 +131,7 @@ func TestRouter_ProjectTasksEndToEnd(t *testing.T) {
 	tasks := new(mockTaskStore)
 	tasks.On("List").Return(task.ListResult{Tasks: []task.Task{{ID: "TASK-0001"}}}, nil)
 
-	router := NewRouter(projects, fixedTaskStoreFactory(tasks), new(mockKnowledgeReader), nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(projects, fixedTaskStoreFactory(tasks), new(mockKnowledgeReader), nil, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks", nil)
 	w := httptest.NewRecorder()
@@ -149,7 +149,7 @@ func TestRouter_ProjectTasks_ProjectNotFoundBeforeTaskStoreTouched(t *testing.T)
 	// the task store despite the missing project, the mock would panic.
 	tasks := new(mockTaskStore)
 
-	router := NewRouter(projects, fixedTaskStoreFactory(tasks), new(mockKnowledgeReader), nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(projects, fixedTaskStoreFactory(tasks), new(mockKnowledgeReader), nil, "", nil, testFrontendFS(), "test-build")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/nonexistent/tasks", nil)
 	w := httptest.NewRecorder()
@@ -163,7 +163,7 @@ func TestRouter_CreateAndUpdateProjectEndToEnd(t *testing.T) {
 	projects.On("Create", project.CreateInput{Name: "Demo"}).Return(project.Project{ID: "demo", Name: "Demo"}, nil)
 	projects.On("Update", "demo", project.UpdateInput{Name: "Demo Updated"}).Return(project.Project{ID: "demo", Name: "Demo Updated"}, nil)
 
-	router := NewRouter(projects, fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(projects, fixedTaskStoreFactory(new(mockTaskStore)), new(mockKnowledgeReader), nil, "", nil, testFrontendFS(), "test-build")
 
 	createReq := newProjectRequest(t, http.MethodPost, "/api/v1/projects", project.CreateInput{Name: "Demo"})
 	createW := httptest.NewRecorder()
@@ -190,7 +190,7 @@ func TestRouter_GrillMeAndPlanningModeRoutesRegistered(t *testing.T) {
 	tasks.On("ReviseToRequirements", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("ReviseToPlanning", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 
-	router := NewRouter(projects, fixedTaskStoreFactory(tasks), new(mockKnowledgeReader), nil, "", testFrontendFS(), "test-build")
+	router := NewRouter(projects, fixedTaskStoreFactory(tasks), new(mockKnowledgeReader), nil, "", nil, testFrontendFS(), "test-build")
 
 	cases := []struct {
 		method, path string

@@ -34,6 +34,13 @@ vi.mock('./ReviewPanel', () => ({
     </div>
   ),
 }))
+vi.mock('./PRReviewPanel', () => ({
+  PRReviewPanel: (props: { projectId: string; taskId: string }) => (
+    <div data-testid="pr-review-panel">
+      pr-review:{props.projectId}:{props.taskId}
+    </div>
+  ),
+}))
 
 const projectId = 'demo'
 
@@ -58,9 +65,9 @@ function makeTask(stage: TaskStage, overrides: Partial<Task> = {}): Task {
 function stubNoContextOrPlan() {
   vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
   vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
-  // The merged-stage effect reads the latest verdict + branch; default to
-  // empty so tests that don't care about the completion detail don't crash on
-  // an unmocked call.
+  // The merged-stage effect reads the latest verdict; default to empty so
+  // tests that don't care about the completion detail don't crash on an
+  // unmocked call.
   vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
   vi.mocked(api.listExecutions).mockResolvedValue({ executions: [] })
 }
@@ -135,6 +142,14 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(await screen.findByTestId('review-panel')).toHaveTextContent('review:demo:task-a')
   })
 
+  it('pr_review stage renders PRReviewPanel with the right props and no Revise Plan button', async () => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('pr_review')} onBack={vi.fn()} />)
+
+    expect(await screen.findByTestId('pr-review-panel')).toHaveTextContent('pr-review:demo:task-a')
+    expect(screen.queryByRole('button', { name: 'Revise Plan' })).not.toBeInTheDocument()
+  })
+
   it('merged stage renders neither stage panel nor any Revise button', async () => {
     stubNoContextOrPlan()
     render(<TaskDetailPanel projectId={projectId} task={makeTask('merged')} onBack={vi.fn()} />)
@@ -145,7 +160,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(screen.queryByRole('button', { name: /Revise/ })).not.toBeInTheDocument()
   })
 
-  it('merged stage shows the verdict notes and the branch to merge by hand', async () => {
+  it('merged stage shows the verdict notes and a link to the merged pull request', async () => {
     vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
     vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
     vi.mocked(api.listReviews).mockResolvedValue({
@@ -154,27 +169,17 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
         { review_id: 'review-002', task_id: 'task-a', execution_id: 'exec-002', decision: 'approved', notes: 'looks great', created_at: '2026-01-02T00:00:00Z' },
       ],
     })
-    vi.mocked(api.listExecutions).mockResolvedValue({
-      executions: [
-        {
-          execution_id: 'exec-002',
-          task_id: 'task-a',
-          executor: { type: 'claude-code', version: '' },
-          input: { plan_ref: 'plan.yaml', context_refs: [], review_feedback: '' },
-          output: { artifacts: [], git_branch: 'wb/task-a/exec-002', commits: [], forked_from_branch: '' },
-          metrics: { duration_seconds: 1, tokens_used: 0, cost_estimate: 0 },
-          status: 'success',
-          created_at: '2026-01-02T00:00:00Z',
-        },
-      ],
-    })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('merged')} onBack={vi.fn()} />)
+    const task = makeTask('merged', {
+      pull_request: { url: 'https://github.com/org/repo/pull/7', number: 7, branch: 'task-exec/task-a/exec-002' },
+    })
+    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} />)
 
     // Shows the latest verdict, not the earlier needs_changes one.
     expect(await screen.findByText(/Review complete — approved/)).toBeInTheDocument()
     expect(screen.getByText('looks great')).toBeInTheDocument()
-    expect(screen.getByText('wb/task-a/exec-002')).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: /pull request #7/ })
+    expect(link).toHaveAttribute('href', 'https://github.com/org/repo/pull/7')
   })
 })
 

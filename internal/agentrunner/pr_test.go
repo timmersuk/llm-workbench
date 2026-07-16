@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // fakeGitHubPRClient stands in for the real `gh` CLI in tests — no network
@@ -59,7 +61,7 @@ func initBareRemote(t *testing.T, root, repoDir string) string {
 	require.NoError(t, os.MkdirAll(remoteDir, 0o755))
 
 	run := func(dir string, args ...string) {
-		out, err := runGit(context.Background(), dir, args...)
+		out, err := gitutil.RunGit(context.Background(), dir, args...)
 		require.NoErrorf(t, err, "git %v: %s", args, out)
 	}
 	run(remoteDir, "init", "--bare", "-q")
@@ -69,7 +71,7 @@ func initBareRemote(t *testing.T, root, repoDir string) string {
 
 func remoteHasBranch(t *testing.T, remoteDir, branch string) bool {
 	t.Helper()
-	out, err := runGit(context.Background(), remoteDir, "branch", "--list", branch)
+	out, err := gitutil.RunGit(context.Background(), remoteDir, "branch", "--list", branch)
 	require.NoError(t, err)
 	return len(out) > 0
 }
@@ -78,11 +80,15 @@ func TestPushAndOpenPR_NoExistingPR_PushesAndCreates(t *testing.T) {
 	reposRoot := t.TempDir()
 	repoDir := initTestRepo(t, reposRoot, "myrepo")
 	remoteDir := initBareRemote(t, reposRoot, repoDir)
-	_, err := runGit(context.Background(), repoDir, "checkout", "-b", "feature-a")
+	// Creates the branch ref without switching to it — the shared checkout
+	// (repoDir) stays on its own branch, exactly as it would in production
+	// while a real execution's branch lives in a separate worktree; only
+	// the ref itself needs to exist for `git push` to find it by name.
+	_, err := gitutil.RunGit(context.Background(), repoDir, "branch", "feature-a")
 	require.NoError(t, err)
 
 	client := &fakeGitHubPRClient{createURL: "https://github.com/org/repo/pull/42"}
-	url, number, branch, err := PushAndOpenPR(context.Background(), repoDir, "feature-a", "main", "Fix login bug", "Ships the fix.", "", 0, "", client)
+	url, number, branch, err := PushAndOpenPR(context.Background(), repoDir, "feature-a", "Fix login bug", "Ships the fix.", "", 0, "", client)
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://github.com/org/repo/pull/42", url)
@@ -96,11 +102,11 @@ func TestPushAndOpenPR_ExistingOpenPR_RefspecPushesWithoutCreating(t *testing.T)
 	reposRoot := t.TempDir()
 	repoDir := initTestRepo(t, reposRoot, "myrepo")
 	remoteDir := initBareRemote(t, reposRoot, repoDir)
-	_, err := runGit(context.Background(), repoDir, "checkout", "-b", "task-exec/task-a/exec-002")
+	_, err := gitutil.RunGit(context.Background(), repoDir, "checkout", "-b", "task-exec/task-a/exec-002")
 	require.NoError(t, err)
 
 	client := &fakeGitHubPRClient{state: "OPEN"}
-	url, number, branch, err := PushAndOpenPR(context.Background(), repoDir, "task-exec/task-a/exec-002", "main", "Fix login bug", "Ships the fix.",
+	url, number, branch, err := PushAndOpenPR(context.Background(), repoDir, "task-exec/task-a/exec-002", "Fix login bug", "Ships the fix.",
 		"https://github.com/org/repo/pull/42", 42, "task-exec/task-a/exec-001", client)
 	require.NoError(t, err)
 
@@ -116,11 +122,11 @@ func TestPushAndOpenPR_ExistingClosedPR_OpensFreshPR(t *testing.T) {
 	reposRoot := t.TempDir()
 	repoDir := initTestRepo(t, reposRoot, "myrepo")
 	remoteDir := initBareRemote(t, reposRoot, repoDir)
-	_, err := runGit(context.Background(), repoDir, "checkout", "-b", "task-exec/task-a/exec-002")
+	_, err := gitutil.RunGit(context.Background(), repoDir, "checkout", "-b", "task-exec/task-a/exec-002")
 	require.NoError(t, err)
 
 	client := &fakeGitHubPRClient{state: "CLOSED", createURL: "https://github.com/org/repo/pull/55"}
-	url, number, branch, err := PushAndOpenPR(context.Background(), repoDir, "task-exec/task-a/exec-002", "main", "Fix login bug", "Ships the fix.",
+	url, number, branch, err := PushAndOpenPR(context.Background(), repoDir, "task-exec/task-a/exec-002", "Fix login bug", "Ships the fix.",
 		"https://github.com/org/repo/pull/42", 42, "task-exec/task-a/exec-001", client)
 	require.NoError(t, err)
 
@@ -137,7 +143,7 @@ func TestPushAndOpenPR_StateCheckErrorPropagates(t *testing.T) {
 	initBareRemote(t, reposRoot, repoDir)
 
 	client := &fakeGitHubPRClient{stateErr: assert.AnError}
-	_, _, _, err := PushAndOpenPR(context.Background(), repoDir, "feature-a", "main", "t", "b", "https://github.com/org/repo/pull/42", 42, "old-branch", client)
+	_, _, _, err := PushAndOpenPR(context.Background(), repoDir, "feature-a", "t", "b", "https://github.com/org/repo/pull/42", 42, "old-branch", client)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, assert.AnError)
 }

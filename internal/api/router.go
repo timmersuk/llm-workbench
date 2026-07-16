@@ -45,6 +45,8 @@ type TaskStore interface {
 	FinalizeRequirements(id string, draft task.RequirementsDraft) (task.Task, error)
 	FinalizePlan(id string, plan task.Plan) (task.Task, error)
 	FinalizeReview(id string, draft task.ReviewDraft) (task.Task, error)
+	MarkPRMerged(id string) (task.Task, error)
+	RecordPullRequest(id string, pr task.PullRequest) (task.Task, error)
 	ReviseToRequirements(id string) (task.Task, error)
 	ReviseToPlanning(id string) (task.Task, error)
 
@@ -78,8 +80,11 @@ type TaskStoreFactory func(root string) TaskStore
 // local directory agent runners resolve a project's configured repository
 // into a workspace under (see agentrunner.ResolveWorkspace); free chat has
 // no per-task project, so it passes reposRoot itself as the workspace
-// instead.
-func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, frontendFS fs.FS, buildId string) http.Handler {
+// instead. prClient is the seam handlePushPR uses to open/inspect GitHub
+// PRs (agentrunner.GitHubPRClient) — a real one built via
+// agentrunner.NewGitHubPRClient() in production, a fake in tests
+// (docs/milestones/milestone7.md PR 3).
+func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, frontendFS fs.FS, buildId string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthcheck", handleHealthcheck(agentRunners, buildId))
@@ -111,6 +116,8 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeRead
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", handleListExecutions(projects, taskStores))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", handleListReviews(projects, taskStores))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", handleReviewDiff(projects, taskStores, reposRoot))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", handlePushPR(projects, taskStores, reposRoot, prClient))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/merged", handleMarkPRMerged(projects, taskStores))
 
 	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(agentRunners, reposRoot))
 	mux.HandleFunc("POST /api/v1/chat/sessions/close", handleCloseChatSession(agentRunners))

@@ -15,6 +15,7 @@ import (
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/drafttool"
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // codexDraftServerName is the MCP server name CodexRunner registers
@@ -327,7 +328,7 @@ func (r *CodexRunner) registerDraftServer(ctx context.Context) error {
 // .git/worktrees/<id>/, not a path under workspace itself, since that's
 // where git actually writes commit-time state (index.lock, HEAD, refs).
 func worktreeGitDir(ctx context.Context, workspace string) (string, error) {
-	out, err := runGit(ctx, workspace, "rev-parse", "--git-dir")
+	out, err := gitutil.RunGit(ctx, workspace, "rev-parse", "--git-dir")
 	if err != nil {
 		return "", fmt.Errorf("resolving git-dir: %w", err)
 	}

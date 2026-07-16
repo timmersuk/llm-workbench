@@ -74,7 +74,7 @@ func main() {
 	}
 
 	taskStores := func(root string) api.TaskStore { return task.NewFileStore(root) }
-	router := api.NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, agentReposRoot, frontendFS, BuildID)
+	router := api.NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, agentReposRoot, agentrunner.NewGitHubPRClient(), frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":           httpAddr,
