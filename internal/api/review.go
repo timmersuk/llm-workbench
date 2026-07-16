@@ -13,7 +13,7 @@ import (
 // summary the ReviewPanel shows alongside it comes from the executions list
 // (handleListExecutions); this endpoint carries only the full diff text, kept
 // out of that list so the potentially-large patch is fetched on demand (the
-// panel renders it inside a collapsed "View diff", docs/milestones/milestone6.md
+// panel renders it inside a collapsed "View diff", docs/milestones/done/milestone6.md
 // PR 3 decision 1).
 type reviewDiffResponse struct {
 	Patch string `json:"patch"`
@@ -22,7 +22,7 @@ type reviewDiffResponse struct {
 // handleListReviews returns every recorded review verdict for a task, oldest
 // first — a file-for-file mirror of handleListExecutions. The terminal
 // "merged" screen reads this to show the latest verdict's notes on a fresh
-// visit, when no just-finalized response is in hand (docs/milestones/milestone6.md
+// visit, when no just-finalized response is in hand (docs/milestones/done/milestone6.md
 // PR 3 decision 4).
 func handleListReviews(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

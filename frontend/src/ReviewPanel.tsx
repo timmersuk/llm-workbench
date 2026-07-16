@@ -21,7 +21,7 @@ interface ReviewPanelProps {
 // on demand, above a StageConversationPanel that runs the review conversation.
 // autoStart is false — arriving here shows the diff and waits for an explicit
 // "Start Review", since the agent's first turn runs the real test suite in a
-// worktree, not just an opening question (docs/milestones/milestone6.md PR 3).
+// worktree, not just an opening question (docs/milestones/done/milestone6.md PR 3).
 export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps) {
   const [latest, setLatest] = useState<Execution | null>(null)
   const [patch, setPatch] = useState<string | null>(null)

@@ -14,7 +14,7 @@ import (
 // ResolveExecutionWorkspace creates for one execution attempt, without
 // touching git or the filesystem. Callers that only need the name — e.g.
 // Requirements-stage prompt text referencing a rejected attempt's branch
-// (docs/milestones/milestone6.md's PR 5) — can call this instead of
+// (docs/milestones/done/milestone6.md's PR 5) — can call this instead of
 // resolving a real workspace just to read .Branch off it.
 func ExecutionBranchName(taskID, executionID string) string {
 	return "task-exec/" + taskID + "/" + executionID

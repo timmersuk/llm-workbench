@@ -60,7 +60,7 @@ Rules for this interview:
 
 `
 	// reviewSystemPrompt drives the Review-stage conversation (CONTEXT.md's
-	// **Review** entry, docs/milestones/milestone6.md "The review mechanism").
+	// **Review** entry, docs/milestones/done/milestone6.md "The review mechanism").
 	// Unlike GrillMe/Planning Mode, which interview toward a new artifact, this
 	// reviews a *prior* one — the execution's diff, supplied in the prompt
 	// addendum below — working through three phases the human can interrupt at
@@ -742,13 +742,13 @@ func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project
 // surfacing the most recent review's notes when it was rejected —
 // CONTEXT.md's **Review** entry already promises this ("rejected... with
 // the review's notes surfaced into the reopened conversation"); this is
-// what implements it (docs/milestones/milestone6.md's PR 5). Returns "" (no
+// what implements it (docs/milestones/done/milestone6.md's PR 5). Returns "" (no
 // error) when the task has no reviews yet or the latest one wasn't
 // rejected — StageRequirements is reachable from a rejected review or from
 // the separate, unrelated "Revise Requirements" action (ReviseToRequirements),
 // so this can also fire on that second path while an old rejection is still
 // the latest one on record; that staleness is accepted rather than guarded
-// against (docs/milestones/milestone6.md's PR 5, decision 1).
+// against (docs/milestones/done/milestone6.md's PR 5, decision 1).
 //
 // ListExecutions's last entry is used for the rejected attempt's branch
 // name without re-resolving a real workspace (ResolveReviewWorkspace would
