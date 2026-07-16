@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // ExecutionBranchName returns the deterministic branch name
@@ -73,11 +74,10 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 		return ExecutionWorkspace{}, err
 	}
 
-	baseBranchOut, err := runGit(ctx, base, "rev-parse", "--abbrev-ref", "HEAD")
+	baseBranch, err := gitutil.CurrentBranch(ctx, base)
 	if err != nil {
-		return ExecutionWorkspace{}, fmt.Errorf("resolving base branch for %s: %w", base, err)
+		return ExecutionWorkspace{}, err
 	}
-	baseBranch := strings.TrimSpace(baseBranchOut)
 
 	// base == filepath.Join(root, repoName) by ResolveWorkspace's own
 	// construction, so filepath.Dir(base) recovers the same reposRoot
@@ -96,7 +96,7 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 		return ExecutionWorkspace{}, fmt.Errorf("creating worktree parent directory: %w", err)
 	}
 
-	if _, err := runGit(ctx, base, "worktree", "add", "-b", branch, worktreePath, forkRef); err != nil {
+	if _, err := gitutil.RunGit(ctx, base, "worktree", "add", "-b", branch, worktreePath, forkRef); err != nil {
 		return ExecutionWorkspace{}, fmt.Errorf("creating git worktree for execution %s: %w", executionID, err)
 	}
 
@@ -123,11 +123,10 @@ func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories 
 		return ExecutionWorkspace{}, err
 	}
 
-	baseBranchOut, err := runGit(ctx, base, "rev-parse", "--abbrev-ref", "HEAD")
+	baseBranch, err := gitutil.CurrentBranch(ctx, base)
 	if err != nil {
-		return ExecutionWorkspace{}, fmt.Errorf("resolving base branch for %s: %w", base, err)
+		return ExecutionWorkspace{}, err
 	}
-	baseBranch := strings.TrimSpace(baseBranchOut)
 
 	root := filepath.Dir(base)
 	repoName := filepath.Base(base)
@@ -141,12 +140,12 @@ func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories 
 		return ExecutionWorkspace{}, fmt.Errorf("%w: %s is not a directory", ErrInvalidRepository, worktreePath)
 	}
 
-	branchOut, err := runGit(ctx, worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	branch, err := gitutil.CurrentBranch(ctx, worktreePath)
 	if err != nil {
-		return ExecutionWorkspace{}, fmt.Errorf("resolving worktree branch for %s: %w", worktreePath, err)
+		return ExecutionWorkspace{}, err
 	}
 
-	return ExecutionWorkspace{Path: worktreePath, Branch: strings.TrimSpace(branchOut), BaseBranch: baseBranch}, nil
+	return ExecutionWorkspace{Path: worktreePath, Branch: branch, BaseBranch: baseBranch}, nil
 }
 
 // CollectExecutionOutput inspects ws after an Execute run has finished,
@@ -180,13 +179,13 @@ func CollectExecutionOutput(ctx context.Context, ws ExecutionWorkspace, forkPoin
 	if forkPoint != "" {
 		commitsRange = forkPoint
 	}
-	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", commitsRange+"..HEAD")
+	commitsOut, err := gitutil.RunGit(ctx, ws.Path, "log", "--format=%H", "--reverse", commitsRange+"..HEAD")
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing commits for %s: %w", ws.Path, err)
 	}
 	commits = splitNonEmptyLines(commitsOut)
 
-	artifactsOut, err := runGit(ctx, ws.Path, "diff", "--name-only", ws.BaseBranch+"...HEAD")
+	artifactsOut, err := gitutil.RunGit(ctx, ws.Path, "diff", "--name-only", ws.BaseBranch+"...HEAD")
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing changed files for %s: %w", ws.Path, err)
 	}
@@ -209,31 +208,18 @@ func CollectExecutionPatch(ctx context.Context, ws ExecutionWorkspace, forkPoint
 	if forkPoint != "" {
 		commitsRange = forkPoint
 	}
-	commitsOut, err := runGit(ctx, ws.Path, "log", "--format=%H", "--reverse", commitsRange+"..HEAD")
+	commitsOut, err := gitutil.RunGit(ctx, ws.Path, "log", "--format=%H", "--reverse", commitsRange+"..HEAD")
 	if err != nil {
 		return nil, "", fmt.Errorf("listing commits for %s: %w", ws.Path, err)
 	}
 	commits = splitNonEmptyLines(commitsOut)
 
-	patchOut, err := runGit(ctx, ws.Path, "diff", ws.BaseBranch+"...HEAD")
+	patchOut, err := gitutil.RunGit(ctx, ws.Path, "diff", ws.BaseBranch+"...HEAD")
 	if err != nil {
 		return nil, "", fmt.Errorf("collecting patch for %s: %w", ws.Path, err)
 	}
 
 	return commits, patchOut, nil
-}
-
-// runGit runs `git <args...>` with dir as its working directory, returning
-// combined stdout+stderr so a failure's error message actually explains
-// what went wrong (git writes its errors to stderr).
-func runGit(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
 }
 
 func splitNonEmptyLines(s string) []string {

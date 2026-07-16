@@ -172,6 +172,24 @@ func (m *mockTaskStore) ListReviews(id string) ([]task.Review, error) {
 	return reviews, args.Error(1)
 }
 
+func (m *mockTaskStore) MarkPRMerged(id string) (task.Task, error) {
+	args := m.Called(id)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
+func (m *mockTaskStore) RecordPullRequest(id string, pr task.PullRequest) (task.Task, error) {
+	args := m.Called(id, pr)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
 type mockKnowledgeReader struct{ mock.Mock }
 
 func (m *mockKnowledgeReader) Get(conceptID string) (knowledge.Concept, error) {

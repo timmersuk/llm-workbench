@@ -268,7 +268,11 @@ func TestFileStore_MarkPRMerged_RequiresPullRequestSet(t *testing.T) {
 
 	_, err := store.MarkPRMerged("task-a")
 	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrWrongStage, "the error should distinguish 'wrong stage' from 'no PR recorded'")
+	// Wraps ErrWrongStage (Milestone 7 PR 3) like the stage guard above it —
+	// the task isn't in a state this action can be taken from either way, so
+	// both should map to the same 409 over HTTP rather than this one falling
+	// through to a 500.
+	require.ErrorIs(t, err, ErrWrongStage)
 
 	tk, err := store.Get("task-a")
 	require.NoError(t, err)

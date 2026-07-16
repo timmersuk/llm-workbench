@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // initRefTestRepo creates a real git repository with one commit on main
@@ -19,7 +21,7 @@ func initRefTestRepo(t *testing.T) string {
 
 	run := func(args ...string) {
 		t.Helper()
-		out, err := runGit(context.Background(), dir, args...)
+		out, err := gitutil.RunGit(context.Background(), dir, args...)
 		if err != nil {
 			t.Fatalf("git %v: %v (%s)", args, err, out)
 		}

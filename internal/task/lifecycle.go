@@ -182,7 +182,10 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 // its verdict externally. Moves Stage directly from "pr_review" to "merged".
 // Requires PullRequest to already be set (populated by RecordPullRequest,
 // below): a task shouldn't be markable "merged" if the system never
-// recorded a PR against it.
+// recorded a PR against it. Both guards wrap ErrWrongStage (Milestone 7 PR 3)
+// — the task isn't in a state this action can be taken from either way, so
+// both should map to the same 409, not one 409ing and the other falling
+// through to a 500 as "no pull_request recorded" originally did.
 func (s *FileStore) MarkPRMerged(id string) (Task, error) {
 	t, err := s.Get(id)
 	if err != nil {
@@ -192,7 +195,7 @@ func (s *FileStore) MarkPRMerged(id string) (Task, error) {
 		return Task{}, fmt.Errorf("marking PR merged for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
 	}
 	if t.PullRequest == nil {
-		return Task{}, fmt.Errorf("marking PR merged for %s: no pull_request recorded", id)
+		return Task{}, fmt.Errorf("marking PR merged for %s: no pull_request recorded: %w", id, ErrWrongStage)
 	}
 
 	t.Stage = StageMerged

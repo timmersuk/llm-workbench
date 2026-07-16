@@ -6,12 +6,12 @@ against the codebase by a second model pass, which caught two real
 mechanism gaps (both now folded in: the review-record reuse for
 `pr_review`'s reject actions, and the refspec-push approach for PR
 continuity across a rejection cycle — see "The push/PR/rejection
-mechanism" and "Schema changes"). **PR 1 and PR 2 scoped via follow-up
-`/grill-with-docs` sessions on 2026-07-16** — see "Phasing" below;
-`pr_review`/`StagePRReview` naming is now final, not a placeholder.
-Remaining per-section detail (the PR-comment tool, PR 3's routes/frontend)
-is still to be sharpened in further follow-up sessions the way Milestone
-6's PRs 3, 5, and 6 each were. **Knowledge-base
+mechanism" and "Schema changes"). **PR 1, PR 2, and PR 3 scoped via
+follow-up `/grill-with-docs` sessions on 2026-07-16** — see "Phasing"
+below; `pr_review`/`StagePRReview` naming is now final, not a placeholder.
+Remaining per-section detail (the PR-comment tool) is still to be
+sharpened in a further follow-up session the way Milestone 6's PRs 3, 5,
+and 6 each were. **Knowledge-base
 promotion, previously bundled into this milestone by Milestone 6's "Out of
 scope" section, has been split out** — see "Out
 of scope" below for why and where it goes instead.
@@ -261,10 +261,9 @@ requiring `Task.PullRequest != nil`.
 
 Delivered as sequential PRs, matching Milestone 6's cadence — each
 independently reviewable and live-verifiable, rather than one large diff.
-PR 1 and PR 2 are scoped in detail so far (both via `/grill-with-docs`
-sessions on 2026-07-16); PR 3 (routes + `pr_review` frontend) and later
-PRs will each get their own follow-up session the way Milestone 6's PRs 3,
-5, and 6 did.
+PR 1, PR 2, and PR 3 are scoped in detail so far (all via `/grill-with-docs`
+sessions on 2026-07-16); later PRs will each get their own follow-up
+session the way Milestone 6's PRs 3, 5, and 6 did.
 
 * **PR 1 — Stage machinery for the PR cycle.** Backend-only in spirit,
   plus the one mechanical rename that has to land in lockstep with the
@@ -396,6 +395,104 @@ PRs will each get their own follow-up session the way Milestone 6's PRs 3,
      normally write into a PR description by hand, no templating beyond
      that.
 
+* **PR 3 — HTTP routes and the `pr_review` frontend screen.** Scoped via
+  a `/grill-with-docs` session on 2026-07-16. Wraps PR 2's
+  `agentrunner.PushAndOpenPR`/`MarkPRMerged`/`FinalizeReview` reject path
+  over HTTP and gives a human somewhere to actually click "Push & Open
+  PR" for the first time — none of the underlying decision logic is new.
+
+  Binding decisions:
+  1. **`pr_review` has no agent conversation.** Unlike Review
+     (`StageConversationPanel` + Draft/Finalize), the milestone's own
+     mechanism section frames both `pr_review` resolutions ("mark as
+     merged", reject) as a human reading external GitHub state and
+     asserting a fact, not an agent judgment call — no LLM is in the
+     loop here. The screen is a plain human-action panel.
+  2. **Two new routes**: `POST .../pr/push` and `POST .../pr/merged`,
+     both empty-body (fully server-derived per PR 2 decision 7 / task
+     state) and both returning the plain updated `Task`. The reject path
+     (`needs_changes`/`rejected` from `pr_review`) needs **no new route**
+     at all — it's pure frontend wiring onto the existing
+     `POST .../review/finalize`, which `task.FinalizeReview` already
+     accepts from `StagePRReview` (PR 1/PR 2). The asymmetry between
+     this plain-`Task` response shape and `finalizeReviewResponse`'s
+     `{task, review}` wrapper is noted but deliberately not resolved here
+     — `pull_request` is already fully embedded in `Task`, so there's
+     nothing extra to carry the way a fresh review verdict is.
+  3. **`agentrunner.PushAndOpenPR`'s signature drops the caller-supplied
+     `baseBranch` parameter.** `ResolveWorkspace` (the shared checkout
+     PR 2's mechanism runs from) returns only a directory, unlike
+     `ExecutionWorkspace`/`ReviewWorkspace` which carry a `BaseBranch`
+     field — but `baseBranch` is fully derivable from that same
+     directory's current branch, the same fact `worktree.go` already
+     relies on internally (twice, independently). Rather than duplicate that
+     derivation a third time in `internal/api`, or leave it duplicated
+     in-package, **a new `internal/gitutil` package** (`RunGit`,
+     `CurrentBranch`) is introduced as the correct home for this
+     generic-git-plumbing primitive — it doesn't conceptually belong in
+     `agentrunner` (workspace resolution) any more than in `internal/api`
+     (HTTP handlers). `PushAndOpenPR` calls `gitutil.CurrentBranch(ctx,
+     dir)` itself instead of taking `baseBranch` as a parameter.
+     `runGit`'s two existing independent implementations
+     (`internal/agentrunner/worktree.go`, `internal/toolloop/tools_ref.go`)
+     are both migrated onto `gitutil.RunGit` in this same PR, rather than
+     leaving a third copy of the pattern behind.
+  4. **`MarkPRMerged`'s "no pull_request recorded" guard now wraps
+     `task.ErrWrongStage`** (`internal/task/lifecycle.go`), matching the
+     stage guard directly above it, instead of a bare `fmt.Errorf` that
+     fell through `writeMutationError`'s switch to a misleading 500.
+     Unreachable/untestable over HTTP before this PR (PR 1 shipped it
+     unit-tested-only); PR 3 is what exposes it through `POST .../pr/merged`
+     for the first time, so getting its status code right now matters.
+  5. **`TaskStore` gains `MarkPRMerged`/`RecordPullRequest`**, and
+     `NewRouter` gains a `GitHubPRClient` parameter — a real one built in
+     `cmd/server/main.go` via `agentrunner.NewGitHubPRClient()`, a fake in
+     tests. Every existing `NewRouter` call site updates mechanically.
+  6. **The `pr_review` screen is a single static layout**, not two
+     conditionally-rendered states: the execution summary/diff (mirroring
+     `ReviewPanel`), the "Push & Open PR" button, the PR link, the "Mark
+     as merged" button, and the reject control are all always present,
+     each enabled or disabled by whether `task.pull_request` is set —
+     not mounted/unmounted based on it. (Every task normally *does* pass
+     through `pr_review` with no PR yet, for however long it takes a
+     human to click "Push & Open PR" — pushing is deliberately not
+     automatic on arrival, the same `autoStart: false` reasoning as
+     Review itself; this is expected steady-state, not an edge case.)
+  7. **The reject control is a new, minimal component**, not a
+     parameterized `ReviewDraftForm` — a 2-option decision select
+     (`needs_changes`/`rejected`, omitting the `approved` option that's
+     invalid from `pr_review`) plus a notes textarea. Simpler than
+     `ReviewDraftForm`'s shape (no `propose_review` agent draft to
+     receive; always human-initiated), so reusing it would only mean
+     adding an "allowed decisions" prop to hide one option.
+  8. **New `frontend/src/PRReviewPanel.tsx`**, rendered by
+     `TaskDetailPanel` under a new `task.stage === 'pr_review'` branch.
+     `pr_review` is added to `TaskStage`, `TaskKanbanBoard`'s `STAGES`
+     array, and `STAGE_LABELS` (label: "PR Review"), positioned between
+     `review` and `merged`. **No "Revise Plan" stage-action button for
+     this stage** — the reject path already covers "go back"
+     (`needs_changes` → implementation, `rejected` → requirements), so a
+     parallel escape hatch would be redundant.
+  9. **`TaskDetailPanel`'s `merged`-stage terminal screen copy is fixed**
+     in this PR. It currently reads "Merge this branch by hand:
+     `<branch>`" — correct for the pre-Milestone-7 world where `merged`
+     (nee `complete`) was reached straight from an internal review
+     approval, but wrong now that `merged` is only ever reached via the
+     explicit "Mark as merged" action confirming a PR already merged on
+     GitHub externally. Updated to link `task.pull_request.url` instead.
+  10. **Testing follows `handleReviewDiff`'s existing precedent**: the
+      push route's handler test uses a real local bare repo (standing in
+      for `origin`) plus a fixture task/execution/review and a fake
+      `GitHubPRClient`, with `ProjectStore`/`TaskStore` mocked — the same
+      single test layer `handleReviewDiff` already uses for a handler
+      that calls `agentrunner` directly against real git, rather than
+      introducing a new narrower handler-only mock boundary.
+      `PushAndOpenPR`'s own branch logic (fresh push / refspec-onto-
+      existing / closed-PR-treated-as-fresh) stays covered exclusively by
+      `pr_test.go`; the handler test only proves the wiring (project/repo
+      resolution, task/execution/review lookups, response shape, 409 vs.
+      500 mapping) is correct, not every branch again.
+
 * **A later PR (not yet numbered/scoped in detail) — stage-conversation
   URL/actual-stage guard.** Surfaced by the same "trusts the caller" audit
   that motivated PR 1 binding decision 5: none of the five handlers in
@@ -425,18 +522,23 @@ PRs will each get their own follow-up session the way Milestone 6's PRs 3,
   subcommand/`--json` fields it wraps, pagination/truncation) — deferred
   to a per-section grill session the way Milestone 6 PR 6's seven binding
   decisions were sharpened separately from its initial scoping mention.
-* Exact HTTP routes and frontend surface for the new `pr_review` screen
-  and its actions — likely following `ReviewPanel`'s shape (Milestone 6
-  PR 3) but not designed here. This is PR 3 (see "Phasing"): the routes
-  wrap PR 2's `agentrunner.PushAndOpenPR`/`MarkPRMerged`/`FinalizeReview`
-  reject path, none of which need new backend logic to expose over HTTP.
-
 ## Follow-ups
 
 Tracked here so they aren't lost between PRs; doesn't block Milestone 7's
 remaining scope. (The stage-conversation URL/actual-stage guard finding
 from the same audit is scoped as a future PR in "Phasing" above instead —
 it's milestone-tracked work, not a standalone workbench Task.)
+
+* **A dedicated testing-practices re-review for this project.** Surfaced
+  while scoping PR 3's test strategy: precedent (`handleReviewDiff`'s
+  handler test exercising real git rather than a narrower mocked
+  boundary) was followed deliberately for PR 3 rather than re-litigated,
+  but "that's what the codebase already does" was flagged as too weak a
+  bar on its own — the same kind of gap a second-pass review (the Opus
+  pass that caught PR 2's real mechanism gaps during initial scoping)
+  is meant to catch before an unexamined pattern hardens into unquestioned
+  convention. Not resolved here; needs its own dedicated look at this
+  project's test-layering habits before they compound further.
 
 * **`FinalizeReview`'s execution-lookup assumption is coupled to
   `RecordExecution`'s guard, not independently enforced.** The same audit

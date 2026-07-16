@@ -1,17 +1,9 @@
 import { useEffect, useState } from 'react'
-import {
-  getProjectTask,
-  getTaskContext,
-  getTaskPlan,
-  listExecutions,
-  listReviews,
-  reviseRequirements,
-  revisePlan,
-  updateProjectTask,
-} from './api'
+import { getProjectTask, getTaskContext, getTaskPlan, listReviews, reviseRequirements, revisePlan, updateProjectTask } from './api'
 import { ExecutePanel } from './ExecutePanel'
 import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
+import { PRReviewPanel } from './PRReviewPanel'
 import { ReviewPanel } from './ReviewPanel'
 import type { Review, Task, TaskContext, TaskPlan, TaskStatus } from './types'
 
@@ -34,12 +26,13 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   const [plan, setPlan] = useState<TaskPlan | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
   const [revising, setRevising] = useState(false)
-  // review/reviewBranch back the terminal "merged" screen: the latest
-  // verdict's notes and the execution branch left for the human to merge by
-  // hand. Loaded only at stage merged (see effect below), so a re-visited
-  // completed task re-reads them rather than relying on in-session state.
+  // review backs the terminal "merged" screen: the latest verdict's notes
+  // (the approving review from back at the review stage — merged never
+  // itself writes a new one). Loaded only at stage merged (see effect
+  // below), so a re-visited completed task re-reads it rather than relying
+  // on in-session state. The PR link that screen also shows comes straight
+  // off task.pull_request — already on hand, no extra fetch needed.
   const [review, setReview] = useState<Review | null>(null)
-  const [reviewBranch, setReviewBranch] = useState('')
 
   useEffect(() => {
     setContext(null)
@@ -57,7 +50,6 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
 
   useEffect(() => {
     setReview(null)
-    setReviewBranch('')
     if (task.stage !== 'merged') {
       return
     }
@@ -67,12 +59,6 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
         setReview(list.length > 0 ? list[list.length - 1] : null)
       })
       .catch(() => undefined) // no verdict readable — the confirmation still shows
-    listExecutions(projectId, task.id)
-      .then((r) => {
-        const list = r.executions ?? []
-        setReviewBranch(list.length > 0 ? list[list.length - 1].output.git_branch : '')
-      })
-      .catch(() => undefined) // no branch to surface — omit the merge hint
   }, [projectId, task.id, task.stage])
 
   async function handleStatusChange(status: TaskStatus) {
@@ -257,6 +243,12 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
         </div>
       )}
 
+      {task.stage === 'pr_review' && (
+        <div className="task-interview">
+          <PRReviewPanel projectId={projectId} taskId={task.id} task={task} onUpdated={(updatedTask) => setTask(updatedTask)} />
+        </div>
+      )}
+
       {(task.stage === 'implementation' || task.stage === 'review') && (
         <div className="stage-actions">
           <button type="button" disabled={revising} onClick={() => handleRevise(() => revisePlan(projectId, task.id))}>
@@ -269,9 +261,12 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
         <div className="task-complete">
           <h4>Review complete — {review?.decision ?? 'approved'}</h4>
           {review?.notes && <p>{review.notes}</p>}
-          {reviewBranch && (
+          {task.pull_request && (
             <p>
-              Merge this branch by hand: <code>{reviewBranch}</code>
+              Merged via{' '}
+              <a href={task.pull_request.url} target="_blank" rel="noopener noreferrer">
+                pull request #{task.pull_request.number}
+              </a>
             </p>
           )}
         </div>
