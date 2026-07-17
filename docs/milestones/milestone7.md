@@ -205,24 +205,8 @@ requiring `Task.PullRequest != nil`.
 ## Out of scope
 
 * **Knowledge-base promotion.** Split out of this milestone entirely
-  during scoping, once probing its purpose turned up that (a)
-  `data/knowledge/` doesn't have a single concept in it yet in this
-  workspace, and (b) this project's own durable knowledge — `CLAUDE.md`,
-  `docs/engineering conventions.md`, `CONTEXT.md`'s glossary, `docs/adr/`
-  — already works fine, hand-authored, entirely without touching
-  `internal/knowledge`. The purpose that *does* hold up: `data/knowledge/`
-  is for what doesn't belong in any single project's own docs/ADRs but
-  should inform any or all projects — a workspace-wide, cross-project
-  layer, structurally distinct from a per-repo ADR folder the way
-  Serena's memory tool defaults to per-project scoping with an explicit
-  `global/`-prefix opt-in for cross-project memories (a validating
-  reference, not a design to copy wholesale — Serena's `write_memory` has
-  no human-approval gate, which is too weak a bar for this system's
-  "humans own intent" invariant). Left deliberately unscoped and
-  unnumbered (no `milestone9.md` yet) rather than provisionally slotted
-  in, so a number doesn't imply a priority decision that hasn't been
-  made. Needs its own dedicated `/grill-with-docs` session once there's a
-  concrete answer to "what does this do that hand-written docs don't."
+  during scoping — deferred; tracked in
+  `docs/milestones/milestone-orphans.md`.
 * **Two related gaps, surfaced during this milestone's scoping but not
   fixed here** — both real, both flagged so they aren't lost. Deferred;
   tracked in `docs/milestones/milestone-orphans.md` (no repo auto-clone in

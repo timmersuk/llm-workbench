@@ -14,12 +14,16 @@ out with two open sections (its own "Follow-ups", and two items nested in
 its "Out of scope") that had no future milestone or backlog task attached —
 the same pattern an audit then found repeated in Milestones 2, 3, 4, and 5.
 
-Deliberately excluded: **Milestone 6's knowledge-base promotion item**.
-Unlike everything below, it isn't a silent drop — M6 deferred it to M7,
-and M7's own scoping explicitly re-examined and re-deferred it again,
-on the record, pending its own dedicated `/grill-with-docs` session. It's
-open, but continuously and visibly tracked, so it stays where it is
-rather than being swept in here.
+Milestone 6's knowledge-base promotion item was initially left out of this
+sweep on the theory that it wasn't a silent drop — M6 deferred it to M7,
+and M7's own scoping re-examined and re-deferred it again, on the record.
+That theory was wrong: checking for a backlog task stub the way
+`git-backed-storage`/`resumable-chat-streams`/`human-executor` each have
+found none — the item only ever existed as each milestone doc pointing at
+the next one (M6 → "deferred to M7", M7 → "needs its own session", M8 →
+"still `docs/milestones/milestone7.md`"), a chain with no anchor at the
+end. Structurally identical to M4's `ask_question` tool below. Swept in
+here for the same reason.
 
 ---
 
@@ -81,6 +85,33 @@ Already has a backlog stub:
 `data/projects/llm-workbench/tasks/human-executor/task.yaml`
 (`status: draft`, `stage: requirements`, created 2026-07-09). Never
 scheduled into any milestone or PR since.
+
+## From Milestone 6 — Knowledge-base promotion
+
+Folding a completed task's learnings into the Knowledge layer
+(`internal/knowledge`). `internal/knowledge/knowledge.go` is deliberately
+read-only today (`FileReader.Get(conceptID)` only, doc comment: "no
+Create/Update/List/index") and `docs/knowledge schema v0.md` §6 confirms
+no Go-side store exists yet — promotion needs a write path that doesn't
+exist.
+
+Milestone 7 re-examined this further: `data/knowledge/` doesn't have a
+single concept in it yet in this workspace, and this project's own durable
+knowledge (`CLAUDE.md`, `docs/engineering conventions.md`, `CONTEXT.md`'s
+glossary, `docs/adr/`) already works fine, hand-authored, without touching
+`internal/knowledge`. The purpose that does hold up: `data/knowledge/` is
+for what doesn't belong in any single project's own docs/ADRs but should
+inform any or all projects — a workspace-wide, cross-project layer,
+structurally distinct from a per-repo ADR folder (Serena's memory tool is
+a validating reference here, not a design to copy wholesale — its
+`write_memory` has no human-approval gate, too weak a bar for this
+system's "humans own intent" invariant).
+
+No backlog task stub exists for this — like the `ask_question` tool
+below, it was named across three milestone docs in a row (M6, M7, M8) and
+never given one. Needs its own dedicated `/grill-with-docs` session once
+there's a concrete answer to "what does this do that hand-written docs
+don't."
 
 ## From Milestone 7 — Testing-practices re-review
 

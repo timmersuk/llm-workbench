@@ -276,12 +276,8 @@ not replacing it.
   Review, which only extends machinery Milestones 4 and 5 already
   shipped. Deferred to Milestone 7 (`docs/milestones/milestone7.md`).
 * **Knowledge-base promotion** (folding a completed task's learnings into
-  the Knowledge layer). `internal/knowledge/knowledge.go` is deliberately
-  read-only today (`FileReader.Get(conceptID)` only, doc comment: "no
-  Create/Update/List/index") and `docs/knowledge schema v0.md` §6
-  confirms no Go-side store exists yet. Promotion needs a write path that
-  doesn't exist, the same reason merge is deferred. Deferred to
-  Milestone 7.
+  the Knowledge layer) — deferred; tracked in
+  `docs/milestones/milestone-orphans.md`.
 
 ## Phasing
 

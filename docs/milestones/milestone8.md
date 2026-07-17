@@ -317,8 +317,10 @@ standalone `cmd/modelprobe` qualification harness.
   `docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md`. Now tracked
   as a task for the deferred hardening pass:
   `data/projects/llm-workbench/tasks/bash-os-sandboxing/`.
-* **Merge automation and knowledge-base promotion** — unrelated to this
-  milestone's scope; still `docs/milestones/milestone7.md`.
+* **Merge automation** — unrelated to this milestone's scope. **✅
+  Resolved — Milestone 7** (the Push & Open PR mechanism, PRs 1-3).
+* **Knowledge-base promotion** — unrelated to this milestone's scope;
+  deferred, tracked in `docs/milestones/milestone-orphans.md`.
 
 ## Open questions — resolved during the grill/spike (2026-07-10/11)
 
