@@ -22,6 +22,8 @@ type fakeGitHubPRClient struct {
 	createErr   error
 	state       string
 	stateErr    error
+	comments    PRCommentsYAML
+	commentsErr error
 }
 
 func (f *fakeGitHubPRClient) Create(_ context.Context, _, _, _, _, _ string) (string, int, error) {
@@ -49,6 +51,13 @@ func (f *fakeGitHubPRClient) State(_ context.Context, _ string, _ int) (string, 
 		return "OPEN", nil
 	}
 	return f.state, nil
+}
+
+func (f *fakeGitHubPRClient) Comments(_ context.Context, _ string, _ int) (PRCommentsYAML, error) {
+	if f.commentsErr != nil {
+		return "", f.commentsErr
+	}
+	return f.comments, nil
 }
 
 // initBareRemote creates a bare git repo standing in for `origin`, and

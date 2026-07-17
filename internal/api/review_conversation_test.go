@@ -134,7 +134,7 @@ func TestBuildRejectedReviewContext_NoReviewsYet_ReturnsEmpty(t *testing.T) {
 	_, err := store.Create(task.Task{ID: "task-c", Title: "C"})
 	require.NoError(t, err)
 
-	addendum, err := buildRejectedReviewContext(store, "task-c")
+	addendum, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "task-c"}, "")
 	require.NoError(t, err)
 	assert.Empty(t, addendum)
 }
@@ -145,7 +145,7 @@ func TestBuildRejectedReviewContext_LatestApproved_ReturnsEmpty(t *testing.T) {
 	_, err := store.FinalizeReview("task-d", task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: "looks good"})
 	require.NoError(t, err)
 
-	addendum, err := buildRejectedReviewContext(store, "task-d")
+	addendum, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "task-d"}, "")
 	require.NoError(t, err)
 	assert.Empty(t, addendum)
 }
@@ -156,17 +156,47 @@ func TestBuildRejectedReviewContext_LatestRejected_IncludesNotesAndBranch(t *tes
 	_, err := store.FinalizeReview("task-e", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "wrong requirements entirely"})
 	require.NoError(t, err)
 
-	addendum, err := buildRejectedReviewContext(store, "task-e")
+	addendum, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "task-e"}, "")
 	require.NoError(t, err)
 	assert.Contains(t, addendum, "wrong requirements entirely")
 	assert.Contains(t, addendum, "task-exec/task-e/exec-001")
-	assert.Contains(t, addendum, "no bash or ref-aware tools")
+	assert.Contains(t, addendum, "read_file_at_ref")
 }
 
 func TestBuildRejectedReviewContext_InvalidTaskID_PropagatesError(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
 
-	_, err := buildRejectedReviewContext(store, "../evil")
+	_, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "../evil"}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing reviews")
+}
+
+// TestBuildRejectedReviewContext_LatestRejectedWithOpenPR_WritesCommentsFile
+// is the end-to-end proof for docs/adr/0015's rejected → Requirements path:
+// when the task has an open PR, the addendum points at a real file under the
+// shared checkout containing the fetched (fake) PR comments.
+func TestBuildRejectedReviewContext_LatestRejectedWithOpenPR_WritesCommentsFile(t *testing.T) {
+	store := task.NewFileStore(t.TempDir())
+	seedReviewableTask(t, store, "task-f")
+	_, err := store.FinalizeReview("task-f", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "needs a rethink"})
+	require.NoError(t, err)
+
+	workspace := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, os.MkdirAll(workspace, 0o755))
+	gitRun(t, workspace, "init", "-q")
+
+	prClient := &fakeGitHubPRClient{comments: agentrunner.PRCommentsYAML("- kind: comment\n  author: dana\n  body: please reconsider the approach\n")}
+	tk := task.Task{ID: "task-f", PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7}}
+
+	addendum, err := buildRejectedReviewContext(context.Background(), store, prClient, tk, workspace)
+	require.NoError(t, err)
+	assert.Contains(t, addendum, ".llm-workbench/pr-comments/task-f.yaml")
+
+	content, err := os.ReadFile(prCommentsRequirementsPath(workspace, "task-f"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "please reconsider the approach")
+
+	exclude, err := os.ReadFile(filepath.Join(workspace, ".git", "info", "exclude"))
+	require.NoError(t, err)
+	assert.Contains(t, string(exclude), ".llm-workbench/pr-comments")
 }

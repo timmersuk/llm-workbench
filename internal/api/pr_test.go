@@ -27,6 +27,8 @@ type fakeGitHubPRClient struct {
 	createURL   string
 	createErr   error
 	state       string
+	comments    agentrunner.PRCommentsYAML
+	commentsErr error
 }
 
 func (f *fakeGitHubPRClient) Create(_ context.Context, _, _, _, _, _ string) (string, int, error) {
@@ -46,6 +48,13 @@ func (f *fakeGitHubPRClient) State(_ context.Context, _ string, _ int) (string, 
 		return "OPEN", nil
 	}
 	return f.state, nil
+}
+
+func (f *fakeGitHubPRClient) Comments(_ context.Context, _ string, _ int) (agentrunner.PRCommentsYAML, error) {
+	if f.commentsErr != nil {
+		return "", f.commentsErr
+	}
+	return f.comments, nil
 }
 
 // initBareRemoteForPush wires a local bare repo as dir's "origin" remote — a
