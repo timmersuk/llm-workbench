@@ -1,17 +1,19 @@
 # Milestone 7 — Merge and PR Cycle
 
-**Status: Scoping (2026-07-16)** — general shape scoped via a
+**Status: In progress (2026-07-16)** — general shape scoped via a
 `/grill-with-docs` session on 2026-07-15, then independently reviewed
 against the codebase by a second model pass, which caught two real
 mechanism gaps (both now folded in: the review-record reuse for
 `pr_review`'s reject actions, and the refspec-push approach for PR
 continuity across a rejection cycle — see "The push/PR/rejection
 mechanism" and "Schema changes"). **PR 1, PR 2, and PR 3 scoped via
-follow-up `/grill-with-docs` sessions on 2026-07-16** — see "Phasing"
-below; `pr_review`/`StagePRReview` naming is now final, not a placeholder.
-Remaining per-section detail (the PR-comment tool) is still to be
-sharpened in a further follow-up session the way Milestone 6's PRs 3, 5,
-and 6 each were. **Knowledge-base
+follow-up `/grill-with-docs` sessions on 2026-07-16 and all three shipped
+the same day** (#30, #31, #32) — see "Phasing" below;
+`pr_review`/`StagePRReview` naming is final, not a placeholder. **PR 4
+scoped via a further `/grill-with-docs` session on 2026-07-16**, not yet
+implemented — see "Phasing" below and
+`docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md`.
+**Knowledge-base
 promotion, previously bundled into this milestone by Milestone 6's "Out of
 scope" section, has been split out** — see "Out
 of scope" below for why and where it goes instead.
@@ -265,7 +267,7 @@ PR 1, PR 2, and PR 3 are scoped in detail so far (all via `/grill-with-docs`
 sessions on 2026-07-16); later PRs will each get their own follow-up
 session the way Milestone 6's PRs 3, 5, and 6 did.
 
-* **PR 1 — Stage machinery for the PR cycle.** Backend-only in spirit,
+* **PR 1 — Stage machinery for the PR cycle. ✅ Shipped (#30).** Backend-only in spirit,
   plus the one mechanical rename that has to land in lockstep with the
   frontend. Proven the way Milestone 6 PR 1 proved `RecordReview` before
   any UI existed: construct a fixture task already in `StagePRReview` and
@@ -323,7 +325,7 @@ session the way Milestone 6's PRs 3, 5, and 6 did.
      end-to-end until then, but directly unit-testable against a fixture
      task with `PullRequest` set by hand.
 
-* **PR 2 — Push & Open PR mechanism.** Scoped via a `/grill-with-docs`
+* **PR 2 — Push & Open PR mechanism. ✅ Shipped (#31).** Scoped via a `/grill-with-docs`
   session on 2026-07-16. Backend-mechanism-only, same as PR 1: no HTTP
   routes, no frontend — those are deferred to PR 3 (below). Proven by
   direct unit/integration tests against fixture tasks already at
@@ -395,7 +397,7 @@ session the way Milestone 6's PRs 3, 5, and 6 did.
      normally write into a PR description by hand, no templating beyond
      that.
 
-* **PR 3 — HTTP routes and the `pr_review` frontend screen.** Scoped via
+* **PR 3 — HTTP routes and the `pr_review` frontend screen. ✅ Shipped (#32).** Scoped via
   a `/grill-with-docs` session on 2026-07-16. Wraps PR 2's
   `agentrunner.PushAndOpenPR`/`MarkPRMerged`/`FinalizeReview` reject path
   over HTTP and gives a human somewhere to actually click "Push & Open
@@ -493,6 +495,70 @@ session the way Milestone 6's PRs 3, 5, and 6 did.
       resolution, task/execution/review lookups, response shape, 409 vs.
       500 mapping) is correct, not every branch again.
 
+* **PR 4 — PR review feedback delivered to reopened conversations.** Design
+  sharpened via a `/grill-with-docs` session on 2026-07-16; the decisions
+  below were binding on the implementation. Resolves the "Open questions"
+  item this milestone originally deferred — but not as originally framed:
+  scoping it in detail found that a new `toolloop.Tool` (this milestone's
+  original "GitHub PR-comment read tool" framing) would only ever be usable
+  by the `local` executor, silently leaving Claude Code/Codex conversations
+  with nothing. See `docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md`
+  for the full rationale.
+
+  Binding decisions:
+  1. **Covers all three GitHub feedback sources** — general conversation
+     comments, review summaries (verdict + body), and inline per-line code
+     comments — not a phased subset. `GitHubPRClient` (`internal/agentrunner/pr.go`)
+     gains a third method, `Comments(ctx, dir string, number int)
+     (PRCommentsYAML, error)` — a new named string type, not a bare
+     `string` — merging `gh pr view <number> --json comments,reviews` and
+     `gh api repos/{owner}/{repo}/pulls/{number}/comments` into one flat,
+     chronologically-sorted YAML list with a `kind:
+     comment|review|inline_comment` discriminant per entry (`path`/`line`/
+     `diff_hunk` present only on `inline_comment`) — one normalized shape
+     rather than three raw, differently-cased payloads the model would
+     otherwise have to reconcile itself.
+  2. **File placement, not a live tool call** (ADR 0015): for
+     needs_changes → Implementation, `pr-comments.yaml` at the execution
+     worktree root; for rejected → Requirements, `.llm-workbench/pr-comments/<taskID>.yaml`
+     under the shared checkout. Both `buildExecutionPrompt`
+     (`internal/api/execution.go`) and `buildRejectedReviewContext`
+     (`internal/api/stage_conversation.go`), each already gated on the
+     relevant review decision, gain a further condition on
+     `t.PullRequest != nil` before writing the file and appending a pointer
+     to its path — no PR number or tool-call instructions need to reach the
+     model at all, since it only ever needs a path to `read_file`.
+     `buildRejectedReviewContext`'s existing "you have no bash or
+     ref-aware tools to inspect it" text (stale since PR 6 shipped
+     `read_file_at_ref`/`list_files_at_ref`) is corrected in the same edit.
+  3. **`.git/info/exclude`, not the project's tracked `.gitignore`**, keeps
+     both file locations invisible to `git add -A`/`git status` — including
+     the window where an Execute run's own commit could otherwise sweep the
+     scratch file in before cleanup runs. Ensured idempotently by our own
+     code (e.g. at `ResolveWorkspace`/`ResolveExecutionWorkspace`) rather
+     than assumed present, and never written to the project's own tracked
+     `.gitignore` — that file is the human's repository content, not
+     something this milestone's tooling should be silently editing.
+  4. **Cleanup timing**: the execution-worktree file is deleted immediately
+     when `Execute` returns (success or failure), *before* the diff is
+     captured — a correctness requirement, not just tidiness, since the
+     model's own commit could otherwise carry it into the pushed PR. The
+     shared-checkout file is deleted once `FinalizeRequirements` succeeds
+     for that task, matching the whole-conversation (not per-turn) lifetime
+     the file needs to survive.
+  5. **A `gh` fetch failure fails the whole conversation-start/execute-start
+     request**, the same posture `buildRejectedReviewContext`'s existing
+     review/execution-lookup errors already take (decision 6, PR 5) — even
+     though this dependency is external and flakier than an internal store
+     read. Accepted for now; revisit toward graceful degradation only if
+     GitHub's reliability proves a recurring practical problem.
+  6. **Package boundary**: `agentrunner` owns talking to `gh` and shaping
+     the YAML (mirrors `Create`/`State`'s existing shape exactly, and the
+     established `fakeGitHubPRClient` test pattern extends for free);
+     `internal/api` only writes the returned value to disk at the right
+     path and wires the prompt addendum — matching PR 2 decision 6's
+     boundary.
+
 * **A later PR (not yet numbered/scoped in detail) — stage-conversation
   URL/actual-stage guard.** Surfaced by the same "trusts the caller" audit
   that motivated PR 1 binding decision 5: none of the five handlers in
@@ -518,10 +584,10 @@ session the way Milestone 6's PRs 3, 5, and 6 did.
 
 ## Open questions for whoever executes this milestone
 
-* Exact shape of the new PR-comment tool (name, arguments, what `gh`
-  subcommand/`--json` fields it wraps, pagination/truncation) — deferred
-  to a per-section grill session the way Milestone 6 PR 6's seven binding
-  decisions were sharpened separately from its initial scoping mention.
+None remaining — the PR-comment delivery mechanism (originally deferred
+here) was sharpened via a `/grill-with-docs` session on 2026-07-16; see
+PR 4 in "Phasing" above.
+
 ## Follow-ups
 
 Tracked here so they aren't lost between PRs; doesn't block Milestone 7's
