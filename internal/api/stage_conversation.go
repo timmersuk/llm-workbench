@@ -119,6 +119,23 @@ func stageTool(stage string) (chat.Tool, bool) {
 	}
 }
 
+// requireCurrentStage returns task.ErrWrongStage if stage — the URL's
+// stage path segment — doesn't match t's actual current Stage. stageTool()
+// only checks that stage names a Conversation stage at all; this is the
+// separate cross-check that the URL agrees with reality, closing the gap a
+// "trusts the caller" audit found (docs/milestones/milestone7.md's PR 5):
+// without it, a task at implementation could still be posted to via
+// .../stage/requirements/message and pollute that stale conversation. Not a
+// task.FileStore method like every other ErrWrongStage producer — this
+// guards nothing on disk, so it belongs here with stageTool()'s own
+// request-shape validation rather than in the domain package.
+func requireCurrentStage(t task.Task, stage string) error {
+	if t.Stage != stage {
+		return task.ErrWrongStage
+	}
+	return nil
+}
+
 // stageMessageRequest is the request body for handlePostStageMessage.
 // Executor selects which agentRunners entry produces the reply, defaulting
 // to defaultChatExecutor (chat.go) when empty — same convention as the
@@ -151,7 +168,18 @@ func handleGetStageConversation(projects ProjectStore, factory TaskStoreFactory)
 			return
 		}
 
-		conv, err := store.GetConversation(r.PathValue("taskId"), stage)
+		taskId := r.PathValue("taskId")
+		t, err := store.Get(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		if err := requireCurrentStage(t, stage); err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		conv, err := store.GetConversation(taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -289,6 +317,10 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 		if !ok {
 			return
 		}
+		if err := requireCurrentStage(target.task, stage); err != nil {
+			writeGetError(w, err)
+			return
+		}
 
 		writeEvent, ok := beginStageStream(w)
 		if !ok {
@@ -370,6 +402,10 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 		if !ok {
 			return
 		}
+		if err := requireCurrentStage(target.task, stage); err != nil {
+			writeGetError(w, err)
+			return
+		}
 
 		existing, err := target.store.GetConversation(taskId, stage)
 		if err != nil {
@@ -444,6 +480,16 @@ func handleDeleteStageMessage(projects ProjectStore, factory TaskStoreFactory, a
 		}
 
 		taskId := r.PathValue("taskId")
+		t, err := store.Get(taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		if err := requireCurrentStage(t, stage); err != nil {
+			writeGetError(w, err)
+			return
+		}
+
 		existing, err := store.GetConversation(taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
@@ -507,6 +553,10 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 		taskId := r.PathValue("taskId")
 		target, ok := resolveStageStreamTarget(w, projects, factory, agentRunners, req.Executor, r.PathValue("projectId"), taskId)
 		if !ok {
+			return
+		}
+		if err := requireCurrentStage(target.task, stage); err != nil {
+			writeGetError(w, err)
 			return
 		}
 
