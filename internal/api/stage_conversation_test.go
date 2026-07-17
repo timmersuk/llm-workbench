@@ -41,6 +41,7 @@ func TestHandleGetStageConversation_OK(t *testing.T) {
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).
 		Return(task.Conversation{Stage: task.StageRequirements, Messages: []task.ConversationMessage{{Role: "user", Content: "hi"}}}, nil)
 
@@ -56,6 +57,30 @@ func TestHandleGetStageConversation_OK(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	require.Len(t, got.Messages, 1)
 	assert.Equal(t, "hi", got.Messages[0].Content)
+}
+
+// TestHandleGetStageConversation_StageMismatch locks in the URL/actual-stage
+// guard (docs/milestones/milestone7.md PR 5): stageTool() only checks that
+// "requirements" names a real Conversation stage, not that it matches this
+// task's actual current stage — a task already at implementation must not
+// serve its now-stale requirements conversation.
+func TestHandleGetStageConversation_StageMismatch(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
+	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
+
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/conversation", nil)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	handleGetStageConversation(projects, fixedTaskStoreFactory(tasks))(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	tasks.AssertNotCalled(t, "GetConversation", mock.Anything, mock.Anything)
 }
 
 // newStageMessageWorkspace creates a temp reposRoot containing a single
@@ -103,13 +128,37 @@ func TestHandleStartStageConversation_UnknownExecutor(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestHandleStartStageConversation_StageMismatch locks in the URL/actual-stage
+// guard (docs/milestones/milestone7.md PR 5): a task already at implementation
+// must not start a fresh requirements conversation just because the URL
+// names a valid Conversation stage.
+func TestHandleStartStageConversation_StageMismatch(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+
+	runner := new(mockAgentRunner)
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/start", stageStartRequest{})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	handleStartStageConversation(projects, factory, new(mockKnowledgeReader),
+		map[string]agentrunner.AgentRunner{"local": runner}, reposRoot, nil)(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	runner.AssertNotCalled(t, "Run", mock.Anything, mock.Anything, mock.Anything)
+}
+
 // TestHandleStartStageConversation_RejectsWhenAlreadyStarted locks in the
 // 409 guard: starting is only meaningful once, before any real exchange —
 // a conversation that already has messages must continue via
 // handlePostStageMessage instead.
 func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage:    task.StageRequirements,
 		Messages: []task.ConversationMessage{{Role: "user", Content: "already talking"}},
@@ -138,7 +187,7 @@ func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 // with no synthetic "user" turn alongside it.
 func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Objective: "ship login"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements, Objective: "ship login"}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{Stage: task.StageRequirements}, nil)
 	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
 
@@ -209,10 +258,34 @@ func TestHandlePostStageMessage_ProjectNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestHandlePostStageMessage_StageMismatch locks in the URL/actual-stage
+// guard (docs/milestones/milestone7.md PR 5): a task already at
+// implementation must not accept a new requirements-stage turn just because
+// the URL names a valid Conversation stage.
+func TestHandlePostStageMessage_StageMismatch(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+
+	runner := new(mockAgentRunner)
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "hi"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	handlePostStageMessage(projects, factory, new(mockKnowledgeReader),
+		map[string]agentrunner.AgentRunner{"local": runner}, reposRoot, nil)(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	runner.AssertNotCalled(t, "Run", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "TASK-0001").Return(task.Task{
-		ID: "TASK-0001", Objective: "ship login", Constraints: []string{"must use existing auth service"},
+		ID: "TASK-0001", Stage: task.StageRequirements, Objective: "ship login", Constraints: []string{"must use existing auth service"},
 		References: task.References{Knowledge: []string{"team/style"}},
 	}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
@@ -268,7 +341,7 @@ func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 // message's content rather than reconstructed structurally.
 func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
@@ -346,7 +419,7 @@ func TestHandlePostStageMessage_SelectsPlanToolForPlanningStage(t *testing.T) {
 // below covers an explicitly-selected executor via the identical code path.
 func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
@@ -405,7 +478,7 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 // surfaced as a Draft proposal or persisted.
 func TestHandlePostStageMessage_IgnoresMismatchedToolCallName(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
@@ -467,7 +540,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 	require.NoError(t, os.Mkdir(filepath.Join(reposRoot, "logthing"), 0o755))
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
@@ -523,7 +596,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 
 func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesAsSSEError(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("AppendConversationMessages", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
 
 	knowledgeReader := new(mockKnowledgeReader)
@@ -564,7 +637,7 @@ func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesA
 // Workspace instead of aborting like a genuine misconfiguration would.
 func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
 
@@ -604,7 +677,7 @@ func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testin
 // reply with no record anything went wrong.
 func TestHandlePostStageMessage_PersistsErrorOnFailedTurn(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
@@ -663,12 +736,38 @@ func TestHandleDeleteStageMessage_InvalidIndex(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestHandleDeleteStageMessage_StageMismatch locks in the URL/actual-stage
+// guard (docs/milestones/milestone7.md PR 5): a task already at
+// implementation must not let a message be deleted from its now-stale
+// requirements conversation just because the URL names a valid Conversation
+// stage.
+func TestHandleDeleteStageMessage_StageMismatch(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
+	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
+
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages/0", nil)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	req.SetPathValue("index", "0")
+	w := httptest.NewRecorder()
+	handleDeleteStageMessage(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	tasks.AssertNotCalled(t, "GetConversation", mock.Anything, mock.Anything)
+}
+
 func TestHandleDeleteStageMessage_OutOfRangeIndex(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
@@ -699,6 +798,7 @@ func TestHandleDeleteStageMessage_RemovesOnlyThatMessageAndEvictsSessions(t *tes
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
@@ -750,12 +850,38 @@ func TestHandleRegenerateStageMessage_InvalidStage(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestHandleRegenerateStageMessage_StageMismatch locks in the URL/actual-stage
+// guard (docs/milestones/milestone7.md PR 5): a task already at
+// implementation must not regenerate a turn in its now-stale requirements
+// conversation just because the URL names a valid Conversation stage.
+func TestHandleRegenerateStageMessage_StageMismatch(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+
+	runner := new(mockAgentRunner)
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages/0/regenerate", stageRegenerateRequest{Content: "hi"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	req.SetPathValue("index", "0")
+	w := httptest.NewRecorder()
+	handleRegenerateStageMessage(projects, factory, new(mockKnowledgeReader),
+		map[string]agentrunner.AgentRunner{"local": runner}, reposRoot, nil)(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	runner.AssertNotCalled(t, "Run", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestHandleRegenerateStageMessage_RejectsNonUserIndex(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
@@ -783,7 +909,7 @@ func TestHandleRegenerateStageMessage_RejectsNonUserIndex(t *testing.T) {
 // everything from index onward with a fresh [user, assistant] pair.
 func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
@@ -845,7 +971,7 @@ func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t
 // alongside the edit.
 func TestHandleRegenerateStageMessage_EditUsesNewContent(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001"}, nil)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{

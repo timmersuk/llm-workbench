@@ -182,6 +182,7 @@ func TestRouter_GrillMeAndPlanningModeRoutesRegistered(t *testing.T) {
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetContext", "TASK-0001").Return(task.Context{Summary: "s"}, nil)
 	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "a"}, nil)
 	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{Stage: task.StageRequirements}, nil)

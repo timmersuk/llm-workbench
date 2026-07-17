@@ -22,6 +22,8 @@ func writeGetError(w http.ResponseWriter, err error) {
 	case errors.Is(err, task.ErrInvalidID), errors.Is(err, project.ErrInvalidID),
 		errors.Is(err, task.ErrInvalidStage), errors.Is(err, knowledge.ErrInvalidConceptID):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, task.ErrWrongStage):
+		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, fs.ErrNotExist):
 		http.Error(w, "not found", http.StatusNotFound)
 	default:

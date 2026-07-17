@@ -1,19 +1,19 @@
 # Milestone 7 — Merge and PR Cycle
 
-**Status: In progress (2026-07-16)** — general shape scoped via a
+**Status: In progress (2026-07-17)** — general shape scoped via a
 `/grill-with-docs` session on 2026-07-15, then independently reviewed
 against the codebase by a second model pass, which caught two real
 mechanism gaps (both now folded in: the review-record reuse for
 `pr_review`'s reject actions, and the refspec-push approach for PR
 continuity across a rejection cycle — see "The push/PR/rejection
-mechanism" and "Schema changes"). **PR 1, PR 2, and PR 3 scoped via
-follow-up `/grill-with-docs` sessions on 2026-07-16 and all three shipped
-the same day** (#30, #31, #32) — see "Phasing" below;
-`pr_review`/`StagePRReview` naming is final, not a placeholder. **PR 4
-scoped via a further `/grill-with-docs` session on 2026-07-16**, not yet
-implemented — see "Phasing" below and
-`docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md`.
-**Knowledge-base
+mechanism" and "Schema changes"). **PR 1, PR 2, PR 3, and PR 4 scoped via
+follow-up `/grill-with-docs` sessions on 2026-07-16 and all four shipped**
+(#30, #31, #32, #33) — see "Phasing" below; `pr_review`/`StagePRReview`
+naming is final, not a placeholder; PR 4's design rationale is in
+`docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md`. **PR 5
+(the stage-conversation URL/actual-stage guard) scoped via a further
+`/grill-with-docs` session on 2026-07-17**, not yet implemented — see
+"Phasing" below. **Knowledge-base
 promotion, previously bundled into this milestone by Milestone 6's "Out of
 scope" section, has been split out** — see "Out
 of scope" below for why and where it goes instead.
@@ -495,8 +495,8 @@ session the way Milestone 6's PRs 3, 5, and 6 did.
       resolution, task/execution/review lookups, response shape, 409 vs.
       500 mapping) is correct, not every branch again.
 
-* **PR 4 — PR review feedback delivered to reopened conversations.** Design
-  sharpened via a `/grill-with-docs` session on 2026-07-16; the decisions
+* **PR 4 — PR review feedback delivered to reopened conversations. ✅ Shipped (#33).**
+  Design sharpened via a `/grill-with-docs` session on 2026-07-16; the decisions
   below were binding on the implementation. Resolves the "Open questions"
   item this milestone originally deferred — but not as originally framed:
   scoping it in detail found that a new `toolloop.Tool` (this milestone's
@@ -559,28 +559,74 @@ session the way Milestone 6's PRs 3, 5, and 6 did.
      path and wires the prompt addendum — matching PR 2 decision 6's
      boundary.
 
-* **A later PR (not yet numbered/scoped in detail) — stage-conversation
-  URL/actual-stage guard.** Surfaced by the same "trusts the caller" audit
-  that motivated PR 1 binding decision 5: none of the five handlers in
-  `internal/api/stage_conversation.go` (`handlePostStageMessage`,
-  `handleStartStageConversation`, `handleGetStageConversation`,
-  `handleDeleteStageMessage`, `handleRegenerateStageMessage`)
-  cross-validate the URL's `stage` path segment against the task's actual
-  current `Stage` — only that it names *a* valid stage at all
-  (`stageTool()`'s check). A task at `implementation` can still be posted
-  to via `.../stage/requirements/message`: the handler proceeds with the
-  Requirements system prompt and `propose_context` tool, appends to that
-  stale conversation, and can return a live Draft proposal over SSE that no
-  longer means anything. Damage is bounded today (`FinalizeRequirements`/
-  `FinalizePlan`/`FinalizeReview` still independently gate on the real
-  `Stage` before anything can advance), but it lets a client pollute a
-  "dead" stage's conversation file indefinitely. Scope for whoever picks
-  this up: a 409 on mismatch, reusing `ErrWrongStage`
-  (`internal/task/lifecycle.go`) for consistency with `Finalize*`/
-  `Revise*`; confirm first that no frontend call site legitimately reads/
-  posts to a stage other than the task's current one (assumed true —
-  `GetConversation` is only ever called for the current stage from
-  `TaskDetailPanel.tsx` — but not yet verified against every call site).
+* **PR 5 — Stage-conversation URL/actual-stage guard.** Scoped via a
+  `/grill-with-docs` session on 2026-07-17. Surfaced by the same "trusts the
+  caller" audit that motivated PR 1 binding decision 5: none of the five
+  handlers in `internal/api/stage_conversation.go`
+  (`handlePostStageMessage`, `handleStartStageConversation`,
+  `handleGetStageConversation`, `handleDeleteStageMessage`,
+  `handleRegenerateStageMessage`) cross-validate the URL's `stage` path
+  segment against the task's actual current `Stage` — only that it names
+  *a* valid stage at all (`stageTool()`'s check). A task at `implementation`
+  can still be posted to via `.../stage/requirements/message`: the handler
+  proceeds with the Requirements system prompt and `propose_context` tool,
+  appends to that stale conversation, and can return a live Draft proposal
+  over SSE that no longer means anything. Damage is bounded today
+  (`FinalizeRequirements`/`FinalizePlan`/`FinalizeReview` still
+  independently gate on the real `Stage` before anything can advance), but
+  it lets a client pollute a "dead" stage's conversation file indefinitely.
+  Confirmed during scoping that no frontend call site legitimately reads/
+  posts to a stage other than the task's current one: `GrillMePanel`,
+  `PlanningModePanel`, and `ReviewPanel` each hardcode their `stage` prop to
+  a fixed literal, and `TaskDetailPanel.tsx` only mounts each panel when
+  `task.stage` matches — so the guard has no legitimate caller to
+  accommodate.
+
+  Binding decisions:
+  1. **Guards all five handlers uniformly, including the read-only
+     `handleGetStageConversation`.** No read/write carve-out — since no
+     legitimate caller ever requests a non-current stage, exempting the GET
+     would only mean a stale or buggy client could keep polling and
+     rendering a dead conversation silently, with no signal anything's
+     wrong.
+  2. **A new unexported helper in `internal/api/stage_conversation.go`**,
+     next to `stageTool()`, reusing the existing `task.ErrWrongStage`
+     sentinel (`internal/task/lifecycle.go`) rather than a parallel error.
+     Deliberately not a new exported `internal/task` function: every
+     existing `ErrWrongStage` producer guards a real state mutation inside
+     `FileStore` (`FinalizeReview`, `RecordExecution`, etc.); this check
+     guards nothing on disk — it's a pure API-layer cross-check between the
+     URL and the domain state, so it belongs with `stageTool()`'s own
+     request-shape validation rather than being added to the domain package
+     as if it were a store invariant.
+  3. **`handlePostStageMessage`/`handleStartStageConversation`/
+     `handleRegenerateStageMessage` check immediately after
+     `resolveStageStreamTarget`** (which already fetches the `Task`),
+     before `beginStageStream` — the same "every real-HTTP-status check
+     happens before headers are sent" rule `resolveStageStreamTarget`'s own
+     doc comment already states. `handleGetStageConversation`/
+     `handleDeleteStageMessage` each gain their own inline
+     `store.Get(taskId)` call instead — `resolveTaskStore`'s signature and
+     its other 14 call sites (list tasks, revise, mark-merged, get-context,
+     list-executions, list-reviews, create/update) stay untouched, since
+     none of them need a `Task` at all and widening the shared helper would
+     force an unnecessary extra disk read onto every one of them.
+  4. **`writeGetError` gains an `ErrWrongStage` → 409 case**, matching the
+     one `writeMutationError` already has — today `writeGetError`'s switch
+     doesn't handle `ErrWrongStage` and would fall through to a bare 500.
+     Both routes now map it identically; 409 is valid for a GET too (RFC
+     7231 doesn't reserve it for mutations — it means "conflicts with the
+     current state of the target resource," which fits a stale-stage read).
+  5. **The 409 body stays the bare `ErrWrongStage` sentinel text**, not a
+     wrapped error naming the actual/requested stage — matching every other
+     `ErrWrongStage` 409 this codebase already returns (`Finalize*`/
+     `Revise*`/`MarkPRMerged`), rather than special-casing richer detail for
+     this one call site.
+  6. **Testing follows the existing per-handler-per-scenario convention**
+     already in `stage_conversation_test.go` (the same pattern as its
+     existing `_InvalidStage` tests) — one new `_StageMismatch` test per
+     handler, five total, each constructing a fixture task at one stage and
+     posting/getting against a different (but validly-named) stage.
 
 ## Open questions for whoever executes this milestone
 
@@ -592,8 +638,8 @@ PR 4 in "Phasing" above.
 
 Tracked here so they aren't lost between PRs; doesn't block Milestone 7's
 remaining scope. (The stage-conversation URL/actual-stage guard finding
-from the same audit is scoped as a future PR in "Phasing" above instead —
-it's milestone-tracked work, not a standalone workbench Task.)
+from the same audit is scoped as PR 5 in "Phasing" above instead — it's
+milestone-tracked work, not a standalone workbench Task.)
 
 * **A dedicated testing-practices re-review for this project.** Surfaced
   while scoping PR 3's test strategy: precedent (`handleReviewDiff`'s
