@@ -97,7 +97,7 @@ func splitLines(s string) []string {
 func TestHandleStartExecution_UnknownExecutor(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{Executor: "does-not-exist"})
 	w := httptest.NewRecorder()
-	handleStartExecution(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), nil, "")(w, req)
+	handleStartExecution(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), nil, "", nil)(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -112,7 +112,7 @@ func TestHandleStartExecution_WrongStageRejected(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	runner.AssertNotCalled(t, "Execute", mock.Anything, mock.Anything, mock.Anything)
@@ -155,7 +155,7 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 
@@ -208,7 +208,7 @@ func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, task.ExecutionStatusFailure, recorded.Status)
@@ -375,7 +375,7 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 
@@ -385,6 +385,78 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 	assert.Contains(t, gotIn.SystemPrompt, "fix the widget")
 
 	assert.FileExists(t, filepath.Join(reposRoot, ".worktrees", "demo-repo", "exec-002", "wip.txt"))
+}
+
+// TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments
+// is the end-to-end proof for docs/adr/0015: a needs_changes retry with a PR
+// already open gets the PR's comments fetched and written into the worktree
+// before Execute runs (visible to Execute via the file the mock asserts
+// inside its own call), referenced in the prompt by name, and deleted again
+// immediately after Execute returns — before the response is sent, so it can
+// never leak into the pushed branch.
+func TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments(t *testing.T) {
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+	repoDir := filepath.Join(reposRoot, "demo-repo")
+
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "git %v: %s", args, out)
+		return string(out)
+	}
+	baseBranch := strings.TrimSpace(run("rev-parse", "--abbrev-ref", "HEAD"))
+
+	priorBranch := "task-exec/TASK-0001/exec-001"
+	run("checkout", "-b", priorBranch)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "wip.txt"), []byte("prior attempt\n"), 0o644))
+	run("add", ".")
+	run("commit", "-q", "-m", "prior attempt")
+	run("checkout", baseBranch)
+
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{
+		ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it",
+		PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/42", Number: 42, Branch: "task-exec/TASK-0001/exec-001"},
+	}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+		{ExecutionID: "exec-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
+	}, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: priorBranch}},
+	}, nil)
+	tasks.On("NextExecutionID", "TASK-0001").Return("exec-002", nil)
+	tasks.On("RecordExecution", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
+
+	prClient := &fakeGitHubPRClient{comments: "- kind: review\n  author: alice\n  state: CHANGES_REQUESTED\n  body: fix it\n"}
+
+	var worktreePath string
+	var fileExistedDuringExecute bool
+	runner := new(mockAgentRunner)
+	var gotIn agentrunner.ExecuteInput
+	runner.On("Execute", mock.Anything, mock.MatchedBy(func(in agentrunner.ExecuteInput) bool {
+		gotIn = in
+		return true
+	}), mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(agentrunner.ExecuteInput)
+			worktreePath = in.Workspace
+			_, err := os.Stat(filepath.Join(worktreePath, prCommentsExecutionFilename))
+			fileExistedDuringExecute = err == nil
+		}).
+		Return(nil, agentrunner.ExecuteOutput{Content: "done"}, nil)
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, prClient)(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	assert.True(t, fileExistedDuringExecute, "pr-comments.yaml must exist in the worktree while Execute is running")
+	assert.Contains(t, gotIn.SystemPrompt, prCommentsExecutionFilename)
+	assert.NoFileExists(t, filepath.Join(worktreePath, prCommentsExecutionFilename), "must be deleted immediately after Execute returns")
 }
 
 func TestHandleListExecutions_OK(t *testing.T) {

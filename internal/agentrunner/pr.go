@@ -24,6 +24,10 @@ type GitHubPRClient interface {
 	// State returns the PR's current state (e.g. "OPEN", "CLOSED",
 	// "MERGED").
 	State(ctx context.Context, dir string, number int) (state string, err error)
+	// Comments returns number's general comments, review summaries, and
+	// inline code comments merged into one normalized, chronologically-sorted
+	// YAML document (docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md).
+	Comments(ctx context.Context, dir string, number int) (PRCommentsYAML, error)
 }
 
 // NewGitHubPRClient returns the real GitHubPRClient, shelling out to the

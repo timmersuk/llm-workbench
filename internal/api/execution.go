@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -75,7 +76,7 @@ func executeEventToWire(ev agentrunner.ExecuteEvent) executeStreamEvent {
 // survives to write a record — the worktree/branch is left for manual
 // inspection and Stage simply never advances (docs/milestones/milestone5.md's
 // resolved decisions).
-func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req executionStartRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -159,7 +160,23 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 			return
 		}
 
-		systemPrompt := buildExecutionPrompt(t, plan, reviewFeedback)
+		// A needs_changes retry with a PR already open gets that PR's actual
+		// review feedback fetched once, up front, and written to a scratch
+		// file in the worktree — every executor already has a plain read_file
+		// tool, so this works uniformly without a bespoke live tool call per
+		// executor (docs/adr/0015). A fetch failure fails the whole request,
+		// the same posture buildRejectedReviewContext's own review/execution
+		// lookups already take.
+		var prCommentsPath string
+		if reviewFeedback != "" && t.PullRequest != nil {
+			prCommentsPath = filepath.Join(ws.Path, prCommentsExecutionFilename)
+			if err := writePRCommentsFile(r.Context(), prClient, ws.Path, prCommentsPath, t.PullRequest.Number); err != nil {
+				writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("fetching PR comments: %v", err)})
+				return
+			}
+		}
+
+		systemPrompt := buildExecutionPrompt(t, plan, reviewFeedback, prCommentsPath != "")
 
 		start := time.Now()
 		out, execErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
@@ -171,6 +188,17 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 			writeEvent(executeEventToWire(ev))
 			return nil
 		})
+
+		// Deleted immediately, before the diff is collected below — not just
+		// tidiness: the model's own commit (e.g. a broad `git add -A`) could
+		// otherwise sweep this scratch file into the pushed branch, on top of
+		// the .git/info/exclude protection writePRCommentsFile already
+		// arranged (docs/adr/0015).
+		if prCommentsPath != "" {
+			if err := removePRCommentsFile(prCommentsPath); err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Warn("removing scratch pr-comments file")
+			}
+		}
 
 		// Best-effort: the execution itself already succeeded or failed
 		// independently of whether this inspection works, so a failure here
@@ -302,8 +330,12 @@ func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, review
 // reviewFeedback is non-empty only for a needs_changes retry
 // (resolveReviewContinuation) — the workspace itself already contains the
 // prior attempt's code (ResolveExecutionWorkspace's forkFrom), so this only
-// needs to explain why, not restate what changed.
-func buildExecutionPrompt(t task.Task, plan task.Plan, reviewFeedback string) string {
+// needs to explain why, not restate what changed. hasPRComments is set only
+// when handleStartExecution wrote prCommentsExecutionFilename to the
+// worktree (a needs_changes retry with a PR already open) — the model only
+// needs the file's name to read it, not the PR number itself
+// (docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md).
+func buildExecutionPrompt(t task.Task, plan task.Plan, reviewFeedback string, hasPRComments bool) string {
 	var b strings.Builder
 
 	b.WriteString("You are executing an already-approved implementation plan for this task, autonomously and to completion. You are already on an isolated git branch inside the target repository — implement the plan, run relevant tests, and commit your work as you go. Do not ask questions; make reasonable decisions and proceed.\n\n")
@@ -326,6 +358,10 @@ func buildExecutionPrompt(t task.Task, plan task.Plan, reviewFeedback string) st
 
 	if reviewFeedback != "" {
 		fmt.Fprintf(&b, "\n## Continuing prior work\nYour workspace already contains your previous attempt at this plan — a reviewer looked at it and requested changes rather than approving it. Read what's already there before making changes, and address this feedback directly:\n%s\n", reviewFeedback)
+	}
+
+	if hasPRComments {
+		fmt.Fprintf(&b, "\nThe PR opened for this task's prior attempt has real reviewer feedback on GitHub (comments, review verdicts, and inline code comments), saved to %s at the root of your workspace — read it with your file-reading tool for the reviewer's own words, in addition to the summary above.\n", prCommentsExecutionFilename)
 	}
 
 	return b.String()

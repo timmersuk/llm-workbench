@@ -2,7 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/task"
@@ -50,9 +53,19 @@ func closeSessions(agentRunners map[string]agentrunner.AgentRunner, sessionKey s
 // stage conversation is conceptually done once finalized, so its agent
 // session (whichever executor produced it, if any) is torn down here —
 // deliberately not done on Revise, which resumes the same Conversation.
-func handleFinalizeRequirements(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+//
+// Also deletes the rejected-review PR-comments scratch file
+// (buildRejectedReviewContext, docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md)
+// if one was written — the whole-conversation lifetime that file needs to
+// survive ends exactly here. Best-effort: a missing repository or a deletion
+// failure is logged, not fatal to the response, the same posture
+// handleStartExecution's own diff-collection step already takes for a
+// step that's secondary to the actual state transition that already
+// succeeded.
+func handleFinalizeRequirements(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := resolveTaskStore(w, projects, factory, projectId)
 		if !ok {
 			return
 		}
@@ -70,6 +83,18 @@ func handleFinalizeRequirements(projects ProjectStore, factory TaskStoreFactory,
 			return
 		}
 		closeSessions(agentRunners, taskId+":"+task.StageRequirements)
+
+		if proj, projErr := projects.Get(projectId); projErr == nil {
+			if ws, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories); wsErr == nil && ws != "" {
+				if rmErr := removePRCommentsFile(prCommentsRequirementsPath(ws, taskId)); rmErr != nil {
+					logrus.WithError(rmErr).WithFields(logrus.Fields{"task": taskId}).Warn("removing scratch pr-comments file")
+				}
+			} else if wsErr != nil && !errors.Is(wsErr, agentrunner.ErrNoRepository) {
+				logrus.WithError(wsErr).WithFields(logrus.Fields{"task": taskId}).Warn("resolving workspace for pr-comments cleanup")
+			}
+		} else {
+			logrus.WithError(projErr).WithFields(logrus.Fields{"project": projectId}).Warn("resolving project for pr-comments cleanup")
+		}
 
 		ctx, err := store.GetContext(taskId)
 		if err != nil {

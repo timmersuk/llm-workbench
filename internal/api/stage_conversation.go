@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -268,7 +269,7 @@ func stageAssistantMessage(content string, proposed *chat.ToolCall, streamErr er
 // Draft itself (CONTEXT.md) — for the frontend to render for review; it is
 // not persisted or written to disk here, only Finalize (finalize.go) does
 // that.
-func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		tool, ok := stageTool(stage)
@@ -303,7 +304,7 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 		// configured repository is tolerated for Requirements/Planning (an
 		// empty workspace, a text-only turn); any other resolution failure
 		// aborts the turn as an SSE error, since headers are already sent.
-		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient)
 		if runErr != nil {
 			streamErr = runErr
 		} else if history, convErr := target.store.GetConversation(taskId, stage); convErr != nil {
@@ -349,7 +350,7 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 // since starting is only meaningful once, before any real exchange exists;
 // continuing an already-started conversation is handlePostStageMessage's
 // job.
-func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		tool, ok := stageTool(stage)
@@ -389,7 +390,7 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -482,7 +483,7 @@ type stageRegenerateRequest struct {
 // History built from what's kept is what the runner actually consults, per
 // RunInput.History's "only consulted when the runner has no live session"
 // contract (agentrunner/runner.go).
-func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		tool, ok := stageTool(stage)
@@ -537,7 +538,7 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -713,7 +714,7 @@ type stageRun struct {
 // against the execution's isolated worktree with bash enabled and the
 // execution's diff + verification steps appended to the prompt — so the agent
 // can actually run the tests and check the real change (Milestone 6).
-func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, t task.Task, stage string, knowledgeReader KnowledgeReader) (stageRun, error) {
+func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, t task.Task, stage string, knowledgeReader KnowledgeReader, prClient agentrunner.GitHubPRClient) (stageRun, error) {
 	systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
 
 	if stage != task.StageReview {
@@ -722,7 +723,7 @@ func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project
 			return stageRun{}, fmt.Errorf("resolving workspace: %w", err)
 		}
 		if stage == task.StageRequirements {
-			addendum, err := buildRejectedReviewContext(store, t.ID)
+			addendum, err := buildRejectedReviewContext(ctx, store, prClient, t, ws)
 			if err != nil {
 				return stageRun{}, err
 			}
@@ -756,10 +757,20 @@ func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project
 // long as the latest review is rejected, no new execution can have been
 // recorded since (executions are only created from StageImplementation,
 // unreachable again without a fresh FinalizePlan first).
-func buildRejectedReviewContext(store TaskStore, taskID string) (string, error) {
-	reviews, err := store.ListReviews(taskID)
+//
+// When t.PullRequest is set (a rejection recorded from pr_review, after a PR
+// was already pushed), this also fetches the PR's actual GitHub feedback and
+// writes it to a gitignored scratch file under workspace
+// (prCommentsRequirementsPath), referencing its path in the addendum —
+// docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md. A fetch
+// failure here fails the whole turn, the same posture this function's own
+// review/execution lookups already take (decision 6, M6 PR 5) — accepted for
+// an external dependency for now; revisit toward graceful degradation only if
+// GitHub's reliability proves a recurring practical problem.
+func buildRejectedReviewContext(ctx context.Context, store TaskStore, prClient agentrunner.GitHubPRClient, t task.Task, workspace string) (string, error) {
+	reviews, err := store.ListReviews(t.ID)
 	if err != nil {
-		return "", fmt.Errorf("listing reviews for %s: %w", taskID, err)
+		return "", fmt.Errorf("listing reviews for %s: %w", t.ID, err)
 	}
 	if len(reviews) == 0 {
 		return "", nil
@@ -769,18 +780,31 @@ func buildRejectedReviewContext(store TaskStore, taskID string) (string, error) 
 		return "", nil
 	}
 
-	executions, err := store.ListExecutions(taskID)
+	executions, err := store.ListExecutions(t.ID)
 	if err != nil {
-		return "", fmt.Errorf("listing executions for %s: %w", taskID, err)
+		return "", fmt.Errorf("listing executions for %s: %w", t.ID, err)
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n## This task was reopened after a rejected review\n")
 	fmt.Fprintf(&b, "Review notes: %s\n", latest.Notes)
 	if len(executions) > 0 {
-		branch := agentrunner.ExecutionBranchName(taskID, executions[len(executions)-1].ExecutionID)
-		fmt.Fprintf(&b, "The rejected attempt's branch was %s — for reference only; you have no bash or ref-aware tools to inspect it, so treat this as inert context, not something to act on.\n", branch)
+		branch := agentrunner.ExecutionBranchName(t.ID, executions[len(executions)-1].ExecutionID)
+		fmt.Fprintf(&b, "The rejected attempt's branch was %s — you have read_file_at_ref/list_files_at_ref to inspect its actual code (git refs only, not the working tree).\n", branch)
 	}
+
+	if t.PullRequest != nil && workspace != "" {
+		path := prCommentsRequirementsPath(workspace, t.ID)
+		if err := writePRCommentsFile(ctx, prClient, workspace, path, t.PullRequest.Number); err != nil {
+			return "", fmt.Errorf("fetching PR comments for %s: %w", t.ID, err)
+		}
+		rel, relErr := filepath.Rel(workspace, path)
+		if relErr != nil {
+			rel = path
+		}
+		fmt.Fprintf(&b, "The PR opened for this task has real reviewer feedback on GitHub (comments, review verdicts, and inline code comments), saved to %s — read it with your file-reading tool for the reviewer's own words, in addition to the summary above.\n", filepath.ToSlash(rel))
+	}
+
 	return b.String(), nil
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,7 +34,7 @@ func TestHandleFinalizeRequirements_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil, "")(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizeRequirementsResponse
@@ -54,7 +56,7 @@ func TestHandleFinalizeRequirements_WrongStage(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil, "")(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -70,9 +72,42 @@ func TestHandleFinalizeRequirements_InvalidBody(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil, "")(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestHandleFinalizeRequirements_RemovesPRCommentsScratchFileOnSuccess is
+// the end-to-end proof for docs/adr/0015's cleanup timing: the
+// rejected-review PR-comments scratch file (buildRejectedReviewContext)
+// survives exactly as long as the whole reopened Requirements conversation,
+// deleted only once FinalizeRequirements actually succeeds.
+func TestHandleFinalizeRequirements_RemovesPRCommentsScratchFileOnSuccess(t *testing.T) {
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+	workspace := filepath.Join(reposRoot, "demo-repo")
+
+	scratchPath := prCommentsRequirementsPath(workspace, "TASK-0001")
+	require.NoError(t, os.MkdirAll(filepath.Dir(scratchPath), 0o755))
+	require.NoError(t, os.WriteFile(scratchPath, []byte("- kind: comment\n"), 0o644))
+
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: repositories}, nil)
+	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
+
+	draft := task.RequirementsDraft{Objective: "ship login"}
+	updated := task.Task{ID: "TASK-0001", Stage: task.StagePlanning}
+	tasks := new(mockTaskStore)
+	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(updated, nil)
+	tasks.On("GetContext", "TASK-0001").Return(task.Context{}, nil)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/requirements/finalize", draft)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), nil, reposRoot)(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.NoFileExists(t, scratchPath)
 }
 
 func TestHandleFinalizePlan_OK(t *testing.T) {
@@ -136,7 +171,7 @@ func TestHandleFinalizeRequirements_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner}, "")(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	runner.AssertCalled(t, "CloseSession", "TASK-0001:"+task.StageRequirements)
@@ -157,7 +192,7 @@ func TestHandleFinalizeRequirements_DoesNotCloseSessionsWhenFinalizeFails(t *tes
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+	handleFinalizeRequirements(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner}, "")(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	runner.AssertNotCalled(t, "CloseSession", mock.Anything)
