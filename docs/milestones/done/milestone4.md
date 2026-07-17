@@ -54,10 +54,9 @@ supporting unit/integration test additions across
 
 ## Follow-ups (deferred, not blocking this milestone)
 
-* A structured `ask_question` tool (options + recommendation as a
-  first-class object, rendered as clickable choices) instead of prompt-only
-  discipline — the conversation schema is additive-friendly, no migration
-  needed when this lands.
+* A structured `ask_question` tool — deferred; tracked in
+  `docs/milestones/milestone-orphans.md`.
 * `chatclient-tool-loop` (`data/projects/llm-workbench/tasks/chatclient-tool-loop/`):
   give the local/`ChatClientRunner` path its own Read/Grep/Glob tool loop,
-  so codebase-grounded grilling isn't claude-code-only.
+  so codebase-grounded grilling isn't claude-code-only. **✅ Resolved —
+  Milestone 8 PR 2 (#18).**

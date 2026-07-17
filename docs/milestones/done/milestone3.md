@@ -19,4 +19,9 @@ synthesize it into `context.yaml`/`plan.yaml`; building the persistence
 now, with nothing downstream to consume it, would be over-specifying ahead
 of need.
 
+This streaming design is deliberately non-resumable — a dropped
+connection or refresh loses the in-progress response with no way to
+reconnect. Accepted debt, not a defect; tracked in
+`docs/milestones/milestone-orphans.md`.
+
 Notice that by this point you're still building infrastructure.

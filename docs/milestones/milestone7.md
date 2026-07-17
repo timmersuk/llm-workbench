@@ -1,6 +1,6 @@
 # Milestone 7 — Merge and PR Cycle
 
-**Status: In progress (2026-07-17)** — general shape scoped via a
+**Status: Complete (2026-07-17)** — general shape scoped via a
 `/grill-with-docs` session on 2026-07-15, then independently reviewed
 against the codebase by a second model pass, which caught two real
 mechanism gaps (both now folded in: the review-record reuse for
@@ -12,8 +12,9 @@ follow-up `/grill-with-docs` sessions on 2026-07-16 and all four shipped**
 naming is final, not a placeholder; PR 4's design rationale is in
 `docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md`. **PR 5
 (the stage-conversation URL/actual-stage guard) scoped via a further
-`/grill-with-docs` session on 2026-07-17**, not yet implemented — see
-"Phasing" below. **Knowledge-base
+`/grill-with-docs` session on 2026-07-17 and shipped the same day** (#34)
+— see "Phasing" below; **all five PRs are now shipped and Milestone 7 is
+complete.** **Knowledge-base
 promotion, previously bundled into this milestone by Milestone 6's "Out of
 scope" section, has been split out** — see "Out
 of scope" below for why and where it goes instead.
@@ -223,19 +224,9 @@ requiring `Task.PullRequest != nil`.
   made. Needs its own dedicated `/grill-with-docs` session once there's a
   concrete answer to "what does this do that hand-written docs don't."
 * **Two related gaps, surfaced during this milestone's scoping but not
-  fixed here** — both real, both flagged so they aren't lost, both need
-  their own follow-up session:
-  * The system presumes a project's repository is already cloned at
-    `AGENT_REPOS_ROOT` — `ResolveWorkspace`
-    (`internal/agentrunner/runner.go:227-233`) errors if the local
-    directory doesn't exist rather than cloning it. Whether the fix is a
-    `remote` field on `Project`, or only a one-time "clone if absent"
-    bootstrap, is still open.
-  * Nothing checks that the shared checkout is on `main`/up to date
-    before a GrillMe or Planning conversation runs against it. A task
-    built against a stale or wrong-branch checkout is guesswork as to
-    its validity against `main`. Needs at minimum a warning surfaced;
-    exact mechanism undecided.
+  fixed here** — both real, both flagged so they aren't lost. Deferred;
+  tracked in `docs/milestones/milestone-orphans.md` (no repo auto-clone in
+  `ResolveWorkspace`; no staleness check on the shared checkout).
 * **Auto-detecting PR status via polling, and any LLM-generated hint**
   toward "mark as merged" vs. "reopen implementation" vs. "reopen
   requirements" (e.g. recognizing an obviously-trivial fix and steering
@@ -263,9 +254,8 @@ requiring `Task.PullRequest != nil`.
 
 Delivered as sequential PRs, matching Milestone 6's cadence — each
 independently reviewable and live-verifiable, rather than one large diff.
-PR 1, PR 2, and PR 3 are scoped in detail so far (all via `/grill-with-docs`
-sessions on 2026-07-16); later PRs will each get their own follow-up
-session the way Milestone 6's PRs 3, 5, and 6 did.
+All five PRs are scoped and shipped, each via its own `/grill-with-docs`
+session (2026-07-16 for PRs 1-4, 2026-07-17 for PR 5).
 
 * **PR 1 — Stage machinery for the PR cycle. ✅ Shipped (#30).** Backend-only in spirit,
   plus the one mechanical rename that has to land in lockstep with the
@@ -559,8 +549,8 @@ session the way Milestone 6's PRs 3, 5, and 6 did.
      path and wires the prompt addendum — matching PR 2 decision 6's
      boundary.
 
-* **PR 5 — Stage-conversation URL/actual-stage guard.** Scoped via a
-  `/grill-with-docs` session on 2026-07-17. Surfaced by the same "trusts the
+* **PR 5 — Stage-conversation URL/actual-stage guard. ✅ Shipped (#34).**
+  Scoped via a `/grill-with-docs` session on 2026-07-17. Surfaced by the same "trusts the
   caller" audit that motivated PR 1 binding decision 5: none of the five
   handlers in `internal/api/stage_conversation.go`
   (`handlePostStageMessage`, `handleStartStageConversation`,
@@ -636,28 +626,9 @@ PR 4 in "Phasing" above.
 
 ## Follow-ups
 
-Tracked here so they aren't lost between PRs; doesn't block Milestone 7's
-remaining scope. (The stage-conversation URL/actual-stage guard finding
-from the same audit is scoped as PR 5 in "Phasing" above instead — it's
-milestone-tracked work, not a standalone workbench Task.)
-
-* **A dedicated testing-practices re-review for this project.** Surfaced
-  while scoping PR 3's test strategy: precedent (`handleReviewDiff`'s
-  handler test exercising real git rather than a narrower mocked
-  boundary) was followed deliberately for PR 3 rather than re-litigated,
-  but "that's what the codebase already does" was flagged as too weak a
-  bar on its own — the same kind of gap a second-pass review (the Opus
-  pass that caught PR 2's real mechanism gaps during initial scoping)
-  is meant to catch before an unexamined pattern hardens into unquestioned
-  convention. Not resolved here; needs its own dedicated look at this
-  project's test-layering habits before they compound further.
-
-* **`FinalizeReview`'s execution-lookup assumption is coupled to
-  `RecordExecution`'s guard, not independently enforced.** The same audit
-  confirmed `FinalizeReview`'s "no new execution can have been recorded
-  since Review" comment (`internal/task/lifecycle.go:127-132`) holds today
-  only because `RecordExecution` separately guards success writes to
-  `StageImplementation` (`internal/task/execution.go:180-198`) — true by
-  construction across two functions, not verified by either one. No bug
-  today; not yet worth its own task, but worth a second look if either
-  function changes. Noted here rather than filed, so it isn't forgotten.
+Both items originally tracked here (a dedicated testing-practices
+re-review; `FinalizeReview`'s coupling to `RecordExecution`'s guard) are
+deferred and tracked in `docs/milestones/milestone-orphans.md` instead, so
+Milestone 7 closes with nothing left unscoped. (The stage-conversation
+URL/actual-stage guard finding from the same audit was scoped as PR 5 in
+"Phasing" above and has shipped.)

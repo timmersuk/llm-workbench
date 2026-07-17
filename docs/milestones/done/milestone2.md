@@ -10,6 +10,7 @@ Now add:
 * create/edit project (basic CRUD)
 * persist to plain on-disk directory structure, nested under the owning
   project (data/projects/{projectId}/tasks/{taskId}/task.yaml) — not a
-  Git-backed repository (deferred; see the backlog task tracking that idea)
+  Git-backed repository (deferred — tracked in
+  `docs/milestones/milestone-orphans.md`)
 
 Still no AI. No in-app git operations.

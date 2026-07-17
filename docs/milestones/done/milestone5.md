@@ -93,14 +93,14 @@ to `review`.
 
 ## Follow-ups (deferred, not blocking this milestone)
 
-* **`human` executor type stays schema-only** — no automation, no UI.
-  Tracked at `data/projects/llm-workbench/tasks/human-executor/` for
-  whenever someone actually needs it; not built speculatively.
-* Review-stage UI (viewing/approving an execution's diff) — still out of
-  scope, same as v0.
+* **`human` executor type stays schema-only** — deferred; tracked in
+  `docs/milestones/milestone-orphans.md`.
+* Review-stage UI (viewing/approving an execution's diff) — **✅ Resolved —
+  Milestone 6 PR 3 (#26).**
 * `git-backed-storage` (workbench's own task/project YAML storage
   migrating to git) is unrelated to the git repos an execution commits
-  to — confirmed not a hidden dependency.
+  to — confirmed not a hidden dependency. Item itself deferred; tracked
+  in `docs/milestones/milestone-orphans.md`.
 * Two tasks in the same project executing concurrently against the same
   repo: allowed by construction (each execution gets its own worktree),
   not something we had to add explicit serialization for.
