@@ -107,11 +107,18 @@ a validating reference here, not a design to copy wholesale — its
 `write_memory` has no human-approval gate, too weak a bar for this
 system's "humans own intent" invariant).
 
-No backlog task stub exists for this — like the `ask_question` tool
-below, it was named across three milestone docs in a row (M6, M7, M8) and
-never given one. Needs its own dedicated `/grill-with-docs` session once
-there's a concrete answer to "what does this do that hand-written docs
-don't."
+**Resolved — scoped as Milestone 9 (2026-07-22).** The concrete answer to
+"what does this do that hand-written docs don't" turned out to be real
+technology-evaluation findings already stranded inside per-repo ADRs
+(`docs/adr/0010`, `docs/adr/0011`) that are reusable facts about tools, not
+decisions about this repo, plus a real second consumer already on record
+(`data/projects/agent-shell/tasks/concept-notes/`). See
+`docs/milestones/milestone9.md` for the full scoping — write path
+(`propose_knowledge`, human-approval-gated), read path (an unfiltered,
+whole-bundle query tool replacing the static-list-proposal idea considered
+during scoping), and the `KnowledgeStore` interface shape, validated against
+real external tools (llm-wiki-kit, Basic Memory, mem0, Cognee) rather than
+assumed. No longer an orphan.
 
 ## From Milestone 7 — Testing-practices re-review
 
@@ -136,16 +143,20 @@ if either function changes.
 
 ## From Milestone 7 — No repo auto-clone
 
-The system presumes a project's repository is already cloned at
-`AGENT_REPOS_ROOT` — `ResolveWorkspace`
-(`internal/agentrunner/runner.go:227-233`) errors if the local directory
-doesn't exist rather than cloning it. Whether the fix is a `remote` field
-on `Project`, or only a one-time "clone if absent" bootstrap, is still
-open.
+**Resolved — scoped as Milestone 8a (2026-07-22).** Flagged during an audit
+of what actually blocks MVP usability as one of only two orphans that are
+silent correctness risks inside the core loop, not deferred features —
+scoped together with "No staleness check on the shared checkout" below,
+since both live in the same `ResolveWorkspace` code path. See
+`docs/milestones/milestone8a.md`: lazy clone-if-absent, HTTPS-only, no new
+credential storage. No longer an orphan.
 
 ## From Milestone 7 — No staleness check on the shared checkout
 
-Nothing checks that the shared checkout is on `main`/up to date before a
-GrillMe or Planning conversation runs against it. A task built against a
-stale or wrong-branch checkout is guesswork as to its validity against
-`main`. Needs at minimum a warning surfaced; exact mechanism undecided.
+**Resolved — scoped as Milestone 8a (2026-07-22).** See
+`docs/milestones/milestone8a.md`: a new `Project.default_branch` (auto-
+determined via `gh repo view`) backs a **blocking** wrong-branch check at
+the worktree-fork point — the one place a wrong answer is expensive to
+undo — while behind-origin and dirty-working-tree stay advisory,
+surfaced both in the stage-conversation system prompt and a frontend
+banner. No longer an orphan.

@@ -768,7 +768,7 @@ func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project
 	systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
 
 	if stage != task.StageReview {
-		ws, err := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
+		ws, err := agentrunner.ResolveWorkspace(ctx, reposRoot, proj.Repositories)
 		if err != nil && !errors.Is(err, agentrunner.ErrNoRepository) {
 			return stageRun{}, fmt.Errorf("resolving workspace: %w", err)
 		}

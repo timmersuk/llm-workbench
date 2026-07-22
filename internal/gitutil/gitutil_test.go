@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,6 +82,27 @@ func TestEnsureGitExclude_FromLinkedWorktree_WritesToSharedCommonDir(t *testing.
 	content, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "pr-comments.yaml")
+}
+
+func TestClone_ClonesRealRepository(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "source-repo")
+	initTestRepo(t, src)
+
+	dest := filepath.Join(t.TempDir(), "cloned-repo")
+	require.NoError(t, Clone(context.Background(), src, dest))
+
+	content, err := os.ReadFile(filepath.Join(dest, "README.md"))
+	require.NoError(t, err)
+	// TrimSpace rather than exact equality: git's core.autocrlf can convert
+	// the checked-out line ending to \r\n on Windows, unrelated to whether
+	// Clone itself worked.
+	assert.Equal(t, "hello", strings.TrimSpace(string(content)))
+}
+
+func TestClone_FailureIsError(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "cloned-repo")
+	err := Clone(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), dest)
+	assert.Error(t, err)
 }
 
 func countOccurrences(haystack, needle string) int {

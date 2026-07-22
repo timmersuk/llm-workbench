@@ -69,7 +69,7 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 		return ExecutionWorkspace{}, fmt.Errorf("%w: execution id %q", ErrInvalidRepository, executionID)
 	}
 
-	base, err := ResolveWorkspace(reposRoot, repositories)
+	base, err := ResolveWorkspace(ctx, reposRoot, repositories)
 	if err != nil {
 		return ExecutionWorkspace{}, err
 	}
@@ -118,7 +118,7 @@ func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories 
 		return ExecutionWorkspace{}, fmt.Errorf("%w: execution id %q", ErrInvalidRepository, executionID)
 	}
 
-	base, err := ResolveWorkspace(reposRoot, repositories)
+	base, err := ResolveWorkspace(ctx, reposRoot, repositories)
 	if err != nil {
 		return ExecutionWorkspace{}, err
 	}

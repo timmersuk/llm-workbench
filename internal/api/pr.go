@@ -84,7 +84,7 @@ func handlePushPR(projects ProjectStore, factory TaskStoreFactory, reposRoot str
 			existingBranch = t.PullRequest.Branch
 		}
 
-		dir, err := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories)
+		dir, err := agentrunner.ResolveWorkspace(r.Context(), reposRoot, proj.Repositories)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resolving workspace: %v", err), http.StatusInternalServerError)
 			return

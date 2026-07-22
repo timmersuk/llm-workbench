@@ -14,8 +14,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
 // ErrNoRepository is returned by ResolveWorkspace when the project has no
@@ -26,6 +28,14 @@ var ErrNoRepository = errors.New("project has no configured repository")
 // repository identifier doesn't resolve to a valid, existing local
 // checkout under reposRoot.
 var ErrInvalidRepository = errors.New("invalid repository")
+
+// ErrCloneFailed is returned by ResolveWorkspace when a project's
+// repository has no existing local checkout and cloning one failed (e.g.
+// network unavailable, or no ambient git credential for a private repo).
+// Distinct from ErrInvalidRepository, which is about the repository
+// identifier itself being malformed or unsafe, not a clone attempt's
+// outcome.
+var ErrCloneFailed = errors.New("cloning repository failed")
 
 // ErrRunInProgress is returned by AgentRunner.Run when a run is already in
 // flight for the same SessionKey — only one run per session is allowed at
@@ -195,17 +205,77 @@ type AgentRunner interface {
 	CloseSession(sessionKey string)
 }
 
+// cloneRepository is indirected purely so tests can substitute a fake
+// clone (e.g. creating dest locally) without a real network call or git
+// subprocess — the same seam ClaudeRunner's lookPath/newClient provide
+// (claude_runner.go). Production always uses gitutil.Clone.
+var cloneRepository = gitutil.Clone
+
+// cloneLocks serializes concurrent ResolveWorkspace calls that would
+// otherwise race to clone the same workspace path — e.g. two stage
+// conversations for the same brand-new project's first messages arriving
+// close together. Keyed by the absolute workspace path.
+var cloneLocks sync.Map // map[string]*sync.Mutex
+
+// cloneIfAbsent clones repository (e.g. "github.com/timmersuk/llm-workbench")
+// into workspace over HTTPS, guarded by a per-path lock so two concurrent
+// callers resolving the same missing workspace don't race to clone it
+// twice. Re-checks existence after acquiring the lock in case a concurrent
+// caller already finished the clone while this one waited. No credential
+// handling of any kind — cloning relies entirely on whatever ambient git
+// credential setup (credential helper, cached PAT) the operator's machine
+// already has, the same trust model gitutil.RunGit operates at everywhere
+// else; a private repo with no working ambient credential simply fails to
+// clone, visibly.
+func cloneIfAbsent(ctx context.Context, root, workspace, repository string) error {
+	lockVal, _ := cloneLocks.LoadOrStore(workspace, &sync.Mutex{})
+	mu := lockVal.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if _, err := os.Stat(workspace); err == nil {
+		return nil // a concurrent caller already cloned it while we waited
+	}
+
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("creating repos root %s: %w", root, err)
+	}
+
+	url := "https://" + repository
+	if err := cloneRepository(ctx, url, workspace); err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrCloneFailed, repository, err)
+	}
+	return nil
+}
+
 // ResolveWorkspace derives a local filesystem workspace path from a
 // project's first configured repository identifier (e.g.
 // "github.com/timmersuk/llm-workbench"), by convention: the identifier's
 // last path segment joined under reposRoot (so a repo checked out as a
 // sibling directory of this workbench, e.g. "D:\projects\llm-workbench",
-// resolves correctly). The result is validated to exist as a directory and
-// to never escape reposRoot — this is the only place an AgentRunner's cwd
-// is decided, so a caller can never point an agent at an arbitrary path.
-func ResolveWorkspace(reposRoot string, repositories []string) (string, error) {
+// resolves correctly). If no local checkout exists yet, one is cloned
+// (over HTTPS, lazily, on this call) before proceeding — see
+// cloneIfAbsent. The result is validated to exist as a directory and to
+// never escape reposRoot — this is the only place an AgentRunner's cwd is
+// decided, so a caller can never point an agent at an arbitrary path.
+func ResolveWorkspace(ctx context.Context, reposRoot string, repositories []string) (string, error) {
 	if len(repositories) == 0 {
 		return "", ErrNoRepository
+	}
+
+	// Reject any ".."/"." path component in the raw identifier before
+	// path.Base cleans it away below. Previously a traversal attempt like
+	// "github.com/x/../escaped" harmlessly fell through to a "workspace
+	// doesn't exist" error once cleaned (path.Base already resolves ".."
+	// segments, so the cleaned form never actually escapes reposRoot) —
+	// but now that a missing workspace triggers a real clone attempt (a
+	// subprocess and a network call) rather than just erroring, a
+	// malformed identifier needs to be caught here, before it can reach
+	// that clone, not after.
+	for _, seg := range strings.Split(filepath.ToSlash(repositories[0]), "/") {
+		if seg == "." || seg == ".." {
+			return "", fmt.Errorf("%w: %q", ErrInvalidRepository, repositories[0])
+		}
 	}
 
 	segment := path.Base(repositories[0])
@@ -226,7 +296,16 @@ func ResolveWorkspace(reposRoot string, repositories []string) (string, error) {
 
 	info, err := os.Stat(workspace)
 	if err != nil {
-		return "", fmt.Errorf("%w: resolving workspace %s: %v", ErrInvalidRepository, workspace, err)
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: resolving workspace %s: %v", ErrInvalidRepository, workspace, err)
+		}
+		if err := cloneIfAbsent(ctx, root, workspace, repositories[0]); err != nil {
+			return "", err
+		}
+		info, err = os.Stat(workspace)
+		if err != nil {
+			return "", fmt.Errorf("%w: resolving workspace %s after clone: %v", ErrInvalidRepository, workspace, err)
+		}
 	}
 	if !info.IsDir() {
 		return "", fmt.Errorf("%w: %s is not a directory", ErrInvalidRepository, workspace)

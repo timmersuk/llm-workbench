@@ -85,7 +85,7 @@ func handleFinalizeRequirements(projects ProjectStore, factory TaskStoreFactory,
 		closeSessions(agentRunners, taskId+":"+task.StageRequirements)
 
 		if proj, projErr := projects.Get(projectId); projErr == nil {
-			if ws, wsErr := agentrunner.ResolveWorkspace(reposRoot, proj.Repositories); wsErr == nil && ws != "" {
+			if ws, wsErr := agentrunner.ResolveWorkspace(r.Context(), reposRoot, proj.Repositories); wsErr == nil && ws != "" {
 				if rmErr := removePRCommentsFile(prCommentsRequirementsPath(ws, taskId)); rmErr != nil {
 					logrus.WithError(rmErr).WithFields(logrus.Fields{"task": taskId}).Warn("removing scratch pr-comments file")
 				}
