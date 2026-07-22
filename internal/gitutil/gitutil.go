@@ -38,6 +38,17 @@ func CurrentBranch(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// Clone clones url into dest via `git clone url dest`. dest must not
+// already exist; dest's parent directory must. Run with dest's parent as
+// the working directory purely so RunGit has a valid, existing cwd — the
+// clone target is dest itself, given as an argument, not derived from cwd.
+func Clone(ctx context.Context, url, dest string) error {
+	if _, err := RunGit(ctx, filepath.Dir(dest), "clone", url, dest); err != nil {
+		return fmt.Errorf("cloning %s into %s: %w", url, dest, err)
+	}
+	return nil
+}
+
 // EnsureGitExclude idempotently adds any of patterns not already present to
 // dir's local, uncommitted .git/info/exclude — the .gitignore equivalent
 // that never becomes part of the repository's own tracked content. Callers
