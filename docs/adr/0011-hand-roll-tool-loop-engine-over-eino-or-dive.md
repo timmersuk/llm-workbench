@@ -7,7 +7,7 @@ hand-rolled, `github.com/cloudwego/eino`, and
 `github.com/deepnoodle-ai/dive` — scored against five criteria in priority
 order (client fidelity, shared-engine fit, MCP tool-sourcing, output
 parity, dependency weight), and to conclude with its own ADR naming the
-pick (`docs/milestones/milestone8.md`). That spike ran. We chose to
+pick (`docs/milestones/done/milestone8.md`). That spike ran. We chose to
 **hand-roll** the engine and **not** adopt either framework, recording
 `eino` as the designated fallback should orchestration needs later outgrow
 a hand-rolled loop.

@@ -123,7 +123,7 @@ func stageTool(stage string) (chat.Tool, bool) {
 // stage path segment — doesn't match t's actual current Stage. stageTool()
 // only checks that stage names a Conversation stage at all; this is the
 // separate cross-check that the URL agrees with reality, closing the gap a
-// "trusts the caller" audit found (docs/milestones/milestone7.md's PR 5):
+// "trusts the caller" audit found (docs/milestones/done/milestone7.md's PR 5):
 // without it, a task at implementation could still be posted to via
 // .../stage/requirements/message and pollute that stale conversation. Not a
 // task.FileStore method like every other ErrWrongStage producer — this

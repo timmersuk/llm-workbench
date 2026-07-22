@@ -14,7 +14,7 @@ import (
 )
 
 // fakeGitHubPRClient stands in for the real `gh` CLI in tests — no network
-// or GitHub auth involved, per docs/milestones/milestone7.md PR 2 decision
+// or GitHub auth involved, per docs/milestones/done/milestone7.md PR 2 decision
 // 4 (GitHubPRClient exists specifically to make this fakeable).
 type fakeGitHubPRClient struct {
 	createCalls int

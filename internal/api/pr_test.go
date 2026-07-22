@@ -20,7 +20,7 @@ import (
 )
 
 // fakeGitHubPRClient stands in for the real `gh` CLI in tests, mirroring
-// agentrunner's own test double of the same shape (docs/milestones/milestone7.md
+// agentrunner's own test double of the same shape (docs/milestones/done/milestone7.md
 // PR 2 decision 4) — no network or GitHub auth involved.
 type fakeGitHubPRClient struct {
 	createCalls int

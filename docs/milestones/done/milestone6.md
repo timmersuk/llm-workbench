@@ -274,7 +274,7 @@ not replacing it.
   by hand. Building merge automation now would mean inventing
   conflict-handling policy with no existing code to build on, unlike
   Review, which only extends machinery Milestones 4 and 5 already
-  shipped. Deferred to Milestone 7 (`docs/milestones/milestone7.md`).
+  shipped. Deferred to Milestone 7 (`docs/milestones/done/milestone7.md`).
 * **Knowledge-base promotion** (folding a completed task's learnings into
   the Knowledge layer) — deferred; tracked in
   `docs/milestones/milestone-orphans.md`.

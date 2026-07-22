@@ -12,7 +12,7 @@ import (
 )
 
 // GitHubPRClient is the seam between PushAndOpenPR and the real `gh` CLI,
-// per docs/milestones/milestone7.md PR 2: both operations are always used
+// per docs/milestones/done/milestone7.md PR 2: both operations are always used
 // together on this one path, so a single fake implements both for tests
 // rather than wiring two independent function values through the call
 // chain. The production implementation (NewGitHubPRClient) shells to real
@@ -33,7 +33,7 @@ type GitHubPRClient interface {
 // NewGitHubPRClient returns the real GitHubPRClient, shelling out to the
 // `gh` CLI. Relies entirely on ambient `gh auth`/git credentials already
 // configured on the host machine — never stores, requests, or handles a
-// credential itself (docs/milestones/milestone7.md's "Out of scope").
+// credential itself (docs/milestones/done/milestone7.md's "Out of scope").
 func NewGitHubPRClient() GitHubPRClient {
 	return realGitHubPRClient{}
 }
@@ -92,7 +92,7 @@ func parsePRNumber(url string) (int, error) {
 }
 
 // PushAndOpenPR is the "Push & Open PR" action's mechanism
-// (docs/milestones/milestone7.md): pushes newBranch and, the first time
+// (docs/milestones/done/milestone7.md): pushes newBranch and, the first time
 // this is called for a task, opens a PR for it via client.Create. dir is
 // the shared checkout (ResolveWorkspace's return value), not a resolved
 // execution/review worktree — a branch created via `git worktree add -b`

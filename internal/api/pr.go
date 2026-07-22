@@ -9,7 +9,7 @@ import (
 )
 
 // handlePushPR is the "Push & Open PR" action for pr_review
-// (docs/milestones/milestone7.md PR 3): pushes the task's latest execution
+// (docs/milestones/done/milestone7.md PR 3): pushes the task's latest execution
 // branch to the project's GitHub remote and opens (or continues) a PR via
 // agentrunner.PushAndOpenPR, then persists the result (task.RecordPullRequest).
 // 409 if the task isn't currently at pr_review — checked explicitly before
@@ -109,7 +109,7 @@ func handlePushPR(projects ProjectStore, factory TaskStoreFactory, reposRoot str
 }
 
 // prTitle mirrors TaskKanbanBoard.tsx's existing task.title || task.id
-// fallback (docs/milestones/milestone7.md PR 2 decision 7).
+// fallback (docs/milestones/done/milestone7.md PR 2 decision 7).
 func prTitle(t task.Task) string {
 	if t.Title != "" {
 		return t.Title

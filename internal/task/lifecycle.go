@@ -176,7 +176,7 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 }
 
 // MarkPRMerged is the human "Mark as merged" action for pr_review
-// (docs/milestones/milestone7.md): a human assertion that the PR was merged
+// (docs/milestones/done/milestone7.md): a human assertion that the PR was merged
 // on GitHub, with no polling and no review-record write — there's no
 // approved/rejected/needs_changes decision being made, the PR already got
 // its verdict externally. Moves Stage directly from "pr_review" to "merged".
@@ -207,7 +207,7 @@ func (s *FileStore) MarkPRMerged(id string) (Task, error) {
 }
 
 // RecordPullRequest is the "Push & Open PR" action's persistence step
-// (docs/milestones/milestone7.md PR 2): records the PR
+// (docs/milestones/done/milestone7.md PR 2): records the PR
 // agentrunner.PushAndOpenPR just pushed/opened onto the task, without
 // changing Stage. Guarded to StagePRReview like MarkPRMerged — a PR is only
 // ever meaningful for a task actually sitting in pr_review. Called

@@ -15,7 +15,7 @@ interface PRRejectFormProps {
   disabled: boolean
 }
 
-// PRRejectForm is pr_review's reject action (docs/milestones/milestone7.md
+// PRRejectForm is pr_review's reject action (docs/milestones/done/milestone7.md
 // PR 3): a human recording that a pushed (or not-yet-pushed) PR needs
 // changes or should be rejected outright, posted through the same
 // task.FinalizeReview reject path Review itself uses. Deliberately not

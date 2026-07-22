@@ -12,7 +12,7 @@ interface PRReviewPanelProps {
   onUpdated: (task: Task) => void
 }
 
-// PRReviewPanel is the pr_review-stage screen (docs/milestones/milestone7.md
+// PRReviewPanel is the pr_review-stage screen (docs/milestones/done/milestone7.md
 // PR 3): unlike Review, it has no agent conversation — both of pr_review's
 // resolutions ("mark as merged", reject) are a human reading external GitHub
 // state and asserting a fact, not an agent judgment call. A single static

@@ -12,7 +12,7 @@ updated_at: 2026-07-12T00:00:00Z
 objective: >-
   Milestone 8 built Read/Grep/Glob/Write/Edit/Bash as native Go tools in
   internal/toolloop, and deliberately deferred MCP tool-sourcing as a
-  fast-follow (see docs/milestones/milestone8.md, "Open questions — resolved":
+  fast-follow (see docs/milestones/done/milestone8.md, "Open questions — resolved":
   MCP tool-sourcing → fast-follow, not initial). This task adds the one
   MCP-sourced tool that pays for itself: an LSP-bridge server (e.g.
   isaacphi/mcp-language-server) exposing semantic navigation
@@ -43,7 +43,7 @@ success_criteria:
 references:
   knowledge: []
   repo:
-    - docs/milestones/milestone8.md
+    - docs/milestones/done/milestone8.md
     - docs/adr/0009-shared-tool-loop-engine-for-run-and-execute.md
     - docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md
     - internal/toolloop/tool.go

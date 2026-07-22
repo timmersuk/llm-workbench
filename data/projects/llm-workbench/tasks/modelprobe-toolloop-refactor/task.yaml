@@ -21,7 +21,7 @@ objective: >-
   workbench actually runs, not a parallel reimplementation that can drift.
 
 constraints:
-  - "modelprobe must keep bounding generations (the max_tokens ceiling) and per-request/per-model timeouts — the whole point is that a pathological model cannot wedge the endpoint. If internal/toolloop does not yet expose max_tokens, that gap (tracked in docs/milestones/milestone8.md's internal/chat gaps) must close first."
+  - "modelprobe must keep bounding generations (the max_tokens ceiling) and per-request/per-model timeouts — the whole point is that a pathological model cannot wedge the endpoint. If internal/toolloop does not yet expose max_tokens, that gap (tracked in docs/milestones/done/milestone8.md's internal/chat gaps) must close first."
   - "Preserve modelprobe's existing wire checks (reasoning-key detection across `reasoning`/`reasoning_content`, served-model echo, streaming tool-call deltas) — these inspect raw wire shape internal/chat/toolloop may abstract away, so some raw-HTTP probing likely stays."
   - "Preserve the pathology detectors (duplicate calls, spirals, tool-call-XML-as-text, announce-but-stall) and their unit tests; ideally the engine's own guards and modelprobe's detectors share code rather than duplicate it."
   - "Keep fleet mode (LM Studio load/probe/unload sweep with the per-model watchdog) working unchanged."
@@ -42,4 +42,4 @@ references:
     - cmd/modelprobe/loop.go
     - cmd/modelprobe/report.go
     - docs/adr/0011-hand-roll-tool-loop-engine-over-eino-or-dive.md
-    - docs/milestones/milestone8.md
+    - docs/milestones/done/milestone8.md

@@ -35,7 +35,7 @@ success_criteria:
 references:
   knowledge: []
   repo:
-    - docs/milestones/milestone8.md
+    - docs/milestones/done/milestone8.md
     - internal/chat/client.go
     - internal/chat/client_openai_sdk.go
     - internal/agentrunner/chat_client_runner.go

@@ -15,7 +15,7 @@ objective: >-
   Read ~1000 lines with offset/limit paging, Grep ~100 matches, Bash ~20KB
   combined stdout/stderr, each truncation surfaced to the model with an
   explicit marker. Milestone 8 deliberately hard-coded these (see
-  docs/milestones/milestone8.md, "Further decisions taken") rather than build
+  docs/milestones/done/milestone8.md, "Further decisions taken") rather than build
   speculative configurability. This task adds a real configuration mechanism
   once a concrete need appears — e.g. a larger-context model that can afford
   bigger reads, or a model that behaves better with tighter caps. The
@@ -40,6 +40,6 @@ success_criteria:
 references:
   knowledge: []
   repo:
-    - docs/milestones/milestone8.md
+    - docs/milestones/done/milestone8.md
     - docs/engineering conventions.md
     - internal/utils/env.go

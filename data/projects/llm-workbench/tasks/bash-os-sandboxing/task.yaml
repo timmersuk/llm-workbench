@@ -15,7 +15,7 @@ objective: >-
   trust level ClaudeRunner/CodexRunner already operate at. That posture was a
   deliberate v1 decision, not an oversight
   (docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md; and
-  docs/milestones/milestone8.md, "Out of scope" / "Bash: scope and posture").
+  docs/milestones/done/milestone8.md, "Out of scope" / "Bash: scope and posture").
   This task is the deferred hardening pass: add real OS-enforced confinement so
   a model-issued command cannot read or write outside the worktree even if it
   tries. Two candidates are already on record and must be evaluated hands-on
@@ -42,5 +42,5 @@ references:
   knowledge: []
   repo:
     - docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md
-    - docs/milestones/milestone8.md
+    - docs/milestones/done/milestone8.md
     - internal/toolloop/tools_bash.go

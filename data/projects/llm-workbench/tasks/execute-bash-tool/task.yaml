@@ -14,7 +14,7 @@ objective: >-
   native `bash` tool — the last tool after Read/Grep/Glob (PR 2) and
   Write/Edit (PR 3). Bash was always in Milestone 8's scope but sequenced last,
   landing once the loop itself was proven against the lower-risk tools (see
-  docs/milestones/milestone8.md, "Bash: scope and posture"). The tool runs a
+  docs/milestones/done/milestone8.md, "Bash: scope and posture"). The tool runs a
   shell command from the execution worktree, feeding combined stdout/stderr
   back to the model, so the `local` executor can build/test/run code the way
   ClaudeRunner and CodexRunner already do. Delivered by PR #20 (commit
@@ -40,7 +40,7 @@ success_criteria:
 references:
   knowledge: []
   repo:
-    - docs/milestones/milestone8.md
+    - docs/milestones/done/milestone8.md
     - docs/adr/0010-defer-bash-sandboxing-for-execution-harness.md
     - internal/toolloop/tools_bash.go
     - internal/toolloop/tools_write.go

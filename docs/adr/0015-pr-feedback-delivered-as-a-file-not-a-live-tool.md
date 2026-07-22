@@ -1,6 +1,6 @@
 # PR review feedback is pre-fetched to a file, not exposed as a live tool call
 
-`docs/milestones/milestone7.md` originally scoped this as "a new GitHub
+`docs/milestones/done/milestone7.md` originally scoped this as "a new GitHub
 PR-comment read tool" — a `toolloop.Tool` a reopened Requirements/
 Implementation-stage agent could call to pull GitHub's review comments on
 demand, mirroring PR 6's `read_file_at_ref`/`list_files_at_ref`. Scoping it

@@ -60,7 +60,7 @@ func TestHandleGetStageConversation_OK(t *testing.T) {
 }
 
 // TestHandleGetStageConversation_StageMismatch locks in the URL/actual-stage
-// guard (docs/milestones/milestone7.md PR 5): stageTool() only checks that
+// guard (docs/milestones/done/milestone7.md PR 5): stageTool() only checks that
 // "requirements" names a real Conversation stage, not that it matches this
 // task's actual current stage — a task already at implementation must not
 // serve its now-stale requirements conversation.
@@ -129,7 +129,7 @@ func TestHandleStartStageConversation_UnknownExecutor(t *testing.T) {
 }
 
 // TestHandleStartStageConversation_StageMismatch locks in the URL/actual-stage
-// guard (docs/milestones/milestone7.md PR 5): a task already at implementation
+// guard (docs/milestones/done/milestone7.md PR 5): a task already at implementation
 // must not start a fresh requirements conversation just because the URL
 // names a valid Conversation stage.
 func TestHandleStartStageConversation_StageMismatch(t *testing.T) {
@@ -259,7 +259,7 @@ func TestHandlePostStageMessage_ProjectNotFound(t *testing.T) {
 }
 
 // TestHandlePostStageMessage_StageMismatch locks in the URL/actual-stage
-// guard (docs/milestones/milestone7.md PR 5): a task already at
+// guard (docs/milestones/done/milestone7.md PR 5): a task already at
 // implementation must not accept a new requirements-stage turn just because
 // the URL names a valid Conversation stage.
 func TestHandlePostStageMessage_StageMismatch(t *testing.T) {
@@ -737,7 +737,7 @@ func TestHandleDeleteStageMessage_InvalidIndex(t *testing.T) {
 }
 
 // TestHandleDeleteStageMessage_StageMismatch locks in the URL/actual-stage
-// guard (docs/milestones/milestone7.md PR 5): a task already at
+// guard (docs/milestones/done/milestone7.md PR 5): a task already at
 // implementation must not let a message be deleted from its now-stale
 // requirements conversation just because the URL names a valid Conversation
 // stage.
@@ -851,7 +851,7 @@ func TestHandleRegenerateStageMessage_InvalidStage(t *testing.T) {
 }
 
 // TestHandleRegenerateStageMessage_StageMismatch locks in the URL/actual-stage
-// guard (docs/milestones/milestone7.md PR 5): a task already at
+// guard (docs/milestones/done/milestone7.md PR 5): a task already at
 // implementation must not regenerate a turn in its now-stale requirements
 // conversation just because the URL names a valid Conversation stage.
 func TestHandleRegenerateStageMessage_StageMismatch(t *testing.T) {

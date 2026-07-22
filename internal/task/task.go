@@ -12,7 +12,7 @@ import "time"
 // lifecycle.go's transitions don't rely on string literals scattered across
 // the package.
 //
-// StagePRReview is introduced by Milestone 7 PR 1 (docs/milestones/milestone7.md)
+// StagePRReview is introduced by Milestone 7 PR 1 (docs/milestones/done/milestone7.md)
 // as real, unit-tested machinery, but is not yet reachable through any live
 // path: FinalizeReview's approved branch still targets StageMerged until a
 // later PR retargets it alongside the "Push & Open PR" action and its
@@ -58,7 +58,7 @@ type Task struct {
 }
 
 // PullRequest records the GitHub PR opened for a task's approved execution,
-// per docs/milestones/milestone7.md's "Schema changes".
+// per docs/milestones/done/milestone7.md's "Schema changes".
 type PullRequest struct {
 	URL    string `yaml:"url" json:"url"`
 	Number int    `yaml:"number" json:"number"`

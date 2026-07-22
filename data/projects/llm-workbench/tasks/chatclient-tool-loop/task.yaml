@@ -13,7 +13,7 @@ updated_at: 2026-07-11T00:00:00Z
 # standalone feature, this became the read-only `Run` instantiation of the
 # shared internal/toolloop engine (Read/Grep/Glob, workspace-confined, turn
 # bounded), live-verified against gpt-oss-20b. See
-# docs/milestones/milestone8.md ("What shipped (PR 2)"). The task file is
+# docs/milestones/done/milestone8.md ("What shipped (PR 2)"). The task file is
 # retained as the durable record; all three success criteria below are met.
 objective: >-
   Let the local-LLM chat path (internal/chat.ChatClient via

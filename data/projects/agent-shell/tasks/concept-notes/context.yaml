@@ -38,7 +38,7 @@ files:
   - internal/api/stage_conversation.go
   - internal/api/chat.go
   - docs/provider abstraction.md
-  - docs/milestones/milestone8.md
+  - docs/milestones/done/milestone8.md
 
 detail: |
   Not designed. Recorded so the idea isn't lost, and so a future session

@@ -143,7 +143,7 @@ export function getReviewDiff(projectId: string, taskId: string): Promise<Review
 // latest execution branch and opens (or continues) a PR, returning the
 // updated Task now carrying pull_request. Empty body — everything the
 // backend needs is derived server-side from the task/execution/review
-// (docs/milestones/milestone7.md PR 3).
+// (docs/milestones/done/milestone7.md PR 3).
 export function pushPR(projectId: string, taskId: string): Promise<Task> {
   return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/pr/push`, {})
 }

@@ -45,4 +45,4 @@ references:
   repo:
     - cmd/modelprobe/fleet.go
     - cmd/modelprobe/client.go
-    - docs/milestones/milestone8.md
+    - docs/milestones/done/milestone8.md

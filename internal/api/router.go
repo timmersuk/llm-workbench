@@ -83,7 +83,7 @@ type TaskStoreFactory func(root string) TaskStore
 // instead. prClient is the seam handlePushPR uses to open/inspect GitHub
 // PRs (agentrunner.GitHubPRClient) — a real one built via
 // agentrunner.NewGitHubPRClient() in production, a fake in tests
-// (docs/milestones/milestone7.md PR 3).
+// (docs/milestones/done/milestone7.md PR 3).
 func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, frontendFS fs.FS, buildId string) http.Handler {
 	mux := http.NewServeMux()
 
