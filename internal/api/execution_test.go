@@ -38,7 +38,7 @@ func newExecutionTestRepo(t *testing.T, repoName string) (reposRoot string, repo
 		out, err := cmd.CombinedOutput()
 		require.NoErrorf(t, err, "git %v: %s", args, out)
 	}
-	run("init", "-q")
+	run("init", "-q", "-b", "main")
 	run("config", "user.email", "test@example.com")
 	run("config", "user.name", "Test")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("hello\n"), 0o644))
@@ -48,9 +48,14 @@ func newExecutionTestRepo(t *testing.T, repoName string) (reposRoot string, repo
 	return reposRoot, []string{"github.com/x/" + repoName}
 }
 
+// newExecutionProjectStore's fixture Project carries DefaultBranch: "main"
+// pre-set (matching newExecutionTestRepo's pinned init branch), so
+// ensureDefaultBranch short-circuits without ever calling the resolver or
+// Update — these tests aren't exercising the default-branch-determination
+// path, only relying on it not blocking their unrelated assertions.
 func newExecutionProjectStore(repositories []string) ProjectStore {
 	projects := new(mockProjectStore)
-	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: repositories}, nil)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: repositories, DefaultBranch: "main"}, nil)
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 	return projects
 }
@@ -97,7 +102,7 @@ func splitLines(s string) []string {
 func TestHandleStartExecution_UnknownExecutor(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{Executor: "does-not-exist"})
 	w := httptest.NewRecorder()
-	handleStartExecution(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), nil, "", nil)(w, req)
+	handleStartExecution(new(mockProjectStore), fixedTaskStoreFactory(new(mockTaskStore)), nil, "", nil, nil)(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -112,7 +117,7 @@ func TestHandleStartExecution_WrongStageRejected(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil, nil)(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	runner.AssertNotCalled(t, "Execute", mock.Anything, mock.Anything, mock.Anything)
@@ -155,7 +160,7 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 
@@ -208,7 +213,7 @@ func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, task.ExecutionStatusFailure, recorded.Status)
@@ -375,7 +380,7 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, nil, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 
@@ -450,7 +455,7 @@ func TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
 	handleStartExecution(newExecutionProjectStore(repositories), fixedTaskStoreFactory(tasks),
-		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, prClient)(w, req)
+		map[string]agentrunner.AgentRunner{"claude-code": runner}, reposRoot, prClient, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 

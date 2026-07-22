@@ -47,7 +47,7 @@ func handleListReviews(projects ProjectStore, factory TaskStoreFactory) http.Han
 // (ResolveReviewWorkspace) and collects the same patch fed to the agent's
 // prompt (CollectExecutionPatch), just handed to the browser instead. 404 if
 // the task has no execution to review yet.
-func handleReviewDiff(projects ProjectStore, factory TaskStoreFactory, reposRoot string) http.HandlerFunc {
+func handleReviewDiff(projects ProjectStore, factory TaskStoreFactory, reposRoot string, defaultBranchResolver agentrunner.DefaultBranchResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
@@ -55,6 +55,11 @@ func handleReviewDiff(projects ProjectStore, factory TaskStoreFactory, reposRoot
 		proj, err := projects.Get(projectId)
 		if err != nil {
 			writeGetError(w, err)
+			return
+		}
+		defaultBranch, err := ensureDefaultBranch(r.Context(), projects, proj, defaultBranchResolver)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
 			return
 		}
 		root, err := projects.TasksRoot(projectId)
@@ -78,7 +83,7 @@ func handleReviewDiff(projects ProjectStore, factory TaskStoreFactory, reposRoot
 		// to review (same selection buildReviewContext makes).
 		latest := executions[len(executions)-1]
 
-		ws, err := agentrunner.ResolveReviewWorkspace(r.Context(), reposRoot, proj.Repositories, latest.ExecutionID)
+		ws, err := agentrunner.ResolveReviewWorkspace(r.Context(), reposRoot, proj.Repositories, latest.ExecutionID, defaultBranch)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resolving review workspace: %v", err), http.StatusInternalServerError)
 			return

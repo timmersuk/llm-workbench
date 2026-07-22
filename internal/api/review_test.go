@@ -160,14 +160,14 @@ func TestHandleReviewDiff_OK(t *testing.T) {
 	seedReviewableTask(t, store, "task-a")
 
 	projects := new(mockProjectStore)
-	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}}, nil)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}, nil)
 	projects.On("TasksRoot", "demo-project").Return("unused", nil)
 
 	req := newProjectRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks/task-a/review/diff", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	handleReviewDiff(projects, fixedTaskStoreFactory(store), reposRoot)(w, req)
+	handleReviewDiff(projects, fixedTaskStoreFactory(store), reposRoot, nil)(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got reviewDiffResponse
@@ -184,14 +184,14 @@ func TestHandleReviewDiff_NoExecutionIsNotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	projects := new(mockProjectStore)
-	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}}, nil)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}, nil)
 	projects.On("TasksRoot", "demo-project").Return("unused", nil)
 
 	req := newProjectRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks/task-b/review/diff", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-b")
 	w := httptest.NewRecorder()
-	handleReviewDiff(projects, fixedTaskStoreFactory(store), reposRoot)(w, req)
+	handleReviewDiff(projects, fixedTaskStoreFactory(store), reposRoot, nil)(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

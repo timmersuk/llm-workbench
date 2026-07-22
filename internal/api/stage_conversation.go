@@ -297,7 +297,7 @@ func stageAssistantMessage(content string, proposed *chat.ToolCall, streamErr er
 // Draft itself (CONTEXT.md) — for the frontend to render for review; it is
 // not persisted or written to disk here, only Finalize (finalize.go) does
 // that.
-func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
+func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		tool, ok := stageTool(stage)
@@ -336,7 +336,7 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 		// configured repository is tolerated for Requirements/Planning (an
 		// empty workspace, a text-only turn); any other resolution failure
 		// aborts the turn as an SSE error, since headers are already sent.
-		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient, projects, defaultBranchResolver)
 		if runErr != nil {
 			streamErr = runErr
 		} else if history, convErr := target.store.GetConversation(taskId, stage); convErr != nil {
@@ -382,7 +382,7 @@ func handlePostStageMessage(projects ProjectStore, factory TaskStoreFactory, kno
 // since starting is only meaningful once, before any real exchange exists;
 // continuing an already-started conversation is handlePostStageMessage's
 // job.
-func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
+func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		tool, ok := stageTool(stage)
@@ -426,7 +426,7 @@ func handleStartStageConversation(projects ProjectStore, factory TaskStoreFactor
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient, projects, defaultBranchResolver)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -529,7 +529,7 @@ type stageRegenerateRequest struct {
 // History built from what's kept is what the runner actually consults, per
 // RunInput.History's "only consulted when the runner has no live session"
 // contract (agentrunner/runner.go).
-func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
+func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		tool, ok := stageTool(stage)
@@ -588,7 +588,7 @@ func handleRegenerateStageMessage(projects ProjectStore, factory TaskStoreFactor
 		var proposed *chat.ToolCall
 		var streamErr error
 
-		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient)
+		run, runErr := resolveStageRun(r.Context(), reposRoot, target.proj, target.store, target.task, stage, knowledgeReader, prClient, projects, defaultBranchResolver)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -764,7 +764,7 @@ type stageRun struct {
 // against the execution's isolated worktree with bash enabled and the
 // execution's diff + verification steps appended to the prompt — so the agent
 // can actually run the tests and check the real change (Milestone 6).
-func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, t task.Task, stage string, knowledgeReader KnowledgeReader, prClient agentrunner.GitHubPRClient) (stageRun, error) {
+func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, t task.Task, stage string, knowledgeReader KnowledgeReader, prClient agentrunner.GitHubPRClient, projects ProjectStore, defaultBranchResolver agentrunner.DefaultBranchResolver) (stageRun, error) {
 	systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
 
 	if stage != task.StageReview {
@@ -782,7 +782,11 @@ func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project
 		return stageRun{Workspace: ws, SystemPrompt: systemPrompt}, nil
 	}
 
-	addendum, workspace, err := buildReviewContext(ctx, reposRoot, proj, store, t.ID)
+	defaultBranch, err := ensureDefaultBranch(ctx, projects, proj, defaultBranchResolver)
+	if err != nil {
+		return stageRun{}, fmt.Errorf("determining default branch: %w", err)
+	}
+	addendum, workspace, err := buildReviewContext(ctx, reposRoot, proj, store, t.ID, defaultBranch)
 	if err != nil {
 		return stageRun{}, err
 	}
@@ -863,7 +867,7 @@ func buildRejectedReviewContext(ctx context.Context, store TaskStore, prClient a
 // diff (CollectExecutionPatch), and the task's structured verification steps
 // for the agent to walk. Returns the addendum and the worktree path bash/the
 // read-only tools are confined to.
-func buildReviewContext(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, taskID string) (addendum, workspace string, err error) {
+func buildReviewContext(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, taskID, defaultBranch string) (addendum, workspace string, err error) {
 	executions, err := store.ListExecutions(taskID)
 	if err != nil {
 		return "", "", fmt.Errorf("listing executions for review: %w", err)
@@ -875,7 +879,7 @@ func buildReviewContext(ctx context.Context, reposRoot string, proj project.Proj
 	// is the most recent attempt — the one that advanced the task to review.
 	latest := executions[len(executions)-1]
 
-	ws, err := agentrunner.ResolveReviewWorkspace(ctx, reposRoot, proj.Repositories, latest.ExecutionID)
+	ws, err := agentrunner.ResolveReviewWorkspace(ctx, reposRoot, proj.Repositories, latest.ExecutionID, defaultBranch)
 	if err != nil {
 		return "", "", fmt.Errorf("resolving review workspace: %w", err)
 	}

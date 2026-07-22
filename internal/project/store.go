@@ -127,14 +127,15 @@ func (s *FileStore) Create(in CreateInput) (Project, error) {
 
 	now := time.Now().UTC()
 	p := Project{
-		ID:           id,
-		Name:         in.Name,
-		Description:  in.Description,
-		Repositories: in.Repositories,
-		Knowledge:    in.Knowledge,
-		Constraints:  in.Constraints,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            id,
+		Name:          in.Name,
+		Description:   in.Description,
+		Repositories:  in.Repositories,
+		DefaultBranch: in.DefaultBranch,
+		Knowledge:     in.Knowledge,
+		Constraints:   in.Constraints,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if err := s.writeProject(p); err != nil {
@@ -161,14 +162,15 @@ func (s *FileStore) Update(id string, in UpdateInput) (Project, error) {
 	}
 
 	p := Project{
-		ID:           id,
-		Name:         in.Name,
-		Description:  in.Description,
-		Repositories: in.Repositories,
-		Knowledge:    in.Knowledge,
-		Constraints:  in.Constraints,
-		CreatedAt:    existing.CreatedAt,
-		UpdatedAt:    time.Now().UTC(),
+		ID:            id,
+		Name:          in.Name,
+		Description:   in.Description,
+		Repositories:  in.Repositories,
+		DefaultBranch: in.DefaultBranch,
+		Knowledge:     in.Knowledge,
+		Constraints:   in.Constraints,
+		CreatedAt:     existing.CreatedAt,
+		UpdatedAt:     time.Now().UTC(),
 	}
 
 	if err := s.writeProject(p); err != nil {

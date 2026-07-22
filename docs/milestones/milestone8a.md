@@ -5,7 +5,10 @@
 prerequisite the core Task loop's trustworthiness depends on, not a new
 capability — it should land before Milestone 9 (knowledge-base promotion),
 not after. **PR 1 shipped** (2026-07-22): lazy auto-clone, live-verified —
-see "What shipped (PR 1)" below.
+see "What shipped (PR 1)" below. **PR 2 shipped** (2026-07-22):
+`Project.DefaultBranch` determination plus the blocking wrong-branch gate,
+unit-tested (no live `gh`/GitHub call — see "What shipped (PR 2)" below for
+why that's still an honest verification, not a shortcut).
 
 ## Why now
 
@@ -185,23 +188,99 @@ indirected unit tests: `TestClone_ClonesRealRepository`
 (built the same way `worktree_test.go`'s own `initTestRepo` fixture does)
 into a fresh destination and reads back its committed content.
 
-## Schema changes
+## What shipped (PR 2, 2026-07-22)
 
-* `internal/project`: new `default_branch` (or equivalent) field on
-  `Project`, settable via `UpdateInput` (human-correctable) alongside the
-  existing fields, populated automatically by the lazy-backfill path when
-  unset.
-* `internal/agentrunner`: `ResolveWorkspace` gains clone-if-absent and
-  default-branch lazy-backfill as two independent, idempotent steps, each
-  firing on its own missing condition (directory absent; `default_branch`
-  unset) — not coupled to each other.
-* `internal/agentrunner`: `ResolveExecutionWorkspace`/
-  `ResolveReviewWorkspace` gain the blocking wrong-branch comparison before
-  forking a worktree.
+`Project` gained a `DefaultBranch` field (`internal/project/project.go`),
+threaded through `CreateInput`/`UpdateInput` like every other field —
+human-inspectable and -correctable via the normal project-edit path, not a
+special case.
+
+`internal/agentrunner/default_branch.go` is new: a `DefaultBranchResolver`
+interface (`Determine(ctx, repository) (string, error)`) mirroring
+`GitHubPRClient`'s shape (`pr.go`) exactly — a real implementation shelling
+out to `gh repo view <owner>/<repo> --json defaultBranchRef -q
+.defaultBranchRef.name`, a fake in tests. It takes the repository
+explicitly as an argument rather than resolving it from a local checkout's
+git remote config the way `pr.go`'s other `gh`/`git` calls do, so
+determining a default branch never needs a workspace to already exist —
+`githubOwnerRepo` just strips `repositories[0]`'s leading host segment
+(`"github.com/timmersuk/llm-workbench"` → `"timmersuk/llm-workbench"`).
+
+The orchestration — read `Project.DefaultBranch` first, call the resolver
+only when unset, persist the result — lives in `internal/api`
+(`default_branch.go`'s `ensureDefaultBranch`), not `agentrunner`: this
+keeps `agentrunner` free of any dependency on the `project` package's
+domain types, consistent with `ResolveWorkspace`/`ResolveExecutionWorkspace`
+already taking plain `repositories []string` rather than a `project.Project`.
+`ensureDefaultBranch` is threaded into all three places a Project's default
+branch can matter — `handleStartExecution`, `handleReviewDiff`, and
+`resolveStageRun`'s Review-stage branch (`stage_conversation.go`) — the
+same `DefaultBranchResolver` seam threaded through `NewRouter` exactly the
+way `GitHubPRClient`/`prClient` already is. **Fails closed**: a
+determination failure propagates as an ordinary HTTP error rather than
+letting Execute/Review proceed with an unknown default branch.
+
+The blocking check itself (`checkDefaultBranch`, `worktree.go`) is a new
+`ErrWrongBranch` sentinel, distinct from every other check this milestone
+introduces: `ResolveExecutionWorkspace`/`ResolveReviewWorkspace` both call
+it right after deriving `baseBranch` via `gitutil.CurrentBranch`, and both
+refuse to proceed — the one place in this milestone something actually
+blocks rather than merely advises. An empty `defaultBranch` (never
+determined) blocks exactly like a real mismatch does, by construction (the
+comparison always fails against `""`), not as a special case. Applied to
+*both* functions even though only `ResolveExecutionWorkspace` forks a new
+worktree — `ResolveReviewWorkspace` re-derives `BaseBranch` from the shared
+checkout on every call too, and a wrong branch there would silently corrupt
+every diff Review computes against it, not just block a fork.
+
+**Verification note:** this PR is unit-tested only, not live-verified
+against a real `gh`/GitHub call — unlike PR 1's real (non-mocked) `git
+clone` test, there's no equivalent here exercising the actual `gh repo
+view` subprocess, since doing so would require live GitHub auth in the
+test environment. `DetermineDefaultBranch`'s `gh` invocation itself
+(`runGH`, shared with `pr.go`) is exactly the same call shape `pr.go`'s own
+production code already uses and already ships — the new surface here is
+`githubOwnerRepo`'s string parsing (unit-tested directly) and the
+blocking/fail-closed control flow around it (unit-tested via the
+`DefaultBranchResolver` fake), not the `gh` invocation mechanism itself.
+
+**PR 1 (shipped):**
+
+* `internal/gitutil`: new `Clone` primitive, alongside the existing
+  `RunGit`/`CurrentBranch`.
+* `internal/agentrunner`: `ResolveWorkspace` gains clone-if-absent,
+  indirected (`cloneRepository`) for testability, guarded by a per-path
+  lock (`cloneLocks`).
+
+**PR 2 (shipped):**
+
+* `internal/project`: new `DefaultBranch` field on `Project`, threaded
+  through `CreateInput`/`UpdateInput` (human-correctable) like every other
+  field.
+* `internal/agentrunner`: new `default_branch.go` —
+  `DefaultBranchResolver` interface, `NewDefaultBranchResolver()`, and
+  `ErrDefaultBranchUnknown`. **Not** folded into `ResolveWorkspace` itself
+  (the original sketch here) — the determine-and-persist orchestration
+  lives in `internal/api` instead (`ensureDefaultBranch`), since it needs
+  `project.Store`/`project.UpdateInput`, and `agentrunner` deliberately
+  takes no dependency on the `project` package's domain types (matching
+  `ResolveWorkspace` already taking `repositories []string`, not a
+  `project.Project`).
+* `internal/agentrunner/worktree.go`: new `ErrWrongBranch` sentinel and
+  `checkDefaultBranch`; `ResolveExecutionWorkspace`/`ResolveReviewWorkspace`
+  both gain a `defaultBranch string` parameter and call it.
+* `internal/api`: new `default_branch.go` (`ensureDefaultBranch`), threaded
+  as a `DefaultBranchResolver` parameter through `NewRouter` and every
+  handler that calls `ResolveExecutionWorkspace`/`ResolveReviewWorkspace` —
+  `handleStartExecution`, `handleReviewDiff`, `resolveStageRun`/
+  `buildReviewContext`.
+
+**PR 3 (not yet built):**
+
 * `internal/gitutil`: new primitives for `git fetch` (TTL-throttled,
   wrapped so a failure returns "unknown" rather than propagating) and
   `git status --porcelain` (dirty-tree check), alongside the existing
-  `RunGit`/`CurrentBranch`.
+  `RunGit`/`CurrentBranch`/`Clone`.
 * `internal/api/stage_conversation.go`: system-prompt injection for the two
   advisory signals.
 * Frontend: a banner component surfacing the same two advisory signals.
@@ -229,11 +308,12 @@ into a fresh destination and reads back its committed content.
   per-path lock against concurrent clones. No `default_branch`/staleness
   work yet — proven independently against a project whose directory
   doesn't yet exist. See "What shipped (PR 1)" below.
-* **PR 2 — `default_branch` and the blocking wrong-branch gate.** The `gh
-  repo view` lookup, lazy backfill decoupled from cloning, the persisted
-  field, and the blocking comparison wired into
+* **PR 2 — `default_branch` and the blocking wrong-branch gate. ✅ Shipped
+  (2026-07-22).** The `gh repo view` lookup, lazy backfill decoupled from
+  cloning, the persisted field, and the blocking comparison wired into
   `ResolveExecutionWorkspace`/`ResolveReviewWorkspace`. This is the
-  safety-critical piece and lands before the advisory checks.
+  safety-critical piece and lands before the advisory checks. See "What
+  shipped (PR 2)" below.
 * **PR 3 — Advisory checks and surfacing.** TTL-throttled behind-origin
   fetch, dirty-working-tree check, system-prompt injection, and the
   frontend banner.
@@ -246,9 +326,9 @@ into a fresh destination and reads back its committed content.
   scoping.
 * **Exact TTL for the behind-origin fetch throttle** — "short" was agreed,
   a specific duration (e.g. 2 vs 5 minutes) wasn't pinned down.
-* **The blocking gate's error message/recovery hint** — when Execute/Review
-  refuses to fork because the checkout is on the wrong branch, should the
-  error explicitly suggest the fix (e.g. "switch to `default_branch` and
-  retry"), or just report the mismatch? Not decided.
+* ~~**The blocking gate's error message/recovery hint**~~ — resolved in PR 2:
+  `checkDefaultBranch` reports the plain mismatch (`shared checkout is on
+  %q, expected %q`), no explicit "switch to X" recovery hint. Revisit if
+  PR 3's frontend banner needs friendlier copy than the raw backend error.
 * **Frontend banner placement** — which view(s) show the advisory
   staleness banner; not specified during scoping.

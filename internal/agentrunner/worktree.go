@@ -2,6 +2,7 @@ package agentrunner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,31 @@ import (
 
 	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
+
+// ErrWrongBranch is returned by ResolveExecutionWorkspace/
+// ResolveReviewWorkspace when the shared checkout isn't on the project's
+// known default branch. Unlike every other check in
+// docs/milestones/milestone8a.md (behind-origin, dirty-working-tree, both
+// advisory only), this one blocks: a worktree forked from the wrong branch
+// commits an entire execution to the wrong PR base, discovered only once
+// it's time to merge — the one place a wrong answer here is expensive to
+// undo.
+var ErrWrongBranch = errors.New("shared checkout is not on the project's default branch")
+
+// checkDefaultBranch returns ErrWrongBranch if baseBranch isn't
+// defaultBranch — including when defaultBranch is empty, i.e. never
+// determined, which callers must fail closed on rather than pass through
+// (docs/milestones/milestone8a.md's fail-closed decision) rather than
+// silently allowing any branch when there's nothing to compare against.
+func checkDefaultBranch(baseBranch, defaultBranch string) error {
+	if defaultBranch == "" {
+		return fmt.Errorf("%w: no default branch known for this project", ErrWrongBranch)
+	}
+	if baseBranch != defaultBranch {
+		return fmt.Errorf("%w: shared checkout is on %q, expected %q", ErrWrongBranch, baseBranch, defaultBranch)
+	}
+	return nil
+}
 
 // ExecutionBranchName returns the deterministic branch name
 // ResolveExecutionWorkspace creates for one execution attempt, without
@@ -61,7 +87,14 @@ type ExecutionWorkspace struct {
 // The worktree is left in place on return regardless of what happens
 // afterward — no automatic cleanup — so a human can inspect it, and a
 // future Review-stage UI can read its diff.
-func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositories []string, taskID, executionID, forkFrom string) (ExecutionWorkspace, error) {
+//
+// defaultBranch is the project's known default branch (docs/milestones/milestone8a.md,
+// Project.DefaultBranch) — the shared checkout's current branch must match
+// it exactly, or this refuses to fork at all (ErrWrongBranch, via
+// checkDefaultBranch). Callers are responsible for having already resolved
+// this (internal/api's ensureDefaultBranch); an empty string always blocks,
+// it is never treated as "no expectation."
+func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositories []string, taskID, executionID, forkFrom, defaultBranch string) (ExecutionWorkspace, error) {
 	if strings.ContainsAny(taskID, `/\`) || strings.Contains(taskID, "..") {
 		return ExecutionWorkspace{}, fmt.Errorf("%w: task id %q", ErrInvalidRepository, taskID)
 	}
@@ -76,6 +109,9 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 
 	baseBranch, err := gitutil.CurrentBranch(ctx, base)
 	if err != nil {
+		return ExecutionWorkspace{}, err
+	}
+	if err := checkDefaultBranch(baseBranch, defaultBranch); err != nil {
 		return ExecutionWorkspace{}, err
 	}
 
@@ -112,8 +148,11 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 // reconstructed deterministically the same way ResolveExecutionWorkspace built
 // it (<reposRoot>/.worktrees/<repoName>/<executionID>) and must already exist;
 // BaseBranch is re-derived from the shared checkout's current branch, exactly
-// as the execution derived it originally.
-func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories []string, executionID string) (ExecutionWorkspace, error) {
+// as the execution derived it originally — which is also why defaultBranch
+// (see ResolveExecutionWorkspace's doc comment) is checked here too, even
+// though this never forks a new worktree: a wrong branch would silently
+// corrupt BaseBranch, and with it every diff Review computes against it.
+func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories []string, executionID, defaultBranch string) (ExecutionWorkspace, error) {
 	if strings.ContainsAny(executionID, `/\`) || strings.Contains(executionID, "..") {
 		return ExecutionWorkspace{}, fmt.Errorf("%w: execution id %q", ErrInvalidRepository, executionID)
 	}
@@ -125,6 +164,9 @@ func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories 
 
 	baseBranch, err := gitutil.CurrentBranch(ctx, base)
 	if err != nil {
+		return ExecutionWorkspace{}, err
+	}
+	if err := checkDefaultBranch(baseBranch, defaultBranch); err != nil {
 		return ExecutionWorkspace{}, err
 	}
 

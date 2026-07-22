@@ -57,6 +57,7 @@ name: Demo Project
 description: A demo project
 repositories:
   - github.com/org/demo
+default_branch: main
 knowledge: []
 constraints: []
 created_at: 2026-07-05T00:00:00Z
@@ -93,7 +94,7 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -198,7 +199,7 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -256,7 +257,7 @@ func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
-	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -538,13 +539,13 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	reposRoot := t.TempDir()
 	repoDir := filepath.Join(reposRoot, "demo")
 	require.NoError(t, os.MkdirAll(repoDir, 0o755))
-	gitRun(t, repoDir, "init", "-q")
+	gitRun(t, repoDir, "init", "-q", "-b", "main")
 	gitRun(t, repoDir, "config", "user.email", "t@example.com")
 	gitRun(t, repoDir, "config", "user.name", "T")
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hi\n"), 0o644))
 	gitRun(t, repoDir, "add", ".")
 	gitRun(t, repoDir, "commit", "-q", "-m", "init")
-	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/org/demo"}, "TASK-0001", "exec-001", "")
+	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/org/demo"}, "TASK-0001", "exec-001", "", "main")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "feature.go"), []byte("package main\n"), 0o644))
 	gitRun(t, ws.Path, "add", ".")
@@ -598,7 +599,7 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
