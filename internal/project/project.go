@@ -13,8 +13,16 @@ type Project struct {
 	Description string `yaml:"description" json:"description"`
 
 	Repositories []string `yaml:"repositories" json:"repositories"`
-	Knowledge    []string `yaml:"knowledge" json:"knowledge"`
-	Constraints  []string `yaml:"constraints" json:"constraints"`
+	// DefaultBranch is Repositories[0]'s default branch (e.g. "main"),
+	// auto-determined via `gh repo view` the first time it's needed
+	// (internal/api's ensureDefaultBranch) and persisted here — never
+	// re-queried live once set. Empty until determined. Human-inspectable
+	// and -correctable like any other field. Backs
+	// agentrunner.ResolveExecutionWorkspace/ResolveReviewWorkspace's
+	// blocking wrong-branch gate (docs/milestones/milestone8a.md).
+	DefaultBranch string   `yaml:"default_branch" json:"default_branch"`
+	Knowledge     []string `yaml:"knowledge" json:"knowledge"`
+	Constraints   []string `yaml:"constraints" json:"constraints"`
 
 	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
 	UpdatedAt time.Time `yaml:"updated_at" json:"updated_at"`
@@ -24,20 +32,22 @@ type Project struct {
 // id field: project ids are always server-derived from Name by slugifying
 // it, never client-specified (unlike task ids, which the client chooses).
 type CreateInput struct {
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Repositories []string `json:"repositories"`
-	Knowledge    []string `json:"knowledge"`
-	Constraints  []string `json:"constraints"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	Repositories  []string `json:"repositories"`
+	DefaultBranch string   `json:"default_branch"`
+	Knowledge     []string `json:"knowledge"`
+	Constraints   []string `json:"constraints"`
 }
 
 // UpdateInput is the client-supplied shape for editing a project. Like
 // CreateInput, it has no id field — a project's id is immutable once
 // created and always comes from the URL path, never the request body.
 type UpdateInput struct {
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Repositories []string `json:"repositories"`
-	Knowledge    []string `json:"knowledge"`
-	Constraints  []string `json:"constraints"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	Repositories  []string `json:"repositories"`
+	DefaultBranch string   `json:"default_branch"`
+	Knowledge     []string `json:"knowledge"`
+	Constraints   []string `json:"constraints"`
 }

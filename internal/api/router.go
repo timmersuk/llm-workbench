@@ -83,8 +83,12 @@ type TaskStoreFactory func(root string) TaskStore
 // instead. prClient is the seam handlePushPR uses to open/inspect GitHub
 // PRs (agentrunner.GitHubPRClient) — a real one built via
 // agentrunner.NewGitHubPRClient() in production, a fake in tests
-// (docs/milestones/done/milestone7.md PR 3).
-func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, frontendFS fs.FS, buildId string) http.Handler {
+// (docs/milestones/done/milestone7.md PR 3). defaultBranchResolver is the
+// same shape of seam for determining a project's default branch
+// (agentrunner.DefaultBranchResolver) — a real one built via
+// agentrunner.NewDefaultBranchResolver() in production, a fake in tests
+// (docs/milestones/milestone8a.md).
+func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthcheck", handleHealthcheck(agentRunners, buildId))
@@ -103,19 +107,19 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeRead
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/context", handleGetTaskContext(projects, taskStores))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/plan", handleGetTaskPlan(projects, taskStores))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/conversation", handleGetStageConversation(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/start", handleStartStageConversation(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages", handlePostStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/start", handleStartStageConversation(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient, defaultBranchResolver))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages", handlePostStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient, defaultBranchResolver))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}", handleDeleteStageMessage(projects, taskStores, agentRunners))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}/regenerate", handleRegenerateStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}/regenerate", handleRegenerateStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient, defaultBranchResolver))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", handleFinalizeRequirements(projects, taskStores, agentRunners, reposRoot))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", handleFinalizePlan(projects, taskStores, agentRunners))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/review/finalize", handleFinalizeReview(projects, taskStores, agentRunners))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/revise", handleReviseRequirements(projects, taskStores))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", handleRevisePlan(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", handleStartExecution(projects, taskStores, agentRunners, reposRoot, prClient))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", handleStartExecution(projects, taskStores, agentRunners, reposRoot, prClient, defaultBranchResolver))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", handleListExecutions(projects, taskStores))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", handleListReviews(projects, taskStores))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", handleReviewDiff(projects, taskStores, reposRoot))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", handleReviewDiff(projects, taskStores, reposRoot, defaultBranchResolver))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", handlePushPR(projects, taskStores, reposRoot, prClient))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/merged", handleMarkPRMerged(projects, taskStores))
 

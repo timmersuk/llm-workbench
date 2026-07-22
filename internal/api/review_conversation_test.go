@@ -52,14 +52,14 @@ func initReviewRepo(t *testing.T, reposRoot string) agentrunner.ExecutionWorkspa
 	t.Helper()
 	dir := filepath.Join(reposRoot, "myrepo")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	gitRun(t, dir, "init", "-q")
+	gitRun(t, dir, "init", "-q", "-b", "main")
 	gitRun(t, dir, "config", "user.email", "t@example.com")
 	gitRun(t, dir, "config", "user.name", "T")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\n"), 0o644))
 	gitRun(t, dir, "add", ".")
 	gitRun(t, dir, "commit", "-q", "-m", "init")
 
-	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "")
+	ws, err := agentrunner.ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "", "main")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(ws.Path, "feature.go"), []byte("package main\n"), 0o644))
 	gitRun(t, ws.Path, "add", ".")
@@ -101,7 +101,7 @@ func TestBuildReviewContext_IncludesDiffAndVerificationSteps(t *testing.T) {
 	addendum, workspace, err := buildReviewContext(
 		context.Background(), reposRoot,
 		project.Project{Repositories: []string{"github.com/x/myrepo"}},
-		store, "task-a",
+		store, "task-a", "main",
 	)
 	require.NoError(t, err)
 	assert.Equal(t, ws.Path, workspace)
@@ -123,7 +123,7 @@ func TestBuildReviewContext_NoExecutionIsAnError(t *testing.T) {
 	_, _, err = buildReviewContext(
 		context.Background(), reposRoot,
 		project.Project{Repositories: []string{"github.com/x/myrepo"}},
-		store, "task-b",
+		store, "task-b", "main",
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no execution to review")

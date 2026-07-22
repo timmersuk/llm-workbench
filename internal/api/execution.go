@@ -76,7 +76,7 @@ func executeEventToWire(ev agentrunner.ExecuteEvent) executeStreamEvent {
 // survives to write a record — the worktree/branch is left for manual
 // inspection and Stage simply never advances (docs/milestones/milestone5.md's
 // resolved decisions).
-func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
+func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req executionStartRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -100,6 +100,14 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 		proj, err := projects.Get(projectId)
 		if err != nil {
 			writeGetError(w, err)
+			return
+		}
+		// Resolved before the SSE stream commits (below) so a fail-closed
+		// determination failure reports as a normal HTTP error, not
+		// something squeezed into the event stream.
+		defaultBranch, err := ensureDefaultBranch(r.Context(), projects, proj, defaultBranchResolver)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
 			return
 		}
 		root, err := projects.TasksRoot(projectId)
@@ -154,7 +162,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 			flusher.Flush()
 		}
 
-		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), reposRoot, proj.Repositories, taskId, executionID, forkFrom)
+		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), reposRoot, proj.Repositories, taskId, executionID, forkFrom, defaultBranch)
 		if wsErr != nil {
 			writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("resolving execution workspace: %v", wsErr)})
 			return
