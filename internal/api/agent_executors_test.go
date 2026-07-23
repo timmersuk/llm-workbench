@@ -20,7 +20,7 @@ func TestHandleListAgentExecutors_ReportsHealthyExecutors(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent-executors", nil)
 	w := httptest.NewRecorder()
-	handleListAgentExecutors(map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+	(&Server{AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleListAgentExecutors()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got struct {
@@ -38,7 +38,7 @@ func TestHandleListAgentExecutors_ExcludesExecutorsThatFailCheckHealth(t *testin
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent-executors", nil)
 	w := httptest.NewRecorder()
-	handleListAgentExecutors(map[string]agentrunner.AgentRunner{"claude-code": unhealthy, "local": healthy})(w, req)
+	(&Server{AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": unhealthy, "local": healthy}}).handleListAgentExecutors()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got struct {
@@ -51,7 +51,7 @@ func TestHandleListAgentExecutors_ExcludesExecutorsThatFailCheckHealth(t *testin
 func TestHandleListAgentExecutors_EmptyWhenNoneEnabled(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent-executors", nil)
 	w := httptest.NewRecorder()
-	handleListAgentExecutors(nil)(w, req)
+	(&Server{}).handleListAgentExecutors()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got struct {

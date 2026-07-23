@@ -37,11 +37,13 @@ type finalizeReviewResponse struct {
 }
 
 // closeSessions calls CloseSession(sessionKey) on every runner in
-// agentRunners — safe even for runners that never held a session under
+// s.AgentRunners — safe even for runners that never held a session under
 // that key, since a stage's conversation (or free-chat session) could
-// have used any (or none) of them across its turns.
-func closeSessions(agentRunners map[string]agentrunner.AgentRunner, sessionKey string) {
-	for _, runner := range agentRunners {
+// have used any (or none) of them across its turns. A method rather than a
+// free function taking agentRunners as a parameter, the same reasoning as
+// resolveTaskStore (tasks.go) — docs/adr/0016.
+func (s *Server) closeSessions(sessionKey string) {
+	for _, runner := range s.AgentRunners {
 		runner.CloseSession(sessionKey)
 	}
 }
@@ -62,10 +64,10 @@ func closeSessions(agentRunners map[string]agentrunner.AgentRunner, sessionKey s
 // handleStartExecution's own diff-collection step already takes for a
 // step that's secondary to the actual state transition that already
 // succeeded.
-func handleFinalizeRequirements(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+func (s *Server) handleFinalizeRequirements() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectId := r.PathValue("projectId")
-		store, ok := resolveTaskStore(w, projects, factory, projectId)
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
@@ -82,10 +84,10 @@ func handleFinalizeRequirements(projects ProjectStore, factory TaskStoreFactory,
 			writeMutationError(w, err)
 			return
 		}
-		closeSessions(agentRunners, taskId+":"+task.StageRequirements)
+		s.closeSessions(taskId + ":" + task.StageRequirements)
 
-		if proj, projErr := projects.Get(projectId); projErr == nil {
-			if ws, wsErr := agentrunner.ResolveWorkspace(r.Context(), reposRoot, proj.Repositories); wsErr == nil && ws != "" {
+		if proj, projErr := s.Projects.Get(projectId); projErr == nil {
+			if ws, wsErr := agentrunner.ResolveWorkspace(r.Context(), s.ReposRoot, proj.Repositories); wsErr == nil && ws != "" {
 				if rmErr := removePRCommentsFile(prCommentsRequirementsPath(ws, taskId)); rmErr != nil {
 					logrus.WithError(rmErr).WithFields(logrus.Fields{"task": taskId}).Warn("removing scratch pr-comments file")
 				}
@@ -109,9 +111,9 @@ func handleFinalizeRequirements(projects ProjectStore, factory TaskStoreFactory,
 // persists plan.yaml and advances stage from planning to implementation.
 // 409 if the task isn't currently in planning stage. See
 // handleFinalizeRequirements's comment for the CloseSession rationale.
-func handleFinalizePlan(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+func (s *Server) handleFinalizePlan() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}
@@ -128,7 +130,7 @@ func handleFinalizePlan(projects ProjectStore, factory TaskStoreFactory, agentRu
 			writeMutationError(w, err)
 			return
 		}
-		closeSessions(agentRunners, taskId+":"+task.StagePlanning)
+		s.closeSessions(taskId + ":" + task.StagePlanning)
 
 		savedPlan, err := store.GetPlan(taskId)
 		if err != nil {
@@ -149,9 +151,9 @@ func handleFinalizePlan(projects ProjectStore, factory TaskStoreFactory, agentRu
 // is done, so its agent session is torn down. The just-recorded review is
 // read back so the response can carry the verdict notes the "merged" screen
 // shows without a second call.
-func handleFinalizeReview(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+func (s *Server) handleFinalizeReview() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}
@@ -168,7 +170,7 @@ func handleFinalizeReview(projects ProjectStore, factory TaskStoreFactory, agent
 			writeMutationError(w, err)
 			return
 		}
-		closeSessions(agentRunners, taskId+":"+task.StageReview)
+		s.closeSessions(taskId + ":" + task.StageReview)
 
 		// FinalizeReview appended a fresh review-NNN.yaml; the last entry is
 		// that verdict (ListReviews sorts ascending by zero-padded id).

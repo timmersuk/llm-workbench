@@ -69,6 +69,25 @@ type KnowledgeReader interface {
 // factory rather than holding a single package-level task store.
 type TaskStoreFactory func(root string) TaskStore
 
+// Server holds every dependency internal/api's handlers need that stays
+// invariant for the lifetime of the server process — constructed once by
+// NewRouter, with every handler (and the internal helpers that mix these
+// same invariant deps with per-call data) as a method on it, rather than a
+// free function re-closing over a fresh copy of the same parameter list
+// each time. Package-internal by design: NewRouter is still the only public
+// entrypoint (docs/adr/0016-api-handlers-become-methods-on-an-internal-server-struct.md).
+type Server struct {
+	Projects              ProjectStore
+	TaskStores            TaskStoreFactory
+	KnowledgeReader       KnowledgeReader
+	AgentRunners          map[string]agentrunner.AgentRunner
+	ReposRoot             string
+	PRClient              agentrunner.GitHubPRClient
+	DefaultBranchResolver agentrunner.DefaultBranchResolver
+	FrontendFS            fs.FS
+	BuildId               string
+}
+
 // NewRouter builds the full HTTP handler: the JSON API plus the embedded
 // frontend (serving frontendFS, with an index.html SPA fallback for unknown
 // paths). agentRunners keys the tool-equipped/chat executor options shared
@@ -89,47 +108,59 @@ type TaskStoreFactory func(root string) TaskStore
 // agentrunner.NewDefaultBranchResolver() in production, a fake in tests
 // (docs/milestones/done/milestone8a.md).
 func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
+	s := &Server{
+		Projects:              projects,
+		TaskStores:            taskStores,
+		KnowledgeReader:       knowledgeReader,
+		AgentRunners:          agentRunners,
+		ReposRoot:             reposRoot,
+		PRClient:              prClient,
+		DefaultBranchResolver: defaultBranchResolver,
+		FrontendFS:            frontendFS,
+		BuildId:               buildId,
+	}
+
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthcheck", handleHealthcheck(agentRunners, buildId))
-	mux.HandleFunc("GET /api/v1/version", handleVersion(buildId))
+	mux.HandleFunc("GET /healthcheck", s.handleHealthcheck())
+	mux.HandleFunc("GET /api/v1/version", s.handleVersion())
 
-	mux.HandleFunc("GET /api/v1/projects", handleListProjects(projects))
-	mux.HandleFunc("POST /api/v1/projects", handleCreateProject(projects))
-	mux.HandleFunc("GET /api/v1/projects/{id}", handleGetProject(projects))
-	mux.HandleFunc("PUT /api/v1/projects/{id}", handleUpdateProject(projects))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/workspace-status", handleWorkspaceStatus(projects, reposRoot))
+	mux.HandleFunc("GET /api/v1/projects", s.handleListProjects())
+	mux.HandleFunc("POST /api/v1/projects", s.handleCreateProject())
+	mux.HandleFunc("GET /api/v1/projects/{id}", s.handleGetProject())
+	mux.HandleFunc("PUT /api/v1/projects/{id}", s.handleUpdateProject())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/workspace-status", s.handleWorkspaceStatus())
 
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", handleListProjectTasks(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", handleCreateProjectTask(projects, taskStores))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}", handleGetProjectTask(projects, taskStores))
-	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}", handleUpdateProjectTask(projects, taskStores))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", s.handleListProjectTasks())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", s.handleCreateProjectTask())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}", s.handleGetProjectTask())
+	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}", s.handleUpdateProjectTask())
 
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/context", handleGetTaskContext(projects, taskStores))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/plan", handleGetTaskPlan(projects, taskStores))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/conversation", handleGetStageConversation(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/start", handleStartStageConversation(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient, defaultBranchResolver))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages", handlePostStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient, defaultBranchResolver))
-	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}", handleDeleteStageMessage(projects, taskStores, agentRunners))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}/regenerate", handleRegenerateStageMessage(projects, taskStores, knowledgeReader, agentRunners, reposRoot, prClient, defaultBranchResolver))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", handleFinalizeRequirements(projects, taskStores, agentRunners, reposRoot))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", handleFinalizePlan(projects, taskStores, agentRunners))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/review/finalize", handleFinalizeReview(projects, taskStores, agentRunners))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/revise", handleReviseRequirements(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", handleRevisePlan(projects, taskStores))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", handleStartExecution(projects, taskStores, agentRunners, reposRoot, prClient, defaultBranchResolver))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", handleListExecutions(projects, taskStores))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", handleListReviews(projects, taskStores))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", handleReviewDiff(projects, taskStores, reposRoot, defaultBranchResolver))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", handlePushPR(projects, taskStores, reposRoot, prClient))
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/merged", handleMarkPRMerged(projects, taskStores))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/context", s.handleGetTaskContext())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/plan", s.handleGetTaskPlan())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/conversation", s.handleGetStageConversation())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/start", s.handleStartStageConversation())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages", s.handlePostStageMessage())
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}", s.handleDeleteStageMessage())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}/regenerate", s.handleRegenerateStageMessage())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", s.handleFinalizeRequirements())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", s.handleFinalizePlan())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/review/finalize", s.handleFinalizeReview())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/revise", s.handleReviseRequirements())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", s.handleRevisePlan())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", s.handleStartExecution())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", s.handleListExecutions())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", s.handleListReviews())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", s.handleReviewDiff())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", s.handlePushPR())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/merged", s.handleMarkPRMerged())
 
-	mux.HandleFunc("POST /api/v1/chat/completions", handleChatCompletions(agentRunners, reposRoot))
-	mux.HandleFunc("POST /api/v1/chat/sessions/close", handleCloseChatSession(agentRunners))
-	mux.HandleFunc("GET /api/v1/chat/models", handleListModels(agentRunners))
-	mux.HandleFunc("GET /api/v1/agent-executors", handleListAgentExecutors(agentRunners))
+	mux.HandleFunc("POST /api/v1/chat/completions", s.handleChatCompletions())
+	mux.HandleFunc("POST /api/v1/chat/sessions/close", s.handleCloseChatSession())
+	mux.HandleFunc("GET /api/v1/chat/models", s.handleListModels())
+	mux.HandleFunc("GET /api/v1/agent-executors", s.handleListAgentExecutors())
 
-	mux.Handle("GET /", newFrontendHandler(frontendFS))
+	mux.Handle("GET /", newFrontendHandler(s.FrontendFS))
 
 	return mux
 }
@@ -153,7 +184,7 @@ type healthcheckResponse struct {
 	Subsystems map[string]subsystemHealth `json:"subsystems"`
 }
 
-func handleHealthcheck(agentRunners map[string]agentrunner.AgentRunner, buildId string) http.HandlerFunc {
+func (s *Server) handleHealthcheck() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		subsystems := map[string]subsystemHealth{}
 		var failures []string
@@ -167,11 +198,11 @@ func handleHealthcheck(agentRunners map[string]agentrunner.AgentRunner, buildId 
 			subsystems[key] = subsystemHealth{Status: "ok"}
 		}
 
-		for name, runner := range agentRunners {
+		for name, runner := range s.AgentRunners {
 			probe("agent:"+name, func() error { return runner.CheckHealth(r.Context()) })
 		}
 
-		resp := healthcheckResponse{Status: "ok", BuildId: buildId, Subsystems: subsystems}
+		resp := healthcheckResponse{Status: "ok", BuildId: s.BuildId, Subsystems: subsystems}
 		status := http.StatusOK
 		if len(failures) > 0 {
 			sort.Strings(failures)
@@ -183,8 +214,8 @@ func handleHealthcheck(agentRunners map[string]agentrunner.AgentRunner, buildId 
 	}
 }
 
-func handleVersion(buildId string) http.HandlerFunc {
+func (s *Server) handleVersion() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"version": buildId})
+		writeJSON(w, http.StatusOK, map[string]string{"version": s.BuildId})
 	}
 }

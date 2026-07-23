@@ -111,7 +111,7 @@ func TestHandlePushPR_NoExistingPR_PushesAndRecords(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	handlePushPR(projects, fixedTaskStoreFactory(store), reposRoot, client)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var got task.Task
@@ -147,7 +147,7 @@ func TestHandlePushPR_WrongStageRejectedBeforeAnyGitActivity(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	handlePushPR(projects, fixedTaskStoreFactory(store), reposRoot, client)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Equal(t, 0, client.createCalls, "no PR should be opened for a task not at pr_review")
@@ -171,7 +171,7 @@ func TestHandlePushPR_GitHubClientErrorMapsTo500(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	handlePushPR(projects, fixedTaskStoreFactory(store), reposRoot, client)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
@@ -189,7 +189,7 @@ func TestHandleMarkPRMerged_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	handleMarkPRMerged(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleMarkPRMerged()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -209,7 +209,7 @@ func TestHandleMarkPRMerged_WrongStageRejected(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	handleMarkPRMerged(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleMarkPRMerged()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }

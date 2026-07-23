@@ -45,7 +45,7 @@ func TestHandleWorkspaceStatus_ProjectNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/workspace-status", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleWorkspaceStatus(projects, "")(w, req)
+	(&Server{Projects: projects}).handleWorkspaceStatus()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -57,7 +57,7 @@ func TestHandleWorkspaceStatus_NoRepositoryConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/workspace-status", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleWorkspaceStatus(projects, t.TempDir())(w, req)
+	(&Server{Projects: projects, ReposRoot: t.TempDir()}).handleWorkspaceStatus()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got workspaceStatusResponse
@@ -75,7 +75,7 @@ func TestHandleWorkspaceStatus_CleanCheckout(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/workspace-status", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleWorkspaceStatus(projects, reposRoot)(w, req)
+	(&Server{Projects: projects, ReposRoot: reposRoot}).handleWorkspaceStatus()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got workspaceStatusResponse
@@ -98,7 +98,7 @@ func TestHandleWorkspaceStatus_DirtyCheckout(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/workspace-status", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleWorkspaceStatus(projects, reposRoot)(w, req)
+	(&Server{Projects: projects, ReposRoot: reposRoot}).handleWorkspaceStatus()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got workspaceStatusResponse
@@ -120,7 +120,7 @@ func TestHandleWorkspaceStatus_BehindOrigin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/workspace-status", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleWorkspaceStatus(projects, reposRoot)(w, req)
+	(&Server{Projects: projects, ReposRoot: reposRoot}).handleWorkspaceStatus()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got workspaceStatusResponse
@@ -138,7 +138,7 @@ func TestHandleWorkspaceStatus_NeverClonesMissingCheckout(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/workspace-status", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleWorkspaceStatus(projects, reposRoot)(w, req)
+	(&Server{Projects: projects, ReposRoot: reposRoot}).handleWorkspaceStatus()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got workspaceStatusResponse

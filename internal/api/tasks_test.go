@@ -39,7 +39,7 @@ func TestHandleListProjectTasks_OK(t *testing.T) {
 	req := newTaskRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleListProjectTasks(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleListProjectTasks()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.ListResult
@@ -60,7 +60,7 @@ func TestHandleListProjectTasks_ProjectNotFound(t *testing.T) {
 	// tasks has no "List" expectation registered, so if the handler wrongly
 	// reached the task store despite the missing project, the mock would
 	// panic on the unexpected call and fail this test.
-	handleListProjectTasks(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleListProjectTasks()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -77,7 +77,7 @@ func TestHandleGetProjectTask_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleGetProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetProjectTask()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -97,7 +97,7 @@ func TestHandleGetProjectTask_NotFound(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-9999")
 	w := httptest.NewRecorder()
-	handleGetProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -114,7 +114,7 @@ func TestHandleCreateProjectTask_OK(t *testing.T) {
 	req := newTaskRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks", task.Task{ID: "fix-login-bug", Title: "Fix it"})
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleCreateProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	var got task.Task
@@ -135,7 +135,7 @@ func TestHandleCreateProjectTask_ProjectNotFound(t *testing.T) {
 	// tasks has no "Create" expectation registered, so if the handler
 	// wrongly reached the task store despite the missing project, the mock
 	// would panic on the unexpected call and fail this test.
-	handleCreateProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -150,7 +150,7 @@ func TestHandleCreateProjectTask_InvalidBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/demo-project/tasks", bytes.NewReader([]byte("not json")))
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleCreateProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -167,7 +167,7 @@ func TestHandleCreateProjectTask_AlreadyExists(t *testing.T) {
 	req := newTaskRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks", task.Task{ID: "dup", Title: "Dup"})
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	handleCreateProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -185,7 +185,7 @@ func TestHandleUpdateProjectTask_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleUpdateProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleUpdateProjectTask()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -206,7 +206,7 @@ func TestHandleUpdateProjectTask_IDMismatch(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleUpdateProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleUpdateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -224,7 +224,7 @@ func TestHandleUpdateProjectTask_NotFound(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-9999")
 	w := httptest.NewRecorder()
-	handleUpdateProjectTask(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleUpdateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

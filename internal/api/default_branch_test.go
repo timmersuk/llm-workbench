@@ -35,7 +35,7 @@ func TestEnsureDefaultBranch_AlreadySetSkipsResolverAndPersist(t *testing.T) {
 	resolver := &fakeDefaultBranchResolver{branch: "should-not-be-used"}
 
 	proj := project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}
-	got, err := ensureDefaultBranch(context.Background(), projects, proj, resolver)
+	got, err := (&Server{Projects: projects, DefaultBranchResolver: resolver}).ensureDefaultBranch(context.Background(), proj)
 
 	require.NoError(t, err)
 	assert.Equal(t, "main", got)
@@ -56,7 +56,7 @@ func TestEnsureDefaultBranch_BackfillsAndPersistsWhenUnset(t *testing.T) {
 	}).Return(project.Project{}, nil)
 	resolver := &fakeDefaultBranchResolver{branch: "main"}
 
-	got, err := ensureDefaultBranch(context.Background(), projects, proj, resolver)
+	got, err := (&Server{Projects: projects, DefaultBranchResolver: resolver}).ensureDefaultBranch(context.Background(), proj)
 
 	require.NoError(t, err)
 	assert.Equal(t, "main", got)
@@ -69,7 +69,7 @@ func TestEnsureDefaultBranch_ResolverFailureFailsClosed(t *testing.T) {
 	projects := new(mockProjectStore) // no .On("Update", ...) — must not be called on failure
 	resolver := &fakeDefaultBranchResolver{err: agentrunner.ErrDefaultBranchUnknown}
 
-	_, err := ensureDefaultBranch(context.Background(), projects, proj, resolver)
+	_, err := (&Server{Projects: projects, DefaultBranchResolver: resolver}).ensureDefaultBranch(context.Background(), proj)
 
 	assert.ErrorIs(t, err, agentrunner.ErrDefaultBranchUnknown)
 }
@@ -79,7 +79,7 @@ func TestEnsureDefaultBranch_NoRepositoriesIsAnError(t *testing.T) {
 	projects := new(mockProjectStore)
 	resolver := &fakeDefaultBranchResolver{branch: "main"}
 
-	_, err := ensureDefaultBranch(context.Background(), projects, proj, resolver)
+	_, err := (&Server{Projects: projects, DefaultBranchResolver: resolver}).ensureDefaultBranch(context.Background(), proj)
 
 	assert.ErrorIs(t, err, agentrunner.ErrNoRepository)
 	assert.Equal(t, 0, resolver.calls)
@@ -91,7 +91,7 @@ func TestEnsureDefaultBranch_PersistFailurePropagates(t *testing.T) {
 	projects.On("Update", "demo-project", mock.Anything).Return(project.Project{}, errors.New("disk full"))
 	resolver := &fakeDefaultBranchResolver{branch: "main"}
 
-	_, err := ensureDefaultBranch(context.Background(), projects, proj, resolver)
+	_, err := (&Server{Projects: projects, DefaultBranchResolver: resolver}).ensureDefaultBranch(context.Background(), proj)
 
 	assert.Error(t, err)
 }

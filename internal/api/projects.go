@@ -7,9 +7,9 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/project"
 )
 
-func handleListProjects(lister ProjectStore) http.HandlerFunc {
+func (s *Server) handleListProjects() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		result, err := lister.List()
+		result, err := s.Projects.List()
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -18,9 +18,9 @@ func handleListProjects(lister ProjectStore) http.HandlerFunc {
 	}
 }
 
-func handleGetProject(lister ProjectStore) http.HandlerFunc {
+func (s *Server) handleGetProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		p, err := lister.Get(r.PathValue("id"))
+		p, err := s.Projects.Get(r.PathValue("id"))
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -29,7 +29,7 @@ func handleGetProject(lister ProjectStore) http.HandlerFunc {
 	}
 }
 
-func handleCreateProject(store ProjectStore) http.HandlerFunc {
+func (s *Server) handleCreateProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in project.CreateInput
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -37,7 +37,7 @@ func handleCreateProject(store ProjectStore) http.HandlerFunc {
 			return
 		}
 
-		created, err := store.Create(in)
+		created, err := s.Projects.Create(in)
 		if err != nil {
 			writeMutationError(w, err)
 			return
@@ -46,7 +46,7 @@ func handleCreateProject(store ProjectStore) http.HandlerFunc {
 	}
 }
 
-func handleUpdateProject(store ProjectStore) http.HandlerFunc {
+func (s *Server) handleUpdateProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in project.UpdateInput
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -54,7 +54,7 @@ func handleUpdateProject(store ProjectStore) http.HandlerFunc {
 			return
 		}
 
-		updated, err := store.Update(r.PathValue("id"), in)
+		updated, err := s.Projects.Update(r.PathValue("id"), in)
 		if err != nil {
 			writeMutationError(w, err)
 			return

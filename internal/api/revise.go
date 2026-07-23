@@ -6,9 +6,9 @@ import "net/http"
 // (CONTEXT.md's "Revise"): moves stage back from planning to requirements,
 // reopening the requirements Conversation. 409 if the task isn't currently
 // in planning stage.
-func handleReviseRequirements(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleReviseRequirements() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}
@@ -25,9 +25,9 @@ func handleReviseRequirements(projects ProjectStore, factory TaskStoreFactory) h
 // handleRevisePlan is the "Revise Plan" action: moves stage back from
 // implementation/review to planning. 409 if the task isn't currently in
 // implementation or review stage.
-func handleRevisePlan(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleRevisePlan() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}

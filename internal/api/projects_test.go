@@ -28,7 +28,7 @@ func TestHandleListProjects_OK(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
 	w := httptest.NewRecorder()
-	handleListProjects(lister)(w, req)
+	(&Server{Projects: lister}).handleListProjects()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got project.ListResult
@@ -43,7 +43,7 @@ func TestHandleListProjects_Error(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
 	w := httptest.NewRecorder()
-	handleListProjects(lister)(w, req)
+	(&Server{Projects: lister}).handleListProjects()(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
@@ -55,7 +55,7 @@ func TestHandleGetProject_OK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project", nil)
 	req.SetPathValue("id", "demo-project")
 	w := httptest.NewRecorder()
-	handleGetProject(lister)(w, req)
+	(&Server{Projects: lister}).handleGetProject()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got project.Project
@@ -70,7 +70,7 @@ func TestHandleGetProject_NotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/nonexistent", nil)
 	req.SetPathValue("id", "nonexistent")
 	w := httptest.NewRecorder()
-	handleGetProject(lister)(w, req)
+	(&Server{Projects: lister}).handleGetProject()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -82,7 +82,7 @@ func TestHandleGetProject_InvalidID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/..%2Fetc", nil)
 	req.SetPathValue("id", "../etc")
 	w := httptest.NewRecorder()
-	handleGetProject(lister)(w, req)
+	(&Server{Projects: lister}).handleGetProject()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -94,7 +94,7 @@ func TestHandleCreateProject_OK(t *testing.T) {
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects", in)
 	w := httptest.NewRecorder()
-	handleCreateProject(store)(w, req)
+	(&Server{Projects: store}).handleCreateProject()(w, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	var got project.Project
@@ -107,7 +107,7 @@ func TestHandleCreateProject_InvalidBody(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", bytes.NewReader([]byte("not json")))
 	w := httptest.NewRecorder()
-	handleCreateProject(store)(w, req)
+	(&Server{Projects: store}).handleCreateProject()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -119,7 +119,7 @@ func TestHandleCreateProject_MissingName(t *testing.T) {
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects", in)
 	w := httptest.NewRecorder()
-	handleCreateProject(store)(w, req)
+	(&Server{Projects: store}).handleCreateProject()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -131,7 +131,7 @@ func TestHandleCreateProject_AlreadyExists(t *testing.T) {
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects", in)
 	w := httptest.NewRecorder()
-	handleCreateProject(store)(w, req)
+	(&Server{Projects: store}).handleCreateProject()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -144,7 +144,7 @@ func TestHandleUpdateProject_OK(t *testing.T) {
 	req := newProjectRequest(t, http.MethodPut, "/api/v1/projects/demo-project", in)
 	req.SetPathValue("id", "demo-project")
 	w := httptest.NewRecorder()
-	handleUpdateProject(store)(w, req)
+	(&Server{Projects: store}).handleUpdateProject()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got project.Project
@@ -160,7 +160,7 @@ func TestHandleUpdateProject_NotFound(t *testing.T) {
 	req := newProjectRequest(t, http.MethodPut, "/api/v1/projects/nonexistent", in)
 	req.SetPathValue("id", "nonexistent")
 	w := httptest.NewRecorder()
-	handleUpdateProject(store)(w, req)
+	(&Server{Projects: store}).handleUpdateProject()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -173,7 +173,7 @@ func TestHandleUpdateProject_MissingName(t *testing.T) {
 	req := newProjectRequest(t, http.MethodPut, "/api/v1/projects/demo-project", in)
 	req.SetPathValue("id", "demo-project")
 	w := httptest.NewRecorder()
-	handleUpdateProject(store)(w, req)
+	(&Server{Projects: store}).handleUpdateProject()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

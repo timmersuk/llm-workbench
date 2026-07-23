@@ -76,7 +76,7 @@ func executeEventToWire(ev agentrunner.ExecuteEvent) executeStreamEvent {
 // survives to write a record — the worktree/branch is left for manual
 // inspection and Stage simply never advances (docs/milestones/milestone5.md's
 // resolved decisions).
-func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver) http.HandlerFunc {
+func (s *Server) handleStartExecution() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req executionStartRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -88,7 +88,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 		if executorKey == "" {
 			executorKey = defaultExecutionExecutor
 		}
-		runner, ok := agentRunners[executorKey]
+		runner, ok := s.AgentRunners[executorKey]
 		if !ok {
 			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
 			return
@@ -97,7 +97,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
 
-		proj, err := projects.Get(projectId)
+		proj, err := s.Projects.Get(projectId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -105,17 +105,17 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 		// Resolved before the SSE stream commits (below) so a fail-closed
 		// determination failure reports as a normal HTTP error, not
 		// something squeezed into the event stream.
-		defaultBranch, err := ensureDefaultBranch(r.Context(), projects, proj, defaultBranchResolver)
+		defaultBranch, err := s.ensureDefaultBranch(r.Context(), proj)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
 			return
 		}
-		root, err := projects.TasksRoot(projectId)
+		root, err := s.Projects.TasksRoot(projectId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
-		store := factory(root)
+		store := s.TaskStores(root)
 
 		t, err := store.Get(taskId)
 		if err != nil {
@@ -162,7 +162,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 			flusher.Flush()
 		}
 
-		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), reposRoot, proj.Repositories, taskId, executionID, forkFrom, defaultBranch)
+		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), s.ReposRoot, proj.Repositories, taskId, executionID, forkFrom, defaultBranch)
 		if wsErr != nil {
 			writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("resolving execution workspace: %v", wsErr)})
 			return
@@ -178,7 +178,7 @@ func handleStartExecution(projects ProjectStore, factory TaskStoreFactory, agent
 		var prCommentsPath string
 		if reviewFeedback != "" && t.PullRequest != nil {
 			prCommentsPath = filepath.Join(ws.Path, prCommentsExecutionFilename)
-			if err := writePRCommentsFile(r.Context(), prClient, ws.Path, prCommentsPath, t.PullRequest.Number); err != nil {
+			if err := s.writePRCommentsFile(r.Context(), ws.Path, prCommentsPath, t.PullRequest.Number); err != nil {
 				writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("fetching PR comments: %v", err)})
 				return
 			}
@@ -272,9 +272,9 @@ func classifyExecutionOutcome(exec *task.Execution, err error, ctx context.Conte
 // task, oldest first — used by the frontend's Execute panel to show past
 // attempts' status without reaching into Review-stage diff territory
 // (out of scope for this milestone).
-func handleListExecutions(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleListExecutions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}

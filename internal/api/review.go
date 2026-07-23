@@ -24,9 +24,9 @@ type reviewDiffResponse struct {
 // "merged" screen reads this to show the latest verdict's notes on a fresh
 // visit, when no just-finalized response is in hand (docs/milestones/done/milestone6.md
 // PR 3 decision 4).
-func handleListReviews(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleListReviews() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}
@@ -47,27 +47,27 @@ func handleListReviews(projects ProjectStore, factory TaskStoreFactory) http.Han
 // (ResolveReviewWorkspace) and collects the same patch fed to the agent's
 // prompt (CollectExecutionPatch), just handed to the browser instead. 404 if
 // the task has no execution to review yet.
-func handleReviewDiff(projects ProjectStore, factory TaskStoreFactory, reposRoot string, defaultBranchResolver agentrunner.DefaultBranchResolver) http.HandlerFunc {
+func (s *Server) handleReviewDiff() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
 
-		proj, err := projects.Get(projectId)
+		proj, err := s.Projects.Get(projectId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
-		defaultBranch, err := ensureDefaultBranch(r.Context(), projects, proj, defaultBranchResolver)
+		defaultBranch, err := s.ensureDefaultBranch(r.Context(), proj)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
 			return
 		}
-		root, err := projects.TasksRoot(projectId)
+		root, err := s.Projects.TasksRoot(projectId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
-		store := factory(root)
+		store := s.TaskStores(root)
 
 		executions, err := store.ListExecutions(taskId)
 		if err != nil {
@@ -83,7 +83,7 @@ func handleReviewDiff(projects ProjectStore, factory TaskStoreFactory, reposRoot
 		// to review (same selection buildReviewContext makes).
 		latest := executions[len(executions)-1]
 
-		ws, err := agentrunner.ResolveReviewWorkspace(r.Context(), reposRoot, proj.Repositories, latest.ExecutionID, defaultBranch)
+		ws, err := agentrunner.ResolveReviewWorkspace(r.Context(), s.ReposRoot, proj.Repositories, latest.ExecutionID, defaultBranch)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resolving review workspace: %v", err), http.StatusInternalServerError)
 			return

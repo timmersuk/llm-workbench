@@ -82,7 +82,7 @@ type chatCompletionRequest struct {
 	History    []chat.Message `json:"history,omitempty"`
 }
 
-func handleChatCompletions(agentRunners map[string]agentrunner.AgentRunner, reposRoot string) http.HandlerFunc {
+func (s *Server) handleChatCompletions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req chatCompletionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -98,7 +98,7 @@ func handleChatCompletions(agentRunners map[string]agentrunner.AgentRunner, repo
 		if executorKey == "" {
 			executorKey = defaultChatExecutor
 		}
-		runner, ok := agentRunners[executorKey]
+		runner, ok := s.AgentRunners[executorKey]
 		if !ok {
 			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
 			return
@@ -129,7 +129,7 @@ func handleChatCompletions(agentRunners map[string]agentrunner.AgentRunner, repo
 		// ignores this field entirely.
 		_, err := runner.Run(r.Context(), agentrunner.RunInput{
 			SessionKey:  req.SessionKey,
-			Workspace:   reposRoot,
+			Workspace:   s.ReposRoot,
 			UserMessage: req.Content,
 			Model:       req.Model,
 			History:     req.History,
@@ -156,7 +156,7 @@ type chatSessionCloseRequest struct {
 // (whichever registered runner actually holds one for this key — safe to
 // call CloseSession on every entry, since it's a no-op for a key a given
 // runner never saw) — the "New chat" action's server-side counterpart.
-func handleCloseChatSession(agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+func (s *Server) handleCloseChatSession() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req chatSessionCloseRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -167,14 +167,14 @@ func handleCloseChatSession(agentRunners map[string]agentrunner.AgentRunner) htt
 			http.Error(w, "session_key is required", http.StatusBadRequest)
 			return
 		}
-		closeSessions(agentRunners, req.SessionKey)
+		s.closeSessions(req.SessionKey)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func handleListModels(agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+func (s *Server) handleListModels() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		runner, ok := agentRunners[defaultChatExecutor]
+		runner, ok := s.AgentRunners[defaultChatExecutor]
 		if !ok {
 			http.Error(w, "no local chat executor registered", http.StatusInternalServerError)
 			return
