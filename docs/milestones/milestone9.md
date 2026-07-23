@@ -1,8 +1,8 @@
 # Milestone 9 — Knowledge-Base Promotion
 
-**Status:** Scoped via a `/grill-with-docs` session on 2026-07-22. PRs 1-3
-shipped 2026-07-23 — see "What shipped (PR 1)"/"(PR 2)"/"(PR 3)" below.
-PR 4 not started.
+**Status: Shipped (2026-07-23)** — all four phased PRs merged. Scoped via a
+`/grill-with-docs` session on 2026-07-22. See "What shipped (PR 1)" through
+"(PR 4)" below for what actually landed.
 
 ## Why now
 
@@ -257,9 +257,10 @@ Delivered as sequential PRs, matching prior milestones' cadence:
   `ReviewDraftForm`'s pattern; wires `propose_knowledge` into the
   Review-stage UI a human actually sees and acts on. See "What shipped
   (PR 3)" below.
-* **PR 4 — Content migration.** Port the pathology catalog into a real
-  `data/knowledge/` concept doc; live-verify an executor finding and citing
-  it via the new query tool, end to end.
+* **PR 4 — Content migration. ✅ Shipped (2026-07-23).** Port the pathology
+  catalog into a real `data/knowledge/` concept doc; live-verify an
+  executor finding and citing it via the new query tool, end to end. See
+  "What shipped (PR 4)" below. Milestone 9 is complete as of this PR.
 
 ## What shipped (PR 1, 2026-07-23)
 
@@ -460,9 +461,60 @@ was not exercised against a real model in this pass (no task was at
 React-Testing-Library suite above, which renders the real component tree
 and dispatches real DOM events rather than mocking the UI layer.
 
+## What shipped (PR 4, 2026-07-23)
+
+`data/knowledge/model-behavior/local-tool-loop-pathologies.md` — the
+bundle's first-ever concept document, resolving the one remaining open
+question (concept ID / directory layout: `model-behavior/` grouping, as
+suggested during scoping). `type: Domain Note`, with `title`/
+`description`/`tags`/`timestamp` frontmatter. Synthesized from ADR-0011
+plus the fuller primary-source evidence in the never-merged
+`milestone8-phase0-spike` branch's `spike/NOTES.md` (raw per-run findings
+ADR-0011 itself only summarizes) — not a copy-paste, a genuine
+distillation: the four pathologies (duplicate tool calls, repetition
+spirals, tool-call-XML-in-the-wrong-channel, announce-then-stall), a
+related wire-format gotcha (gpt-oss's `reasoning` vs `reasoning_content`
+field naming), each pathology's concrete engine-level guard mapped to the
+real code that implements it today (`internal/toolloop/engine.go`'s
+`dedupeCalls`/`capCalls`/`executeCall`, `Config.MaxTokens`,
+`Result.Exhausted`, `AgentRunner.CheckHealth`), and the reliability
+data point that model choice dominates framework choice (qwen3.6 15-75%
+depending on config; `gpt-oss-20b` 6/6 clean). ADR-0011 itself is
+unchanged except for a short forward-pointer note — it remains the
+historical record of *why* hand-rolled was chosen; the new concept is the
+standalone, query-tool-accessible version of *what the pathologies are*,
+written for reuse outside that specific decision (the motivating second
+consumer: `data/projects/agent-shell/tasks/concept-notes/`'s own planned
+local-model agent runner).
+
+**Live-verified end to end, for real** — not simulated: built
+`cmd/draftmcp` fresh, pointed a `--strict-mcp-config` `claude` CLI
+invocation at it with `--knowledge-root data/knowledge`, and asked a
+freshly-started Claude Code session (no other context, `--allowedTools`
+scoped to only the two knowledge tools) to find and summarize "the
+concept about tool-loop reliability." It correctly called
+`list_knowledge_concepts`, then `get_knowledge_concept` with
+`concept_id: model-behavior/local-tool-loop-pathologies`, and accurately
+summarized the four pathologies and the duplicate-call guard
+(`dedupeCalls`/`capCalls`/`MaxToolCallsPerTurn`) — proof that a real
+executor, through the real `cmd/draftmcp` binary, against the real
+`data/knowledge/` bundle, can discover and cite content nobody hand-fed
+it. Also verified directly against `internal/knowledge.FileStore`/
+`internal/knowledgetool.ExecuteList`/`ExecuteGet` (the same code path
+`ChatClientRunner`/`ClaudeRunner` use) before the live CLI check, to
+confirm the document's frontmatter/body parse cleanly. `go build ./...`,
+`go vet ./...`, and `go test ./...` all pass unchanged (this PR is
+content-only; no Go code changed).
+
 ## Open questions for whoever executes this milestone
 
-* **Concept ID / directory layout for the pathology catalog** — not pinned
-  during scoping; pick something descriptive under `data/knowledge/` when
-  PR 4 lands (e.g. a `model-behavior/` or similar grouping), consistent
-  with OKF's hierarchical bundle structure.
+None remaining — the concept ID/layout question above is resolved, and
+every PR in this milestone's phasing has shipped. The three items named
+in "Content migration" as deliberate fast-follows (the OS-sandboxing
+evaluation from ADR-0010, the Go scaffolding-conventions concept, and
+full-text search/a fixed `type` taxonomy/assistive search from "Out of
+scope") remain exactly that: real, named, not silently dropped, but
+outside this milestone's own scope — pick them up as their own
+`/grill-with-docs` sessions if and when they're actually needed, per this
+milestone's own stated bias against building structure ahead of
+demonstrated need.
