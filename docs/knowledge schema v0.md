@@ -143,17 +143,16 @@ suited to being executor-driven.
 
 ## 6. Status
 
-No Go-side store for this bundle exists yet (see
-`docs/engineering conventions.md` → Storage & file layout, "eventually
-`knowledge/` nested under it"). This document fixes the on-disk format
-so that the store, when built, has a spec to parse against rather than
-inventing one ad hoc — the same reason `task schema v0.md` predates the
-task store's full feature set.
-
-When built, this store should be exposed to the rest of the system as a
-narrow provider-shaped interface (mirroring `TaskLister`/`ProjectLister`
-in `internal/api/router.go:17,24`) rather than a concrete type consumed
-directly — see `docs/provider abstraction.md`.
+`internal/knowledge.FileStore` (Milestone 9 PR 1) implements this format:
+`Get`/`List`/`Put` over a bundle root, exposed to the rest of the system as
+the narrow provider-shaped `api.KnowledgeStore` interface
+(`internal/api/router.go`) — mirroring `TaskLister`/`ProjectLister` in the
+same file — rather than a concrete type consumed directly, per
+`docs/provider abstraction.md`. `List` skips this section's reserved
+`index.md`/`log.md` filenames and any concept that fails to parse (logged,
+not fatal). `Put` is a whole-file create-or-replace by concept id, never a
+partial merge — the write side of Milestone 9's `propose_knowledge` Draft
+tool.
 
 ---
 

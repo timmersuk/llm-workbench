@@ -52,7 +52,7 @@ func NewChatClientRunner(client chat.ChatClient) *ChatClientRunner {
 // Run implements AgentRunner. It builds the message list (system prompt +
 // held history + the new user message), runs the tool loop offering the
 // read-only toolset when in.Workspace is a usable directory, and offers
-// in.Tool (the Draft-proposing tool) as the loop's stop condition — so a
+// in.Tools (the Draft-proposing tool(s)) as the loop's stop condition — so a
 // Draft proposal surfaces as RunOutput.ToolCall exactly like ClaudeRunner's.
 func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.Delta) error) (RunOutput, error) {
 	if in.SessionKey == "" {
@@ -86,9 +86,8 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 		MaxTurns:  claudeRunnerMaxTurns,
 		MaxTokens: chatClientMaxResponseTokens,
 	}
-	if in.Tool.Function.Name != "" {
-		tool := in.Tool
-		cfg.StopTool = &tool
+	if len(in.Tools) > 0 {
+		cfg.StopTools = in.Tools
 	}
 	// Surface the loop's intermediate tool activity (Read/Grep/Glob/bash) to
 	// the caller as it happens, exactly as Execute already does. Only the

@@ -111,7 +111,7 @@ func TestStopToolTakesPrecedence(t *testing.T) {
 		),
 	}}
 	res, err := New(f).Run(context.Background(), Config{
-		Tools: ReadOnlyTools(), StopTool: &stop, MaxTurns: 5,
+		Tools: ReadOnlyTools(), StopTools: []chat.Tool{stop}, MaxTurns: 5,
 	}, baseMessages(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +121,26 @@ func TestStopToolTakesPrecedence(t *testing.T) {
 	}
 	if res.Turns != 1 {
 		t.Fatalf("should stop on turn 1, got %d", res.Turns)
+	}
+}
+
+// TestMultipleStopToolsEitherOneStops covers Review's shape
+// (docs/milestones/milestone9.md): two stop tools offered at once, and the
+// model calling the second one in the list still stops the loop.
+func TestMultipleStopToolsEitherOneStops(t *testing.T) {
+	review := chat.Tool{Type: "function", Function: chat.ToolSchema{Name: "propose_review"}}
+	knowledgeTool := chat.Tool{Type: "function", Function: chat.ToolSchema{Name: "propose_knowledge"}}
+	f := &fakeClient{turns: []func(func(chat.Delta) error) error{
+		toolTurn(call("c1", "propose_knowledge", `{"concept_id":"x"}`)),
+	}}
+	res, err := New(f).Run(context.Background(), Config{
+		StopTools: []chat.Tool{review, knowledgeTool}, MaxTurns: 5,
+	}, baseMessages(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StopCall == nil || res.StopCall.Function.Name != "propose_knowledge" {
+		t.Fatalf("expected stop on propose_knowledge, got %+v", res)
 	}
 }
 

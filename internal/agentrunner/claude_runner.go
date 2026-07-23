@@ -172,7 +172,7 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 	var out RunOutput
 	var content strings.Builder
 	for msg := range client.ReceiveMessages(runCtx) {
-		done, err := processMessage(msg, in.Tool.Function.Name, &content, &out, onDelta)
+		done, err := processMessage(msg, toolNames(in.Tools), &content, &out, onDelta)
 		if err != nil {
 			return out, err
 		}
@@ -284,17 +284,20 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	if in.EnableBashTool {
 		allowedTools = append(allowedTools, "Bash")
 	}
-	// in.Tool is optional — free-chat callers (no Draft concept) leave it
-	// as the zero value, in which case no MCP tool/server is registered at
-	// all rather than trying to build one from an empty name/schema.
-	if in.Tool.Function.Name != "" {
-		schema, err := decodeToolSchema(in.Tool.Function.Parameters)
-		if err != nil {
-			return nil, err
+	// in.Tools is optional — free-chat callers (no Draft concept) leave it
+	// empty, in which case no MCP tool/server is registered at all rather
+	// than trying to build one from zero tools.
+	if len(in.Tools) > 0 {
+		tools := make([]*claudecode.McpTool, 0, len(in.Tools))
+		for _, t := range in.Tools {
+			schema, err := decodeToolSchema(t.Function.Parameters)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, claudecode.NewTool(t.Function.Name, t.Function.Description, schema, draftToolHandler))
+			allowedTools = append(allowedTools, mcpQualifiedName(t.Function.Name))
 		}
-		tool := claudecode.NewTool(in.Tool.Function.Name, in.Tool.Function.Description, schema, draftToolHandler)
-		server := claudecode.CreateSDKMcpServer(mcpServerName, "1.0.0", tool)
-		allowedTools = append(allowedTools, mcpQualifiedName(in.Tool.Function.Name))
+		server := claudecode.CreateSDKMcpServer(mcpServerName, "1.0.0", tools...)
 		opts = append(opts, claudecode.WithSdkMcpServer(mcpServerName, server))
 	}
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
@@ -364,7 +367,7 @@ func isStaleClaudeConnectionError(err error) bool {
 // mcpQualifiedName returns the fully-qualified tool name the `claude` CLI
 // reports in a ToolUseBlock for an in-process MCP tool (mcp__<server>__
 // <tool>) — WithAllowedTools and ToolUseBlock.Name both use this qualified
-// form, never the bare tool name a caller passes in RunInput.Tool.
+// form, never a bare tool name a caller passes in RunInput.Tools.
 func mcpQualifiedName(toolName string) string {
 	return "mcp__" + mcpServerName + "__" + toolName
 }
@@ -388,11 +391,28 @@ func draftToolHandler(_ context.Context, _ map[string]any) (*claudecode.McpToolR
 	}, nil
 }
 
+// toolNames returns the bare (non-MCP-qualified) names of tools.
+func toolNames(tools []chat.Tool) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Function.Name
+	}
+	return names
+}
+
 // processMessage folds one message from a claudecode.Client's message
 // stream into content/out, and reports whether the turn is complete
-// (msg was a ResultMessage). Split out from Run's loop so it's testable
-// against hand-built claudecode.Message values without a live subprocess.
-func processMessage(msg claudecode.Message, toolName string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error) (done bool, err error) {
+// (msg was a ResultMessage). toolNames are the bare names of every Draft
+// tool this turn offered (RunInput.Tools) — a ToolUseBlock is only ever
+// treated as the turn's Draft proposal if its MCP-qualified name matches
+// one of them; a session with several offered tools (e.g. Review's
+// propose_review and propose_knowledge) surfaces whichever one the model
+// actually called. Split out from Run's loop so it's testable against
+// hand-built claudecode.Message values without a live subprocess.
+func processMessage(msg claudecode.Message, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error) (done bool, err error) {
 	switch m := msg.(type) {
 	case *claudecode.StreamEvent:
 		if text, ok := streamDeltaText(m); ok && onDelta != nil {
@@ -406,18 +426,20 @@ func processMessage(msg claudecode.Message, toolName string, content *strings.Bu
 			case *claudecode.TextBlock:
 				content.WriteString(b.Text)
 			case *claudecode.ToolUseBlock:
-				if out.ToolCall == nil && b.Name == mcpQualifiedName(toolName) {
-					args, err := json.Marshal(b.Input)
-					if err != nil {
-						return true, fmt.Errorf("encoding tool call arguments: %w", err)
-					}
-					out.ToolCall = &chat.ToolCall{
-						ID:   b.ToolUseID,
-						Type: "function",
-						Function: chat.ToolCallFunction{
-							Name:      toolName,
-							Arguments: string(args),
-						},
+				if out.ToolCall == nil {
+					if name, ok := matchQualifiedToolName(b.Name, toolNames); ok {
+						args, err := json.Marshal(b.Input)
+						if err != nil {
+							return true, fmt.Errorf("encoding tool call arguments: %w", err)
+						}
+						out.ToolCall = &chat.ToolCall{
+							ID:   b.ToolUseID,
+							Type: "function",
+							Function: chat.ToolCallFunction{
+								Name:      name,
+								Arguments: string(args),
+							},
+						}
 					}
 				}
 			}
@@ -430,6 +452,18 @@ func processMessage(msg claudecode.Message, toolName string, content *strings.Bu
 		return true, nil
 	}
 	return false, nil
+}
+
+// matchQualifiedToolName reports whether qualifiedName (a ToolUseBlock's
+// mcp__<server>__<tool> name) matches any of names' MCP-qualified form,
+// returning that bare name if so.
+func matchQualifiedToolName(qualifiedName string, names []string) (string, bool) {
+	for _, name := range names {
+		if qualifiedName == mcpQualifiedName(name) {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // processExecuteMessage folds one message from a claudecode.Client's

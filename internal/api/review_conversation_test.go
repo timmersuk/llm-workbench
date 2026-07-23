@@ -16,15 +16,18 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
-func TestStageTool_ReviewReturnsProposeReview(t *testing.T) {
-	tool, ok := stageTool(task.StageReview)
+func TestStageTool_ReviewReturnsProposeReviewAndProposeKnowledge(t *testing.T) {
+	tools, ok := stageTool(task.StageReview)
 	require.True(t, ok)
-	assert.Equal(t, drafttool.ProposeReviewName, tool.Function.Name)
-	assert.NotEmpty(t, tool.Function.Parameters)
+	require.Len(t, tools, 2)
+	assert.Equal(t, drafttool.ProposeReviewName, tools[0].Function.Name)
+	assert.NotEmpty(t, tools[0].Function.Parameters)
+	assert.Equal(t, drafttool.ProposeKnowledgeName, tools[1].Function.Name)
+	assert.NotEmpty(t, tools[1].Function.Parameters)
 }
 
 func TestBuildStagePrompt_ReviewUsesReviewSystemPrompt(t *testing.T) {
-	prompt := (&Server{KnowledgeReader: new(mockKnowledgeReader)}).buildStagePrompt(
+	prompt := (&Server{KnowledgeStore: new(mockKnowledgeStore)}).buildStagePrompt(
 		task.Task{ID: "task-a", Objective: "ship it"},
 		project.Project{Name: "demo"},
 		task.StageReview,

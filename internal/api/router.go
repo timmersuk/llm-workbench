@@ -56,11 +56,17 @@ type TaskStore interface {
 	ListReviews(id string) ([]task.Review, error)
 }
 
-// KnowledgeReader resolves a knowledge concept id (e.g.
-// "coding-standards/logging") to its parsed OKF document. Satisfied by
-// *knowledge.FileReader — see docs/knowledge schema v0.md §6.
-type KnowledgeReader interface {
+// KnowledgeStore resolves, lists, and writes OKF concept documents under
+// data/knowledge/. Satisfied by *knowledge.FileStore — see docs/knowledge
+// schema v0.md §6. Get is the original Milestone 4 read: a concept id (e.g.
+// "coding-standards/logging") to its parsed document. List/Put (Milestone 9)
+// back the propose_knowledge write path and a future query tool: List
+// returns every concept's browsable summary, Put is a whole-file
+// create-or-replace by concept id.
+type KnowledgeStore interface {
 	Get(conceptID string) (knowledge.Concept, error)
+	List() ([]knowledge.ConceptSummary, error)
+	Put(conceptID string, c knowledge.Concept) error
 }
 
 // TaskStoreFactory builds a TaskStore rooted at the given directory. Task
@@ -79,7 +85,7 @@ type TaskStoreFactory func(root string) TaskStore
 type Server struct {
 	Projects              ProjectStore
 	TaskStores            TaskStoreFactory
-	KnowledgeReader       KnowledgeReader
+	KnowledgeStore        KnowledgeStore
 	AgentRunners          map[string]agentrunner.AgentRunner
 	ReposRoot             string
 	PRClient              agentrunner.GitHubPRClient
@@ -107,11 +113,11 @@ type Server struct {
 // (agentrunner.DefaultBranchResolver) — a real one built via
 // agentrunner.NewDefaultBranchResolver() in production, a fake in tests
 // (docs/milestones/done/milestone8a.md).
-func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
+func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeStore KnowledgeStore, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
 	s := &Server{
 		Projects:              projects,
 		TaskStores:            taskStores,
-		KnowledgeReader:       knowledgeReader,
+		KnowledgeStore:        knowledgeStore,
 		AgentRunners:          agentRunners,
 		ReposRoot:             reposRoot,
 		PRClient:              prClient,
@@ -146,6 +152,7 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeRead
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", s.handleFinalizeRequirements())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/finalize", s.handleFinalizePlan())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/review/finalize", s.handleFinalizeReview())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/knowledge/finalize", s.handleFinalizeKnowledge())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/revise", s.handleReviseRequirements())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", s.handleRevisePlan())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", s.handleStartExecution())

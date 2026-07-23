@@ -12,9 +12,10 @@ package drafttool
 import "encoding/json"
 
 const (
-	ProposeContextName = "propose_context"
-	ProposePlanName    = "propose_plan"
-	ProposeReviewName  = "propose_review"
+	ProposeContextName   = "propose_context"
+	ProposePlanName      = "propose_plan"
+	ProposeReviewName    = "propose_review"
+	ProposeKnowledgeName = "propose_knowledge"
 )
 
 // Definition is one Draft tool's name, human-readable description, and
@@ -81,6 +82,17 @@ var proposeReviewSchema = json.RawMessage(`{
   "required": ["decision", "notes"]
 }`)
 
+var proposeKnowledgeSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "concept_id": {"type": "string", "description": "The OKF concept id (its path under data/knowledge/ with the .md suffix removed), e.g. coding-standards/logging. Reuse an existing id to propose an edit; use a new one to propose a brand-new concept."},
+    "type": {"type": "string", "description": "The concept's OKF type, e.g. Coding Standard, Architecture Decision, Design Note, Domain Note, Operational Practice, Reference."},
+    "frontmatter": {"type": "object", "description": "Any additional frontmatter fields beyond type — e.g. title, description, tags, resource."},
+    "body": {"type": "string", "description": "The concept's full markdown body."}
+  },
+  "required": ["concept_id", "type", "body"]
+}`)
+
 // ProposeContext is the Requirements-stage Draft tool definition.
 var ProposeContext = Definition{
 	Name:        ProposeContextName,
@@ -102,8 +114,25 @@ var ProposeReview = Definition{
 	Schema:      proposeReviewSchema,
 }
 
+// ProposeKnowledge is the Review-stage Draft tool for folding a durable
+// learning into the Knowledge layer (data/knowledge/) — offered alongside
+// ProposeReview, not instead of it (docs/milestones/milestone9.md): a
+// review conversation can propose any number of knowledge concepts before
+// (or instead of) proposing its review verdict. Unlike ProposeReview's
+// three-way decision, this is two-way (accept/reject) — there is no prior
+// execution branch for a "needs_changes" state to continue from, so a
+// rejected proposal is just more conversation, not a special decision
+// value. Always carries the concept's full resulting content (never a
+// diff), covering both a brand-new concept_id and an edit to an existing
+// one with the same tool call shape.
+var ProposeKnowledge = Definition{
+	Name:        ProposeKnowledgeName,
+	Description: "Propose a new knowledge concept, or an edit to an existing one, for the human to accept or reject — always the full resulting content (concept_id, type, frontmatter, body), never a diff.",
+	Schema:      proposeKnowledgeSchema,
+}
+
 // All returns every known Draft tool definition, in a stable order — used
 // by cmd/draftmcp to build its static tools/list response.
 func All() []Definition {
-	return []Definition{ProposeContext, ProposePlan, ProposeReview}
+	return []Definition{ProposeContext, ProposePlan, ProposeReview, ProposeKnowledge}
 }

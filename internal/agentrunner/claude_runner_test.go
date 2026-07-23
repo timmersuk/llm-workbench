@@ -32,7 +32,7 @@ func TestProcessMessage_AccumulatesText(t *testing.T) {
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "hello "}},
 	}
-	done, err := processMessage(msg, "propose_plan", &content, &out, nil)
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "hello ", content.String())
@@ -49,7 +49,7 @@ func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
 			Input:     map[string]any{"approach": "do it"},
 		}},
 	}
-	done, err := processMessage(msg, "propose_plan", &content, &out, nil)
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
@@ -68,7 +68,7 @@ func TestProcessMessage_IgnoresNonMatchingToolCall(t *testing.T) {
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{Name: "Read", Input: map[string]any{}}},
 	}
-	_, err := processMessage(msg, "propose_plan", &content, &out, nil)
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.Nil(t, out.ToolCall)
 }
@@ -77,7 +77,7 @@ func TestProcessMessage_IgnoresNonMatchingToolCall(t *testing.T) {
 // caught during live e2e verification: the `claude` CLI reports an
 // in-process MCP tool's ToolUseBlock.Name fully qualified
 // (mcp__<server>__<tool>), never as the bare tool name a caller passes in
-// RunInput.Tool — comparing against the bare name silently drops every
+// RunInput.Tools — comparing against the bare name silently drops every
 // Draft proposal.
 func TestProcessMessage_RequiresFullyQualifiedMcpName(t *testing.T) {
 	var content strings.Builder
@@ -86,9 +86,31 @@ func TestProcessMessage_RequiresFullyQualifiedMcpName(t *testing.T) {
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{Name: "propose_plan", Input: map[string]any{}}},
 	}
-	_, err := processMessage(msg, "propose_plan", &content, &out, nil)
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.Nil(t, out.ToolCall, "the bare tool name alone must not match — the CLI always reports it fully qualified")
+}
+
+// TestProcessMessage_MatchesAnyOfSeveralOfferedTools covers Review's shape
+// (docs/milestones/milestone9.md): a session can offer more than one Draft
+// tool at once (propose_review, propose_knowledge), and a call to either
+// one is recognized as the turn's proposal.
+func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
+			ToolUseID: "call-1",
+			Name:      "mcp__draft__propose_knowledge",
+			Input:     map[string]any{"concept_id": "x"},
+		}},
+	}
+	done, err := processMessage(msg, []string{"propose_review", "propose_knowledge"}, &content, &out, nil)
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.NotNil(t, out.ToolCall)
+	assert.Equal(t, "propose_knowledge", out.ToolCall.Function.Name)
 }
 
 func TestProcessMessage_KeepsFirstToolCallOnly(t *testing.T) {
@@ -102,7 +124,7 @@ func TestProcessMessage_KeepsFirstToolCallOnly(t *testing.T) {
 			Input:     map[string]any{},
 		}},
 	}
-	_, err := processMessage(msg, "propose_plan", &content, &out, nil)
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "first", out.ToolCall.ID)
 }
@@ -112,7 +134,7 @@ func TestProcessMessage_ResultMessageEndsTurnSuccessfully(t *testing.T) {
 	content.WriteString("final text")
 	var out RunOutput
 
-	done, err := processMessage(&claudecode.ResultMessage{IsError: false}, "propose_plan", &content, &out, nil)
+	done, err := processMessage(&claudecode.ResultMessage{IsError: false}, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.True(t, done)
 	assert.Equal(t, "final text", out.Content)
@@ -122,7 +144,7 @@ func TestProcessMessage_ResultMessageReportsError(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
 
-	done, err := processMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, "propose_plan", &content, &out, nil)
+	done, err := processMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, []string{"propose_plan"}, &content, &out, nil)
 	assert.True(t, done)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
@@ -137,7 +159,7 @@ func TestProcessMessage_StreamDeltaInvokesOnDelta(t *testing.T) {
 		"type":  claudecode.StreamEventTypeContentBlockDelta,
 		"delta": map[string]any{"text": "chunk"},
 	}}
-	done, err := processMessage(msg, "propose_plan", &content, &out, func(d chat.Delta) error {
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, func(d chat.Delta) error {
 		received = append(received, d)
 		return nil
 	})
@@ -155,7 +177,7 @@ func TestProcessMessage_StreamDeltaPropagatesOnDeltaError(t *testing.T) {
 		"type":  claudecode.StreamEventTypeContentBlockDelta,
 		"delta": map[string]any{"text": "chunk"},
 	}}
-	done, err := processMessage(msg, "propose_plan", &content, &out, func(chat.Delta) error { return wantErr })
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, func(chat.Delta) error { return wantErr })
 	assert.True(t, done)
 	assert.ErrorIs(t, err, wantErr)
 }

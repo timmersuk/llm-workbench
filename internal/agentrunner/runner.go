@@ -61,13 +61,15 @@ type RunInput struct {
 	// (ChatClientRunner); implementations that don't support model
 	// selection (ClaudeRunner) ignore it.
 	Model string
-	// Tool is the Draft-proposing tool the agent should call once its
+	// Tools are the Draft-proposing tool(s) the agent may call once a
 	// proposal is ready (stageTool in internal/api/stage_conversation.go) —
-	// the same tool the local-LLM chat path registers, so both paths
-	// produce the same task.ConversationToolCall shape downstream. The
-	// zero value (Tool.Function.Name == "") means no tool is offered —
-	// free-chat callers leave this unset.
-	Tool chat.Tool
+	// the same tools the local-LLM chat path registers, so both paths
+	// produce the same task.ConversationToolCall shape downstream. Usually
+	// one; Review offers two at once (propose_review and propose_knowledge,
+	// docs/milestones/milestone9.md) so a human can review either kind of
+	// proposal without ending the conversation. An empty slice means no
+	// tool is offered — free-chat callers leave this unset.
+	Tools []chat.Tool
 	// EnableBashTool widens the loop's toolset from read-only Read/Grep/Glob
 	// to also include the confined bash tool, for the Review stage's
 	// automated-checks phase (Milestone 6) — the reviewing agent runs the
@@ -91,7 +93,7 @@ type RunInput struct {
 	// tool activity — each executed read_file/grep_search/glob/bash call and
 	// its result — as it happens, so a stage-conversation stream can render
 	// "ran go test ./... -> ok" live rather than only the model's prose. This
-	// is distinct from RunOutput.ToolCall/RunInput.Tool: those carry the
+	// is distinct from RunOutput.ToolCall/RunInput.Tools: those carry the
 	// single FINAL Draft-proposing stop call, which does not flow through
 	// these hooks. Only *ChatClientRunner (engine-backed) drives them, wired
 	// to toolloop.Config.OnToolCall/OnToolResult; runners that don't use the
