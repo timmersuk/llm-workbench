@@ -44,7 +44,7 @@ type ChatClientRunner struct {
 
 // NewChatClientRunner returns an AgentRunner backed by client.
 // knowledgeStore, if non-nil, offers the always-available knowledge query
-// tools (docs/milestones/milestone9.md) on every turn regardless of stage
+// tools (docs/milestones/done/milestone9.md) on every turn regardless of stage
 // or workspace — a nil knowledgeStore (e.g. in tests that don't care about
 // this) just means those two tools are never advertised.
 func NewChatClientRunner(client chat.ChatClient, knowledgeStore knowledgetool.Store) *ChatClientRunner {
@@ -144,7 +144,7 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 }
 
 // loopTools returns the loop toolset for one turn: the always-available
-// knowledge query tools (docs/milestones/milestone9.md — independent of
+// knowledge query tools (docs/milestones/done/milestone9.md — independent of
 // workspace, since data/knowledge/ is a workspace-wide bundle, not part of
 // any project's checked-out repository) plus, only when workspace actually
 // resolves to a usable directory, the read-only Read/Grep/Glob set (and the

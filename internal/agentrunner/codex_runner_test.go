@@ -140,7 +140,7 @@ func TestProcessCodexRunEvent_CapturesMatchingMCPToolCall(t *testing.T) {
 }
 
 // TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools covers Review's
-// shape (docs/milestones/milestone9.md): a session can offer more than one
+// shape (docs/milestones/done/milestone9.md): a session can offer more than one
 // Draft tool at once, and a call to either is recognized as the proposal.
 func TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 	var content strings.Builder

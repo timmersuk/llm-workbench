@@ -116,7 +116,7 @@ var ProposeReview = Definition{
 
 // ProposeKnowledge is the Review-stage Draft tool for folding a durable
 // learning into the Knowledge layer (data/knowledge/) — offered alongside
-// ProposeReview, not instead of it (docs/milestones/milestone9.md): a
+// ProposeReview, not instead of it (docs/milestones/done/milestone9.md): a
 // review conversation can propose any number of knowledge concepts before
 // (or instead of) proposing its review verdict. Unlike ProposeReview's
 // three-way decision, this is two-way (accept/reject) — there is no prior

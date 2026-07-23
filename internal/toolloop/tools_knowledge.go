@@ -10,7 +10,7 @@ import (
 )
 
 // KnowledgeTools returns the always-available, read-only knowledge query
-// toolset (docs/milestones/milestone9.md's "discovery mechanism") for
+// toolset (docs/milestones/done/milestone9.md's "discovery mechanism") for
 // ChatClientRunner — list_knowledge_concepts and get_knowledge_concept,
 // backed by store. Unlike ReadOnlyTools, these ignore the workspace
 // entirely (data/knowledge/ is a workspace-wide bundle, not part of any

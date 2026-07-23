@@ -165,7 +165,7 @@ func TestChatClientRunner_Run_DefaultsToReadOnlyToolset(t *testing.T) {
 }
 
 // TestChatClientRunner_Run_KnowledgeToolsAvailableWithoutWorkspace covers
-// docs/milestones/milestone9.md's "available at every task stage": a
+// docs/milestones/done/milestone9.md's "available at every task stage": a
 // project with no configured/resolvable repository still offers the
 // knowledge query tools, even though the file-based Read/Grep/Glob toolset
 // degrades to none.

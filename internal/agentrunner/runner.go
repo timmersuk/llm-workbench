@@ -66,7 +66,7 @@ type RunInput struct {
 	// the same tools the local-LLM chat path registers, so both paths
 	// produce the same task.ConversationToolCall shape downstream. Usually
 	// one; Review offers two at once (propose_review and propose_knowledge,
-	// docs/milestones/milestone9.md) so a human can review either kind of
+	// docs/milestones/done/milestone9.md) so a human can review either kind of
 	// proposal without ending the conversation. An empty slice means no
 	// tool is offered — free-chat callers leave this unset.
 	Tools []chat.Tool

@@ -70,7 +70,7 @@ type CodexRunner struct {
 // server the first time Run or Execute is actually called (see
 // ensureRegistered), not at construction time. knowledgeRoot, if non-empty,
 // is passed to that same draftmcp process as its --knowledge-root flag
-// (docs/milestones/milestone9.md), so codex threads get the same real
+// (docs/milestones/done/milestone9.md), so codex threads get the same real
 // list_knowledge_concepts/get_knowledge_concept tools ClaudeRunner and
 // ChatClientRunner do — an empty knowledgeRoot just omits the flag, the
 // same as running draftmcp directly with no --knowledge-root.

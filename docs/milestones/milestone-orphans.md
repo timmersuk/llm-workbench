@@ -113,7 +113,7 @@ technology-evaluation findings already stranded inside per-repo ADRs
 (`docs/adr/0010`, `docs/adr/0011`) that are reusable facts about tools, not
 decisions about this repo, plus a real second consumer already on record
 (`data/projects/agent-shell/tasks/concept-notes/`). See
-`docs/milestones/milestone9.md` for the full scoping — write path
+`docs/milestones/done/milestone9.md` for the full scoping — write path
 (`propose_knowledge`, human-approval-gated), read path (an unfiltered,
 whole-bundle query tool replacing the static-list-proposal idea considered
 during scoping), and the `KnowledgeStore` interface shape, validated against

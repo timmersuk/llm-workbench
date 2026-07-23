@@ -246,7 +246,7 @@ doesn't have to be re-derived or re-litigated later.
   `chat.ChatClient` (the local-LLM path) into the same interface, offering
   `RunInput.Tools` to `chat.ChatClient.StreamSessionTurn`'s `tools` param so
   Draft proposals (`propose_context`/`propose_plan`; Review offers two at
-  once, `propose_review`/`propose_knowledge`, `docs/milestones/milestone9.md`)
+  once, `propose_review`/`propose_knowledge`, `docs/milestones/done/milestone9.md`)
   work identically to `ClaudeRunner`'s. A `codex_runner.go` is expected to follow the same
   `AgentRunner` interface later. Adopting a third-party multi-agent
   orchestration framework (e.g. AgenticGoKit) instead of this hand-rolled

@@ -46,7 +46,7 @@ type Config struct {
 	// call as Result.StopCall. Run uses this for the Draft-proposing tool(s)
 	// — more than one only when a stage offers a human more than one kind of
 	// proposal at once (e.g. Review's propose_review alongside
-	// propose_knowledge, docs/milestones/milestone9.md) — Execute leaves it
+	// propose_knowledge, docs/milestones/done/milestone9.md) — Execute leaves it
 	// empty and stops only when the model finishes without a tool call.
 	StopTools []chat.Tool
 	// MaxTurns bounds tool-call round-trips (claudeRunnerMaxTurns for Run,

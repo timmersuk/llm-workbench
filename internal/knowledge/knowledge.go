@@ -208,7 +208,7 @@ func stringTags(v any) []string {
 
 // Put writes c as <Root>/<conceptID>.md — a whole-file replace, never a
 // partial/merge update, matching the propose_knowledge Draft tool's own
-// whole-content-every-time shape (docs/milestones/milestone9.md: "always
+// whole-content-every-time shape (docs/milestones/done/milestone9.md: "always
 // carrying the full resulting content... never a diff"). c.Type is
 // authoritative and is written into the serialized frontmatter's "type"
 // key even if c.Frontmatter disagrees or omits it, so Get(conceptID) after

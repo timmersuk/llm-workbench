@@ -125,7 +125,7 @@ func TestStopToolTakesPrecedence(t *testing.T) {
 }
 
 // TestMultipleStopToolsEitherOneStops covers Review's shape
-// (docs/milestones/milestone9.md): two stop tools offered at once, and the
+// (docs/milestones/done/milestone9.md): two stop tools offered at once, and the
 // model calling the second one in the list still stops the loop.
 func TestMultipleStopToolsEitherOneStops(t *testing.T) {
 	review := chat.Tool{Type: "function", Function: chat.ToolSchema{Name: "propose_review"}}

@@ -1,6 +1,6 @@
 // Package knowledgetool holds the shared name/description/schema and
 // execution logic for the read-only knowledge query tools — Milestone 9's
-// "discovery mechanism" (docs/milestones/milestone9.md): list_knowledge_concepts
+// "discovery mechanism" (docs/milestones/done/milestone9.md): list_knowledge_concepts
 // and get_knowledge_concept, an always-available, unfiltered, whole-bundle
 // query surface over data/knowledge/, distinct from internal/drafttool's
 // proposal tools in kind, not just name. A Draft tool ends a stage
@@ -53,7 +53,7 @@ var getSchema = json.RawMessage(`{
 // browsable summary, unfiltered across the whole bundle — not limited to
 // the current Project's curated knowledge[] list — so a task can discover
 // concepts nobody has curated into its own project yet
-// (docs/milestones/milestone9.md's motivating agent-shell/llm-workbench
+// (docs/milestones/done/milestone9.md's motivating agent-shell/llm-workbench
 // example).
 var List = Definition{
 	Name:        ListName,

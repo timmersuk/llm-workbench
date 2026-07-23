@@ -59,7 +59,7 @@ function toDisplayMessage(m: ConversationMessage): DisplayMessage {
 
 // SecondaryDraftConfig lets a stage register a second Draft-proposing tool
 // that coexists with the stage's own (main) one — today only Review, whose
-// propose_knowledge tool (docs/milestones/milestone9.md) can be called
+// propose_knowledge tool (docs/milestones/done/milestone9.md) can be called
 // independently of propose_review, any number of times, without ending the
 // conversation. Unlike the main draft's Finalize/Request-changes/Discard
 // trio, this is a plain two-way accept/reject decision (no "needs_changes"

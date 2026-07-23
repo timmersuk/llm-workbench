@@ -342,7 +342,7 @@ export interface FinalizeReviewResponse {
 // constants (knowledge_draft.go) — two-way, unlike ReviewDecision's three:
 // a knowledge proposal has no prior execution branch for a "needs_changes"
 // state to continue from, so a rejected proposal is just more conversation,
-// not a state the backend records (docs/milestones/milestone9.md).
+// not a state the backend records (docs/milestones/done/milestone9.md).
 export type KnowledgeConceptDraftDecision = 'accepted' | 'rejected'
 
 // KnowledgeConceptDraft is the propose_knowledge tool-call / knowledge

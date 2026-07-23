@@ -18,7 +18,7 @@
 // not from this server's response, keeping that half of this process
 // stateless and side-effect-free. The knowledge query tools are genuinely
 // executed for real against a *knowledge.FileStore rooted at
-// --knowledge-root (docs/milestones/milestone9.md) — there is no event-
+// --knowledge-root (docs/milestones/done/milestone9.md) — there is no event-
 // stream side channel for a query result the way there is for a proposal,
 // so the real answer has to come back in this server's own response.
 package main

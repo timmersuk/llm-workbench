@@ -59,7 +59,7 @@ const mcpServerName = "draft"
 
 // knowledgeServerName is a second, always-registered in-process MCP server
 // (independent of mcpServerName/in.Tools) carrying the read-only knowledge
-// query tools (docs/milestones/milestone9.md) — kept separate from "draft"
+// query tools (docs/milestones/done/milestone9.md) — kept separate from "draft"
 // because these are genuinely executed for real on every call and never end
 // a turn, unlike the Draft tools' fire-and-forget ack (draftToolHandler);
 // mixing the two into one server would make processMessage's Draft-call
@@ -94,7 +94,7 @@ type ClaudeRunner struct {
 // response stream). reposRoot is the configured AGENT_REPOS_ROOT value,
 // held so CheckHealth can report unavailable when it's unset. knowledgeStore,
 // if non-nil, is exposed on every Run call via a second always-registered
-// in-process MCP server (docs/milestones/milestone9.md) — nil just means
+// in-process MCP server (docs/milestones/done/milestone9.md) — nil just means
 // those two tools are never registered (e.g. tests that don't care).
 func NewClaudeRunner(timeout time.Duration, reposRoot string, knowledgeStore knowledgetool.Store) *ClaudeRunner {
 	return &ClaudeRunner{
@@ -319,7 +319,7 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	}
 	// The knowledge query tools are always registered when a store is
 	// configured — independent of in.Tools/stage, per
-	// docs/milestones/milestone9.md's "available at every task stage".
+	// docs/milestones/done/milestone9.md's "available at every task stage".
 	// Unlike the Draft server's tools (acked only; the real handling is
 	// Finalize), these have real handlers: the `claude` CLI's own turn loop
 	// calls them, gets a real result, and continues — no change needed to

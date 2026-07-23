@@ -109,7 +109,7 @@ func chatToolFor(d drafttool.Definition) chat.Tool {
 // planning, or review — see task.ErrInvalidStage). Requirements/Planning
 // each offer exactly one; Review offers two at once — propose_review (the
 // stage's own verdict) and propose_knowledge (folding a durable learning
-// into the Knowledge layer, docs/milestones/milestone9.md) — since either
+// into the Knowledge layer, docs/milestones/done/milestone9.md) — since either
 // may be called independently within the same conversation, not in a fixed
 // order. Name/description/schema come from internal/drafttool, shared with
 // cmd/draftmcp.

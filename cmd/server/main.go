@@ -61,7 +61,7 @@ func main() {
 	// used by defaultModelCompleter below, giving it session-held history
 	// (chat.ChatClient.StreamSessionTurn) exactly like "claude-code". Every
 	// runner is given the same knowledgeStore/knowledgeRoot so the
-	// always-available knowledge query tools (docs/milestones/milestone9.md)
+	// always-available knowledge query tools (docs/milestones/done/milestone9.md)
 	// answer identically regardless of which executor a conversation uses.
 	agentRunners := map[string]agentrunner.AgentRunner{
 		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentReposRoot, knowledgeStore),

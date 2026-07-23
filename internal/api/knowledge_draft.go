@@ -12,7 +12,7 @@ import (
 // Decision values for handleFinalizeKnowledge — two-way, unlike Review's
 // own three-way approved/rejected/needs_changes verdict: a knowledge
 // proposal has no prior execution branch for a "needs_changes" state to
-// continue from (docs/milestones/milestone9.md), so a rejected proposal is
+// continue from (docs/milestones/done/milestone9.md), so a rejected proposal is
 // just more conversation, not a state this endpoint records.
 const (
 	knowledgeDecisionAccepted = "accepted"
@@ -42,7 +42,7 @@ type finalizeKnowledgeResponse struct {
 }
 
 // handleFinalizeKnowledge is the human's accept/reject decision on a
-// propose_knowledge Draft (docs/milestones/milestone9.md). Unlike
+// propose_knowledge Draft (docs/milestones/done/milestone9.md). Unlike
 // handleFinalizeReview, this never touches TaskStore or the task's stage:
 // a knowledge concept lives in a workspace-wide store independent of any
 // one task, and the Review conversation itself (and its own eventual

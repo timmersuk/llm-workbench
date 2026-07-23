@@ -129,7 +129,7 @@ export function finalizeReview(projectId: string, taskId: string, draft: ReviewD
 }
 
 // finalizeKnowledge is the human's accept/reject decision on a
-// propose_knowledge Draft (docs/milestones/milestone9.md) — unlike
+// propose_knowledge Draft (docs/milestones/done/milestone9.md) — unlike
 // finalizeReview, this never changes the task's stage; the Review
 // conversation continues regardless of what's decided here.
 export function finalizeKnowledge(

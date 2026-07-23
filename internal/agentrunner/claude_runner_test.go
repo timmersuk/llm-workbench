@@ -93,7 +93,7 @@ func TestProcessMessage_RequiresFullyQualifiedMcpName(t *testing.T) {
 }
 
 // TestProcessMessage_MatchesAnyOfSeveralOfferedTools covers Review's shape
-// (docs/milestones/milestone9.md): a session can offer more than one Draft
+// (docs/milestones/done/milestone9.md): a session can offer more than one Draft
 // tool at once (propose_review, propose_knowledge), and a call to either
 // one is recognized as the turn's proposal.
 func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
