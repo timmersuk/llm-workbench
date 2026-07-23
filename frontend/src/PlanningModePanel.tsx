@@ -30,6 +30,8 @@ export function PlanningModePanel({ projectId, taskId, onFinalized }: PlanningMo
       description="Reply below to answer Planning Mode's questions — its proposal will become this task's execution plan once you finalize it."
       emptyDraft={EMPTY_DRAFT}
       renderDraft={(draft, onChange) => <PlanDraftForm draft={draft} onChange={onChange} />}
+      autoStart={false}
+      startLabel="Start Planning"
       onFinalize={async (draft) => {
         const result = await finalizePlan(projectId, taskId, draft)
         onFinalized(result.task, result.plan)

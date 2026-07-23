@@ -102,10 +102,13 @@ interface StageConversationPanelProps<D, S = never> {
   // draft, fixes both that and the editable form rendering it correctly.
   normalizeDraft?: (draft: D) => D
   // autoStart controls whether the panel fires its opening turn the moment
-  // it mounts on an empty conversation (GrillMe/Planning, whose opening turn
-  // is just a question) or waits for an explicit Start click. Review passes
-  // false: its first turn runs the real test suite + a code-review pass in a
-  // worktree — real compute that must not fire on every panel mount/reload.
+  // it mounts on an empty conversation, or waits for an explicit Start
+  // click. All current callers (GrillMe, Planning, Review) pass false: the
+  // model/executor pickers need to be settled by the human before the first
+  // turn fires, since the mount effect's auto-resolved executor default
+  // would otherwise start the conversation before the picker is
+  // interactive. Left as an opt-in flag (rather than removed) for a future
+  // stage that genuinely wants to fire on mount.
   autoStart?: boolean
   // startLabel names the explicit Start button shown when autoStart is false
   // (e.g. "Start Review"); ignored when autoStart is true.

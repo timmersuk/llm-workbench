@@ -53,6 +53,8 @@ export function GrillMePanel({ projectId, taskId, onFinalized }: GrillMePanelPro
       emptyDraft={EMPTY_DRAFT}
       renderDraft={(draft, onChange) => <RequirementsDraftForm draft={draft} onChange={onChange} />}
       normalizeDraft={normalizeRequirementsDraft}
+      autoStart={false}
+      startLabel="Start GrillMe"
       onFinalize={async (draft) => {
         const result = await finalizeRequirements(projectId, taskId, draft)
         onFinalized(result.task, result.context)
