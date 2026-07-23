@@ -759,7 +759,7 @@ type stageRun struct {
 }
 
 // appendWorkspaceAdvisories appends a short, one-sentence note per true
-// advisory signal (docs/milestones/milestone8a.md's "Advisory checks") to
+// advisory signal (docs/milestones/done/milestone8a.md's "Advisory checks") to
 // systemPrompt — never when a signal is clean or unknown, so a healthy
 // checkout doesn't clutter every conversation with reassuring or unhelpful
 // "can't tell" noise, matching buildRejectedReviewContext's existing

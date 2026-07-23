@@ -368,7 +368,7 @@ export interface DirtyStatus {
 
 // WorkspaceStatusResult mirrors handleWorkspaceStatus's response
 // (internal/api/workspace_status.go) — live git-derived advisory status for
-// a project's shared checkout (docs/milestones/milestone8a.md's "Advisory
+// a project's shared checkout (docs/milestones/done/milestone8a.md's "Advisory
 // checks"). repository_configured is false when the project has no
 // repositories configured at all.
 export interface WorkspaceStatusResult {

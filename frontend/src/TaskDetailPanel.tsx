@@ -35,7 +35,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   const [review, setReview] = useState<Review | null>(null)
   // Project-scoped, not task/stage-scoped — the shared checkout is one per
   // project. Advisory only: a failed fetch just means no banner, never
-  // blocks the rest of the view (docs/milestones/milestone8a.md).
+  // blocks the rest of the view (docs/milestones/done/milestone8a.md).
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusResult | null>(null)
 
   useEffect(() => {

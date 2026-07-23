@@ -131,7 +131,7 @@ func TestDirtyWorkingTree_UntrackedFileIsDirty(t *testing.T) {
 
 	got := DirtyWorkingTree(context.Background(), dir)
 	assert.True(t, got.Known)
-	assert.True(t, got.Dirty, "untracked files count as dirty (docs/milestones/milestone8a.md's resolved open question)")
+	assert.True(t, got.Dirty, "untracked files count as dirty (docs/milestones/done/milestone8a.md's resolved open question)")
 }
 
 func TestDirtyWorkingTree_NotAGitRepoIsUnknown(t *testing.T) {

@@ -19,7 +19,7 @@ type Project struct {
 	// re-queried live once set. Empty until determined. Human-inspectable
 	// and -correctable like any other field. Backs
 	// agentrunner.ResolveExecutionWorkspace/ResolveReviewWorkspace's
-	// blocking wrong-branch gate (docs/milestones/milestone8a.md).
+	// blocking wrong-branch gate (docs/milestones/done/milestone8a.md).
 	DefaultBranch string   `yaml:"default_branch" json:"default_branch"`
 	Knowledge     []string `yaml:"knowledge" json:"knowledge"`
 	Constraints   []string `yaml:"constraints" json:"constraints"`

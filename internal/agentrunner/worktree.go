@@ -14,7 +14,7 @@ import (
 // ErrWrongBranch is returned by ResolveExecutionWorkspace/
 // ResolveReviewWorkspace when the shared checkout isn't on the project's
 // known default branch. Unlike every other check in
-// docs/milestones/milestone8a.md (behind-origin, dirty-working-tree, both
+// docs/milestones/done/milestone8a.md (behind-origin, dirty-working-tree, both
 // advisory only), this one blocks: a worktree forked from the wrong branch
 // commits an entire execution to the wrong PR base, discovered only once
 // it's time to merge — the one place a wrong answer here is expensive to
@@ -24,7 +24,7 @@ var ErrWrongBranch = errors.New("shared checkout is not on the project's default
 // checkDefaultBranch returns ErrWrongBranch if baseBranch isn't
 // defaultBranch — including when defaultBranch is empty, i.e. never
 // determined, which callers must fail closed on rather than pass through
-// (docs/milestones/milestone8a.md's fail-closed decision) rather than
+// (docs/milestones/done/milestone8a.md's fail-closed decision) rather than
 // silently allowing any branch when there's nothing to compare against.
 func checkDefaultBranch(baseBranch, defaultBranch string) error {
 	if defaultBranch == "" {
@@ -88,7 +88,7 @@ type ExecutionWorkspace struct {
 // afterward — no automatic cleanup — so a human can inspect it, and a
 // future Review-stage UI can read its diff.
 //
-// defaultBranch is the project's known default branch (docs/milestones/milestone8a.md,
+// defaultBranch is the project's known default branch (docs/milestones/done/milestone8a.md,
 // Project.DefaultBranch) — the shared checkout's current branch must match
 // it exactly, or this refuses to fork at all (ErrWrongBranch, via
 // checkDefaultBranch). Callers are responsible for having already resolved

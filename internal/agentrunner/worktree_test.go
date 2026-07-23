@@ -277,7 +277,7 @@ func TestResolveReviewWorkspace_RejectsUnsafeID(t *testing.T) {
 }
 
 // TestResolveExecutionWorkspace_RefusesToForkFromWrongBranch locks in the
-// one blocking check docs/milestones/milestone8a.md introduces: unlike
+// one blocking check docs/milestones/done/milestone8a.md introduces: unlike
 // behind-origin/dirty-working-tree (advisory only, not built in this PR), a
 // shared checkout that isn't on the project's known default branch must
 // refuse to fork a worktree at all, since a fork from the wrong branch

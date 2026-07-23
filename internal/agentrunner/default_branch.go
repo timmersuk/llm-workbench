@@ -9,7 +9,7 @@ import (
 
 // ErrDefaultBranchUnknown is returned when a repository's default branch
 // can't be determined — gh not installed, not authenticated, rate-limited,
-// or a non-GitHub host. Per docs/milestones/milestone8a.md, callers fail
+// or a non-GitHub host. Per docs/milestones/done/milestone8a.md, callers fail
 // closed on this: Execute/Review must not proceed without a known default
 // branch to check the wrong-branch gate against.
 var ErrDefaultBranchUnknown = errors.New("default branch could not be determined")

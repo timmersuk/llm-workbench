@@ -87,7 +87,7 @@ type TaskStoreFactory func(root string) TaskStore
 // same shape of seam for determining a project's default branch
 // (agentrunner.DefaultBranchResolver) — a real one built via
 // agentrunner.NewDefaultBranchResolver() in production, a fake in tests
-// (docs/milestones/milestone8a.md).
+// (docs/milestones/done/milestone8a.md).
 func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeReader KnowledgeReader, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
 	mux := http.NewServeMux()
 

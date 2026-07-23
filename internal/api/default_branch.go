@@ -10,7 +10,7 @@ import (
 
 // ensureDefaultBranch returns proj's known default branch, determining and
 // persisting it via resolver if it has never been set. This is the lazy
-// backfill docs/milestones/milestone8a.md calls for: it runs regardless of
+// backfill docs/milestones/done/milestone8a.md calls for: it runs regardless of
 // how the shared checkout came to exist (freshly auto-cloned, or already
 // checked out before this feature existed), so already-checked-out
 // projects like llm-workbench and agent-shell get backfilled the same way

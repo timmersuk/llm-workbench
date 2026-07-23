@@ -148,13 +148,13 @@ of what actually blocks MVP usability as one of only two orphans that are
 silent correctness risks inside the core loop, not deferred features —
 scoped together with "No staleness check on the shared checkout" below,
 since both live in the same `ResolveWorkspace` code path. See
-`docs/milestones/milestone8a.md`: lazy clone-if-absent, HTTPS-only, no new
-credential storage. No longer an orphan.
+`docs/milestones/done/milestone8a.md`: lazy clone-if-absent, HTTPS-only, no
+new credential storage. No longer an orphan.
 
 ## From Milestone 7 — No staleness check on the shared checkout
 
 **Resolved — scoped as Milestone 8a (2026-07-22).** See
-`docs/milestones/milestone8a.md`: a new `Project.default_branch` (auto-
+`docs/milestones/done/milestone8a.md`: a new `Project.default_branch` (auto-
 determined via `gh repo view`) backs a **blocking** wrong-branch check at
 the worktree-fork point — the one place a wrong answer is expensive to
 undo — while behind-origin and dirty-working-tree stay advisory,

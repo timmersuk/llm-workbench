@@ -9,7 +9,7 @@ import (
 )
 
 // WorkspaceStatus bundles the two advisory hygiene signals for a project's
-// shared checkout (docs/milestones/milestone8a.md's "Advisory checks"):
+// shared checkout (docs/milestones/done/milestone8a.md's "Advisory checks"):
 // whether its current branch is behind its own tracked upstream, and
 // whether it has any uncommitted change. Both are advisory only — nothing
 // here ever blocks Execute/Review, unlike ErrWrongBranch (worktree.go).
@@ -20,7 +20,7 @@ type WorkspaceStatus struct {
 
 // behindOriginCacheTTL throttles the git-fetch-requiring behind-origin
 // check so rapid-fire conversation turns against the same shared checkout
-// don't fetch on every message (docs/milestones/milestone8a.md, resolved:
+// don't fetch on every message (docs/milestones/done/milestone8a.md, resolved:
 // 5 minutes — matching AGENT_TIMEOUT's existing default elsewhere in this
 // codebase). The dirty-working-tree check needs no such throttle — no
 // network call — so GetWorkspaceStatus always runs it fresh.

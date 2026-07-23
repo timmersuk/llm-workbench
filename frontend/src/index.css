@@ -465,7 +465,7 @@ td button {
 }
 
 /* workspace-status-banner surfaces the shared checkout's advisory hygiene
-   signals (docs/milestones/milestone8a.md) — a distinct amber/--warning
+   signals (docs/milestones/done/milestone8a.md) — a distinct amber/--warning
    tone from .error's red, since nothing has failed here; it's informational. */
 .workspace-status-banner {
   padding: 12px 16px;

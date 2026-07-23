@@ -19,7 +19,7 @@ type workspaceStatusResponse struct {
 }
 
 // handleWorkspaceStatus reports the project's shared checkout's current
-// advisory hygiene status (docs/milestones/milestone8a.md's "Advisory
+// advisory hygiene status (docs/milestones/done/milestone8a.md's "Advisory
 // checks") — both signals are advisory only, so this handler is tolerant
 // by design: a project with no configured repository, or one whose
 // checkout hasn't been cloned yet, is not an error here, it's just

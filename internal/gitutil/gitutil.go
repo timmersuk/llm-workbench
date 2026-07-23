@@ -53,7 +53,7 @@ func Clone(ctx context.Context, url, dest string) error {
 // BehindOriginStatus is the result of BehindOrigin — a small struct rather
 // than (bool, error), so "the fetch failed / staleness is unknown" is
 // representable as ordinary data every caller reads, not a Go error every
-// caller must specially unwrap (docs/milestones/milestone8a.md: a fetch
+// caller must specially unwrap (docs/milestones/done/milestone8a.md: a fetch
 // failure "degrades to 'staleness unknown,' not an error").
 type BehindOriginStatus struct {
 	// Known is false when the check couldn't be completed (offline, git not
@@ -71,7 +71,7 @@ type BehindOriginStatus struct {
 // error: any failure along the way (offline, git not installed, dir isn't a
 // git checkout, current branch has no configured upstream) collapses to
 // BehindOriginStatus{} (Known: false) — this is an advisory-only signal
-// (docs/milestones/milestone8a.md) that must never propagate as an error a
+// (docs/milestones/done/milestone8a.md) that must never propagate as an error a
 // caller has to handle.
 func BehindOrigin(ctx context.Context, dir string) BehindOriginStatus {
 	if _, err := RunGit(ctx, dir, "fetch", "--quiet"); err != nil {
@@ -94,7 +94,7 @@ type DirtyStatus struct {
 	Known bool `json:"known"`
 	// Dirty is true when `git status --porcelain` reported any change —
 	// including untracked files (plain --porcelain, not
-	// --untracked-files=no; docs/milestones/milestone8a.md's resolved open
+	// --untracked-files=no; docs/milestones/done/milestone8a.md's resolved open
 	// question). Only meaningful when Known is true.
 	Dirty bool `json:"dirty"`
 }
