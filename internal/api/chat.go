@@ -35,7 +35,30 @@ type chatStreamEvent struct {
 	ReasoningContent string                 `json:"reasoning_content,omitempty"`
 	ToolCall         *chatToolCallEvent     `json:"tool_call,omitempty"`
 	ToolActivity     *chatToolActivityEvent `json:"tool_activity,omitempty"`
-	Error            string                 `json:"error,omitempty"`
+	// Usage carries the real token count once available (only ever on the
+	// final chunk of a stream — see chat.Delta.Usage), for the frontend's
+	// live token-estimate indicator (docs/adr/0018) to snap to once a turn
+	// completes rather than staying an approximation forever. nil for every
+	// executor/chunk that doesn't report it (the claude/codex CLI paths
+	// never do), which the frontend treats as "keep estimating."
+	Usage *chatUsageEvent `json:"usage,omitempty"`
+	Error string          `json:"error,omitempty"`
+}
+
+// chatUsageEvent is the wire shape of chat.Usage's total, the only figure
+// the frontend's token counter actually needs.
+type chatUsageEvent struct {
+	TotalTokens int `json:"total_tokens"`
+}
+
+// usageEvent adapts a possibly-nil chat.Usage (only ever set on the final
+// chunk of a stream, see chat.Delta.Usage) into the wire shape, or nil when
+// there's nothing to report yet.
+func usageEvent(u *chat.Usage) *chatUsageEvent {
+	if u == nil {
+		return nil
+	}
+	return &chatUsageEvent{TotalTokens: u.TotalTokens}
 }
 
 // chatToolActivityEvent is the wire shape of one intermediate tool step the
@@ -134,7 +157,7 @@ func (s *Server) handleChatCompletions() http.HandlerFunc {
 			Model:       req.Model,
 			History:     req.History,
 		}, func(d chat.Delta) error {
-			writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
+			writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent, Usage: usageEvent(d.Usage)})
 			return nil
 		})
 		if err != nil {

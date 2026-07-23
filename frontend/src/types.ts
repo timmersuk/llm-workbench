@@ -137,14 +137,18 @@ export interface ChatHistoryEntry {
 
 // ChatStreamEvent mirrors internal/api/chat.go's chatStreamEvent — one
 // incremental piece of a streamed chat completion. content, reasoning_
-// content, tool_call, and tool_activity are never more than one set on the
-// same event; error is only set on the final event of a stream that failed
-// partway through. tool_call (the single final Draft) and tool_activity
-// (the agent's intermediate executed tool calls/results) are only populated
-// on the stage-conversation endpoints — the free-floating chat endpoint
-// never registers tools, so never sets either, but shares this event shape.
-// Rendering tool_activity in a panel (ReviewPanel) is deferred to a later
-// PR; this contract is carried now so the stream stays typed.
+// content, tool_call, tool_activity, and usage are never more than one set
+// on the same event; error is only set on the final event of a stream that
+// failed partway through. tool_call (the single final Draft) and
+// tool_activity (the agent's intermediate executed tool calls/results) are
+// only populated on the stage-conversation endpoints — the free-floating
+// chat endpoint never registers tools, so never sets either, but shares
+// this event shape. tool_activity is rendered live in StageConversationPanel
+// as it streams in, then collapses to a single summary once the turn ends
+// (docs/adr/0018; CONTEXT.md's "Tool Activity"). usage carries the real
+// token total once available (only ever on a stream's final chunk) — the
+// live token-estimate indicator snaps to it rather than staying an
+// approximation forever.
 export interface ChatStreamEvent {
   content?: string
   reasoning_content?: string
@@ -156,6 +160,7 @@ export interface ChatStreamEvent {
     result?: string
     is_error?: boolean
   }
+  usage?: { total_tokens: number }
   error?: string
 }
 
@@ -216,11 +221,23 @@ export interface ConversationToolCall {
   arguments: string
 }
 
+// ConversationToolActivity mirrors internal/task/conversation.go's
+// ConversationToolActivity — one intermediate tool call and its result from
+// a past turn (CONTEXT.md's "Tool Activity"), already capped server-side
+// (docs/adr/0018) before being persisted.
+export interface ConversationToolActivity {
+  name: string
+  arguments?: string
+  result?: string
+  is_error?: boolean
+}
+
 export interface ConversationMessage {
   role: string
   content: string
   tool_call?: ConversationToolCall
   tool_call_id?: string
+  tool_activity?: ConversationToolActivity[]
   // error is set when this turn failed — a reload must still show that a
   // failure happened, not just an assistant message with empty content and
   // no explanation (internal/task/conversation.go's ConversationMessage.Error).

@@ -610,6 +610,61 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 	assert.Equal(t, `{"objective":"ship login"}`, persistedMsgs[1].ToolCall.Arguments)
 }
 
+// TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage locks in
+// docs/adr/0018's persistence half: the turn's intermediate tool activity
+// (surfaced live as SSE ToolActivity events, same as
+// TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists's Draft
+// ToolCall) must also land on the persisted assistant message's
+// ToolActivity field, call paired with its result, so reopening the
+// conversation later still shows what the agent did.
+func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+
+	var persistedMsgs []task.ConversationMessage
+	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+		persistedMsgs = msgs
+		return true
+	})).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+
+	knowledgeReader := new(mockKnowledgeStore)
+
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
+		in.OnToolCall("Read", `{"path":"a.go"}`)
+		in.OnToolResult("Read", "package main", false)
+		in.OnToolCall("Grep", `{"pattern":"TODO"}`)
+		in.OnToolResult("Grep", "no matches", true)
+		return true
+	}), mock.Anything).Return([]chat.Delta{{Content: "done looking"}}, agentrunner.RunOutput{Content: "done looking"}, nil)
+
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "what's here?"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: knowledgeReader,
+		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Len(t, persistedMsgs, 2)
+	assistant := persistedMsgs[1]
+	require.Len(t, assistant.ToolActivity, 2)
+	assert.Equal(t, "Read", assistant.ToolActivity[0].Name)
+	assert.JSONEq(t, `{"path":"a.go"}`, assistant.ToolActivity[0].Arguments)
+	assert.Equal(t, "package main", assistant.ToolActivity[0].Result)
+	assert.False(t, assistant.ToolActivity[0].IsError)
+	assert.Equal(t, "Grep", assistant.ToolActivity[1].Name)
+	assert.Equal(t, "no matches", assistant.ToolActivity[1].Result)
+	assert.True(t, assistant.ToolActivity[1].IsError)
+}
+
 // TestHandlePostStageMessage_IgnoresMismatchedToolCallName covers a model
 // hallucinating a tool call for a tool that was never offered (e.g. a local
 // OpenAI-compatible model emitting a "Glob" tool_calls delta when only

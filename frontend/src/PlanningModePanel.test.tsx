@@ -29,7 +29,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 }
 
 describe('PlanningModePanel', () => {
-  it('mounts and renders the model select and empty transcript', async () => {
+  it('mounts and renders the model select and empty transcript, waiting for an explicit Start Planning', async () => {
     vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
     vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
     vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'planning', messages: [] })
@@ -37,6 +37,13 @@ describe('PlanningModePanel', () => {
     render(<PlanningModePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
     await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('model-a'))
+    // Mounting must not have kicked off the turn on its own — autoStart is
+    // false, so the Reply textarea only appears once Start Planning is
+    // clicked.
+    expect(screen.queryByPlaceholderText('Reply...')).not.toBeInTheDocument()
+    expect(api.startStageConversation).not.toHaveBeenCalled()
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Start Planning' }))
     expect(screen.getByPlaceholderText('Reply...')).toBeInTheDocument()
   })
 
@@ -58,7 +65,7 @@ describe('PlanningModePanel', () => {
 
     const onFinalized = vi.fn()
     render(<PlanningModePanel projectId={projectId} taskId={taskId} onFinalized={onFinalized} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start Planning' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Please propose a plan')
     await user.click(screen.getByRole('button', { name: 'Send' }))

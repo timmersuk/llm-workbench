@@ -464,6 +464,40 @@ td button {
   font-size: 12px;
 }
 
+/* turn-status is the live "still working" indicator (docs/adr/0018): an
+   animated spinner, an elapsed-time counter, and an approximate token count
+   shown for as long as a turn is in flight, so a long gap before the
+   agent's first reply never reads as a silent pause. */
+.turn-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.turn-status-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: turn-status-spin 0.8s linear infinite;
+}
+
+@keyframes turn-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tool-activity-pending {
+  color: var(--accent);
+  font-style: italic;
+}
+
 /* workspace-status-banner surfaces the shared checkout's advisory hygiene
    signals (docs/milestones/done/milestone8a.md) — a distinct amber/--warning
    tone from .error's red, since nothing has failed here; it's informational. */

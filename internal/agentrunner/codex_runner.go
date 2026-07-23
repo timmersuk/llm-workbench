@@ -170,7 +170,7 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	var out RunOutput
 	var content strings.Builder
 	for ev := range events {
-		done, err := processCodexRunEvent(ev, names, &content, &out, onDelta)
+		done, err := processCodexRunEvent(ev, names, &content, &out, onDelta, in.OnToolCall, in.OnToolResult)
 		if err != nil {
 			return out, err
 		}
@@ -430,7 +430,16 @@ func tomlQuote(s string) string {
 // callers, in which case no MCPToolCall is ever treated as the Draft
 // proposal); a session offering more than one (Review's propose_review and
 // propose_knowledge) surfaces whichever one the model actually called.
-func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error) (done bool, err error) {
+// onToolCall/onToolResult (docs/adr/0018) surface every other completed
+// item — a shell command, a file change, or a non-Draft MCP call — as
+// intermediate Tool Activity (CONTEXT.md), mirroring
+// processCodexExecuteEvent's existing handling for Execute. Unlike
+// claude_runner.go's processMessage (which needs a toolUseID->name
+// correlation across two separate messages), a codex ItemCompleted event
+// already carries the whole call-and-result together, so onToolCall/
+// onToolResult are simply invoked back to back, no correlation state
+// needed.
+func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error, onToolCall func(name, argsJSON string), onToolResult func(name, result string, isError bool)) (done bool, err error) {
 	switch e := ev.(type) {
 	case *types.ItemUpdated:
 		if delta, ok := e.Delta.(*types.AgentMessageDelta); ok && onDelta != nil {
@@ -442,6 +451,25 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *str
 		switch item := e.Item.(type) {
 		case *types.AgentMessage:
 			content.WriteString(item.Text)
+		case *types.CommandExecution:
+			if onToolCall != nil {
+				onToolCall("Bash", item.Command)
+			}
+			if onToolResult != nil {
+				isErr := item.Status == "failed" || item.Status == "denied"
+				onToolResult("Bash", item.AggregatedOutput, isErr)
+			}
+		case *types.FileChange:
+			if onToolCall != nil {
+				input, marshalErr := json.Marshal(item.Changes)
+				if marshalErr != nil {
+					return true, fmt.Errorf("encoding file change input: %w", marshalErr)
+				}
+				onToolCall("FileChange", string(input))
+			}
+			if onToolResult != nil {
+				onToolResult("FileChange", item.Status, item.Status == "failed")
+			}
 		case *types.MCPToolCall:
 			if out.ToolCall == nil && slices.Contains(toolNames, item.ToolName) {
 				out.ToolCall = &chat.ToolCall{
@@ -452,6 +480,20 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *str
 						Arguments: string(item.Input),
 					},
 				}
+				break
+			}
+			// Not the Draft — genuine intermediate tool activity (e.g. a
+			// knowledge-query call).
+			if onToolCall != nil {
+				onToolCall(item.ToolName, string(item.Input))
+			}
+			if onToolResult != nil {
+				isErr := item.Status == "failed"
+				resultText := string(item.Result)
+				if isErr {
+					resultText = item.ErrorText()
+				}
+				onToolResult(item.ToolName, resultText, isErr)
 			}
 		}
 	case *types.TurnFailed:

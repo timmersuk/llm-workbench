@@ -145,12 +145,14 @@ func (r *ClaudeRunner) CloseSession(sessionKey string) {
 	}
 }
 
-// Run implements AgentRunner.
+// Run implements AgentRunner. Unlike the engine-backed ChatClientRunner
+// (whose intermediate tool activity flows through toolloop.Config's
+// OnToolCall/OnToolResult), the claude CLI drives its own subprocess and
+// message stream — processMessage forwards in.OnToolCall/OnToolResult from
+// that stream itself (docs/adr/0018), correlating each ToolResultBlock back
+// to its call via toolUseID since the CLI reports them in separate
+// messages, unlike the engine's single call-then-result step.
 func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.Delta) error) (RunOutput, error) {
-	// The claude CLI path drives its own subprocess rather than the shared
-	// toolloop engine, so it does not surface per-call tool activity here:
-	// in.OnToolCall/OnToolResult are intentionally ignored (only the
-	// engine-backed ChatClientRunner honors them).
 	key := in.SessionKey
 	if !r.tryLock(key) {
 		return RunOutput{}, ErrRunInProgress
@@ -186,10 +188,11 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 		}
 	}
 
+	hooks := &toolActivityHooks{onCall: in.OnToolCall, onResult: in.OnToolResult, pending: make(map[string]string)}
 	var out RunOutput
 	var content strings.Builder
 	for msg := range client.ReceiveMessages(runCtx) {
-		done, err := processMessage(msg, toolNames(in.Tools), &content, &out, onDelta)
+		done, err := processMessage(msg, toolNames(in.Tools), &content, &out, onDelta, hooks)
 		if err != nil {
 			return out, err
 		}
@@ -473,6 +476,22 @@ func toolNames(tools []chat.Tool) []string {
 	return names
 }
 
+// toolActivityHooks carries the callbacks (and cross-message correlation
+// state) needed to surface a claude CLI turn's intermediate tool calls and
+// results live, as processMessage walks the message stream (docs/adr/0018).
+// Unlike the toolloop.Engine, which executes a call and gets its result in
+// the same step, the CLI reports a ToolUseBlock and its matching
+// ToolResultBlock in two separate messages (an AssistantMessage, then a
+// later UserMessage) — pending correlates them by toolUseID so onResult can
+// still report the tool's name. nil onCall/onResult (the RunInput fields
+// left unset) mean the caller doesn't want this — processMessage checks
+// each independently before invoking it.
+type toolActivityHooks struct {
+	onCall   func(name, argsJSON string)
+	onResult func(name, result string, isError bool)
+	pending  map[string]string // toolUseID -> name, for non-Draft calls only
+}
+
 // processMessage folds one message from a claudecode.Client's message
 // stream into content/out, and reports whether the turn is complete
 // (msg was a ResultMessage). toolNames are the bare names of every Draft
@@ -480,13 +499,24 @@ func toolNames(tools []chat.Tool) []string {
 // treated as the turn's Draft proposal if its MCP-qualified name matches
 // one of them; a session with several offered tools (e.g. Review's
 // propose_review and propose_knowledge) surfaces whichever one the model
-// actually called. Split out from Run's loop so it's testable against
-// hand-built claudecode.Message values without a live subprocess.
-func processMessage(msg claudecode.Message, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error) (done bool, err error) {
+// actually called. Every other ToolUseBlock/ToolResultBlock (Read/Grep/Glob,
+// bash, the knowledge-query tools) is intermediate tool activity, forwarded
+// through hooks rather than treated as a Draft. hooks may be nil, or have
+// either callback nil, for callers that don't care. Split out from Run's
+// loop so it's testable against hand-built claudecode.Message values
+// without a live subprocess.
+func processMessage(msg claudecode.Message, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error, hooks *toolActivityHooks) (done bool, err error) {
 	switch m := msg.(type) {
 	case *claudecode.StreamEvent:
-		if text, ok := streamDeltaText(m); ok && onDelta != nil {
+		if onDelta == nil {
+			break
+		}
+		if text, ok := streamDeltaText(m); ok {
 			if err := onDelta(chat.Delta{Content: text}); err != nil {
+				return true, err
+			}
+		} else if reasoning, ok := streamReasoningDeltaText(m); ok {
+			if err := onDelta(chat.Delta{ReasoningContent: reasoning}); err != nil {
 				return true, err
 			}
 		}
@@ -495,9 +525,16 @@ func processMessage(msg claudecode.Message, toolNames []string, content *strings
 			switch b := block.(type) {
 			case *claudecode.TextBlock:
 				content.WriteString(b.Text)
+			case *claudecode.ThinkingBlock:
+				if onDelta != nil {
+					if err := onDelta(chat.Delta{ReasoningContent: b.Thinking}); err != nil {
+						return true, err
+					}
+				}
 			case *claudecode.ToolUseBlock:
-				if out.ToolCall == nil {
-					if name, ok := matchQualifiedToolName(b.Name, toolNames); ok {
+				name, isDraft := matchQualifiedToolName(b.Name, toolNames)
+				if isDraft {
+					if out.ToolCall == nil {
 						args, err := json.Marshal(b.Input)
 						if err != nil {
 							return true, fmt.Errorf("encoding tool call arguments: %w", err)
@@ -511,8 +548,39 @@ func processMessage(msg claudecode.Message, toolNames []string, content *strings
 							},
 						}
 					}
+					continue
+				}
+				// Not the Draft — genuine intermediate tool activity
+				// (Read/Grep/Glob, bash, or a knowledge-query call).
+				if hooks != nil && hooks.onCall != nil {
+					args, err := json.Marshal(b.Input)
+					if err != nil {
+						return true, fmt.Errorf("encoding tool call arguments: %w", err)
+					}
+					hooks.onCall(b.Name, string(args))
+				}
+				if hooks != nil && hooks.pending != nil {
+					hooks.pending[b.ToolUseID] = b.Name
 				}
 			}
+		}
+	case *claudecode.UserMessage:
+		if hooks == nil || hooks.onResult == nil {
+			break
+		}
+		blocks, ok := m.Content.([]claudecode.ContentBlock)
+		if !ok {
+			break
+		}
+		for _, block := range blocks {
+			b, ok := block.(*claudecode.ToolResultBlock)
+			if !ok {
+				continue
+			}
+			name := hooks.pending[b.ToolUseID]
+			delete(hooks.pending, b.ToolUseID)
+			isError := b.IsError != nil && *b.IsError
+			hooks.onResult(name, toolResultText(b.Content), isError)
 		}
 	case *claudecode.ResultMessage:
 		out.Content = content.String()
@@ -547,8 +615,15 @@ func matchQualifiedToolName(qualifiedName string, names []string) (string, bool)
 func processExecuteMessage(msg claudecode.Message, content *strings.Builder, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (done bool, err error) {
 	switch m := msg.(type) {
 	case *claudecode.StreamEvent:
-		if text, ok := streamDeltaText(m); ok && onEvent != nil {
+		if onEvent == nil {
+			break
+		}
+		if text, ok := streamDeltaText(m); ok {
 			if err := onEvent(ExecuteEvent{Kind: "text", Text: text}); err != nil {
+				return true, err
+			}
+		} else if reasoning, ok := streamReasoningDeltaText(m); ok {
+			if err := onEvent(ExecuteEvent{Kind: "reasoning", Text: reasoning}); err != nil {
 				return true, err
 			}
 		}
@@ -557,6 +632,12 @@ func processExecuteMessage(msg claudecode.Message, content *strings.Builder, out
 			switch b := block.(type) {
 			case *claudecode.TextBlock:
 				content.WriteString(b.Text)
+			case *claudecode.ThinkingBlock:
+				if onEvent != nil {
+					if err := onEvent(ExecuteEvent{Kind: "reasoning", Text: b.Thinking}); err != nil {
+						return true, err
+					}
+				}
 			case *claudecode.ToolUseBlock:
 				if onEvent == nil {
 					continue
@@ -644,13 +725,36 @@ func sumUsageTokens(usage *map[string]any) int {
 // streaming event (emitted because clientFor sets WithPartialStreaming),
 // or reports ok=false for any event that isn't a text content delta.
 func streamDeltaText(ev *claudecode.StreamEvent) (text string, ok bool) {
-	if evType, _ := ev.Event["type"].(string); evType != claudecode.StreamEventTypeContentBlockDelta {
-		return "", false
-	}
-	delta, ok := ev.Event["delta"].(map[string]any)
+	delta, ok := contentBlockDelta(ev)
 	if !ok {
 		return "", false
 	}
 	text, ok = delta["text"].(string)
 	return text, ok
+}
+
+// streamReasoningDeltaText mirrors streamDeltaText for a thinking_delta
+// event's "thinking" field — extended-thinking's incremental counterpart to
+// a text_delta, emitted only when the session was connected with
+// WithMaxThinkingTokens (not done anywhere in this codebase today; see
+// docs/adr/0018 — this is forward-compatible dead code until that changes).
+func streamReasoningDeltaText(ev *claudecode.StreamEvent) (text string, ok bool) {
+	delta, ok := contentBlockDelta(ev)
+	if !ok {
+		return "", false
+	}
+	text, ok = delta["thinking"].(string)
+	return text, ok
+}
+
+// contentBlockDelta returns ev's "delta" payload, or ok=false for any event
+// that isn't a content_block_delta at all — the shared prefix
+// streamDeltaText/streamReasoningDeltaText both need before inspecting
+// which specific delta field (text vs thinking) is actually present.
+func contentBlockDelta(ev *claudecode.StreamEvent) (map[string]any, bool) {
+	if evType, _ := ev.Event["type"].(string); evType != claudecode.StreamEventTypeContentBlockDelta {
+		return nil, false
+	}
+	delta, ok := ev.Event["delta"].(map[string]any)
+	return delta, ok
 }

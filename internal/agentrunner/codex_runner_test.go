@@ -104,7 +104,7 @@ func TestProcessCodexRunEvent_StreamsTextDelta(t *testing.T) {
 	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, func(d chat.Delta) error {
 		streamed += d.Content
 		return nil
-	})
+	}, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "hel", streamed)
@@ -115,7 +115,7 @@ func TestProcessCodexRunEvent_AccumulatesAgentMessageText(t *testing.T) {
 	var out RunOutput
 
 	ev := &types.ItemCompleted{Item: &types.AgentMessage{Text: "hello "}}
-	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "hello ", content.String())
@@ -130,7 +130,7 @@ func TestProcessCodexRunEvent_CapturesMatchingMCPToolCall(t *testing.T) {
 		ToolName: "propose_plan",
 		Input:    []byte(`{"approach":"do it"}`),
 	}}
-	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
@@ -151,7 +151,7 @@ func TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 		ToolName: "propose_knowledge",
 		Input:    []byte(`{"concept_id":"x"}`),
 	}}
-	done, err := processCodexRunEvent(ev, []string{"propose_review", "propose_knowledge"}, &content, &out, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_review", "propose_knowledge"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
@@ -163,10 +163,78 @@ func TestProcessCodexRunEvent_IgnoresNonMatchingMCPToolCall(t *testing.T) {
 	var out RunOutput
 
 	ev := &types.ItemCompleted{Item: &types.MCPToolCall{ToolName: "activate_project", Input: []byte(`{}`)}}
-	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Nil(t, out.ToolCall)
+}
+
+// TestProcessCodexRunEvent_CommandExecutionForwardsAsToolActivity locks in
+// the docs/adr/0018 fix: CodexRunner.Run had no OnToolCall/OnToolResult
+// wiring at all before this ADR — a shell command run during a stage
+// conversation (e.g. reading a file via cat/grep, since codex has no
+// separate Read/Grep/Glob tools) is now surfaced the same way
+// processCodexExecuteEvent already does for Execute.
+func TestProcessCodexRunEvent_CommandExecutionForwardsAsToolActivity(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	var calls []string
+	var results []string
+
+	ev := &types.ItemCompleted{Item: &types.CommandExecution{
+		Command: "grep -r TODO .", Status: "success", AggregatedOutput: "no matches",
+	}}
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil,
+		func(name, args string) { calls = append(calls, name+":"+args) },
+		func(name, result string, isError bool) { results = append(results, name+":"+result) },
+	)
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Equal(t, []string{"Bash:grep -r TODO ."}, calls)
+	assert.Equal(t, []string{"Bash:no matches"}, results)
+}
+
+// TestProcessCodexRunEvent_NonMatchingMCPToolCallForwardsAsToolActivity
+// covers the knowledge-query tool case: an MCPToolCall that isn't the
+// turn's Draft (e.g. list_knowledge_concepts) must still surface as tool
+// activity, not be silently dropped the way ClaudeRunner's processMessage
+// used to drop everything but the Draft match.
+func TestProcessCodexRunEvent_NonMatchingMCPToolCallForwardsAsToolActivity(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	var calls, results int
+
+	ev := &types.ItemCompleted{Item: &types.MCPToolCall{
+		ToolName: "list_knowledge_concepts", Input: []byte(`{}`), Result: []byte(`["a"]`), Status: "completed",
+	}}
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil,
+		func(string, string) { calls++ },
+		func(string, string, bool) { results++ },
+	)
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Nil(t, out.ToolCall, "a non-Draft MCP call must never populate out.ToolCall")
+	assert.Equal(t, 1, calls)
+	assert.Equal(t, 1, results)
+}
+
+// TestProcessCodexRunEvent_DraftMCPToolCallNeverForwardedAsActivity mirrors
+// claude_runner_test.go's equivalent: the Draft proposal itself must not
+// also fire onToolCall/onToolResult — Tool Activity is explicitly distinct
+// from a Draft (CONTEXT.md).
+func TestProcessCodexRunEvent_DraftMCPToolCallNeverForwardedAsActivity(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	var calls int
+
+	ev := &types.ItemCompleted{Item: &types.MCPToolCall{
+		ID: "call-1", ToolName: "propose_plan", Input: []byte(`{}`),
+	}}
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil, func(string, string) { calls++ }, nil)
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.NotNil(t, out.ToolCall)
+	assert.Zero(t, calls, "the Draft's own proposal call must never also surface as tool activity")
 }
 
 func TestProcessCodexRunEvent_TurnCompletedSuccess(t *testing.T) {
@@ -174,7 +242,7 @@ func TestProcessCodexRunEvent_TurnCompletedSuccess(t *testing.T) {
 	content.WriteString("final answer")
 	var out RunOutput
 
-	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "completed"}, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "completed"}, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 	assert.True(t, done)
 	assert.Equal(t, "final answer", out.Content)
@@ -184,7 +252,7 @@ func TestProcessCodexRunEvent_TurnCompletedFailedStatus(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
 
-	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "failed"}, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "failed"}, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	assert.True(t, done)
 	assert.Error(t, err)
 }
@@ -193,7 +261,7 @@ func TestProcessCodexRunEvent_TurnFailed(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
 
-	done, err := processCodexRunEvent(&types.TurnFailed{Message: "boom"}, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processCodexRunEvent(&types.TurnFailed{Message: "boom"}, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	assert.True(t, done)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")

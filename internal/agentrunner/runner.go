@@ -147,9 +147,14 @@ type ExecuteInput struct {
 // surface every tool call and its result as they happen — a write-enabled
 // agent's real actions (files written, commands run), not just its prose.
 type ExecuteEvent struct {
-	Kind string // "text" | "tool_call" | "tool_result"
+	Kind string // "text" | "reasoning" | "tool_call" | "tool_result"
 
-	// Text is set when Kind == "text".
+	// Text is set when Kind == "text" or "reasoning". "reasoning" is only
+	// ever emitted by ClaudeRunner, and only once extended thinking is
+	// actually enabled for a session (not done anywhere in this codebase
+	// today — see docs/adr/0018); no frontend currently renders it, the
+	// same "typed but not yet rendered" posture ChatStreamEvent.ToolActivity
+	// had before this ADR.
 	Text string
 
 	// ToolName/ToolInput are set when Kind == "tool_call". ToolInput is the

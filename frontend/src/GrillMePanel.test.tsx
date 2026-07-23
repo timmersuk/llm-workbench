@@ -64,11 +64,13 @@ describe('GrillMePanel — initial load', () => {
     expect(screen.getByText('Sure, tell me more.')).toBeInTheDocument()
   })
 
-  it('does not crash, and still auto-starts, when messages is null', async () => {
+  it('does not crash, and still starts on demand, when messages is null', async () => {
+    const user = userEvent.setup()
     vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'requirements', messages: null })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
     await waitFor(() => expect(api.startStageConversation).toHaveBeenCalled())
   })
 
@@ -170,15 +172,22 @@ describe('GrillMePanel — initial load', () => {
   })
 })
 
-describe('GrillMePanel — auto-starting an empty conversation', () => {
-  it('calls startStageConversation, not postStageMessage, when the conversation is empty', async () => {
+describe('GrillMePanel — starting an empty conversation on demand', () => {
+  it('does not auto-start on mount — it waits for an explicit Start GrillMe, then calls startStageConversation not postStageMessage', async () => {
+    const user = userEvent.setup()
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
+    const start = await screen.findByRole('button', { name: 'Start GrillMe' })
+    expect(api.startStageConversation).not.toHaveBeenCalled()
+    expect(screen.queryByPlaceholderText('Reply...')).not.toBeInTheDocument()
+
+    await user.click(start)
     await waitFor(() => expect(api.startStageConversation).toHaveBeenCalledTimes(1))
     expect(api.postStageMessage).not.toHaveBeenCalled()
   })
 
   it('streams the opening question into an assistant-only bubble, with no user message', async () => {
+    const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
     vi.mocked(api.startStageConversation).mockImplementation((_p, _t, _s, _m, _e, onEvent) => {
       deliver = onEvent
@@ -186,6 +195,7 @@ describe('GrillMePanel — auto-starting an empty conversation', () => {
     })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
     await waitFor(() => expect(api.startStageConversation).toHaveBeenCalled())
 
     act(() => deliver({ content: "What's the objective?" }))
@@ -194,10 +204,13 @@ describe('GrillMePanel — auto-starting an empty conversation', () => {
     expect(screen.queryByText('user:')).not.toBeInTheDocument()
   })
 
-  it('waits for the preselected executor before starting, passing it through', async () => {
+  it('waits for the preselected executor to resolve before starting, passing it through', async () => {
+    const user = userEvent.setup()
     vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await waitFor(() => expect(screen.getByLabelText('Executor')).toHaveValue('claude-code'))
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await waitFor(() =>
       expect(api.startStageConversation).toHaveBeenCalledWith(
@@ -212,7 +225,7 @@ describe('GrillMePanel — auto-starting an empty conversation', () => {
     )
   })
 
-  it('does not auto-start when the conversation already has messages', async () => {
+  it('does not show a Start button, and never calls startStageConversation, when the conversation already has messages', async () => {
     vi.mocked(api.getStageConversation).mockResolvedValue({
       stage: 'requirements',
       messages: [{ role: 'assistant', content: 'already asked something', created_at: '2026-01-01T00:00:00Z' }],
@@ -221,6 +234,7 @@ describe('GrillMePanel — auto-starting an empty conversation', () => {
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
     await screen.findByText('already asked something')
+    expect(screen.queryByRole('button', { name: 'Start GrillMe' })).not.toBeInTheDocument()
     expect(api.startStageConversation).not.toHaveBeenCalled()
   })
 })
@@ -238,7 +252,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Hello there')
     await user.click(screen.getByRole('button', { name: 'Send' }))
@@ -265,7 +279,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     vi.mocked(api.postStageMessage).mockResolvedValue()
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Hello there{Enter}')
 
@@ -287,7 +301,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     vi.mocked(api.postStageMessage).mockResolvedValue()
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     const textarea = screen.getByPlaceholderText('Reply...')
     await user.type(textarea, 'line one{Alt>}{Enter}{/Alt}line two')
@@ -307,7 +321,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     )
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     const textarea = screen.getByPlaceholderText('Reply...')
     await user.type(textarea, 'first message{Enter}')
@@ -337,7 +351,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Hello')
     await user.click(screen.getByRole('button', { name: 'Send' }))
@@ -471,7 +485,7 @@ describe('GrillMePanel — Draft review', () => {
     })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Please propose a draft')
     await user.click(screen.getByRole('button', { name: 'Send' }))
@@ -513,7 +527,7 @@ describe('GrillMePanel — Draft review', () => {
     })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={onFinalized} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Please propose a draft')
     await user.click(screen.getByRole('button', { name: 'Send' }))
@@ -536,7 +550,7 @@ describe('GrillMePanel — Draft review', () => {
     })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Please propose a draft')
     await user.click(screen.getByRole('button', { name: 'Send' }))
@@ -580,7 +594,7 @@ describe('GrillMePanel — Draft review', () => {
     })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
-    await waitFor(() => expect(api.getStageConversation).toHaveBeenCalled())
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'Please propose a draft')
     await user.click(screen.getByRole('button', { name: 'Send' }))

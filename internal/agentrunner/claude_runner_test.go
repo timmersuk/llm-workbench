@@ -33,7 +33,7 @@ func TestProcessMessage_AccumulatesText(t *testing.T) {
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "hello "}},
 	}
-	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "hello ", content.String())
@@ -50,7 +50,7 @@ func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
 			Input:     map[string]any{"approach": "do it"},
 		}},
 	}
-	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
@@ -69,9 +69,113 @@ func TestProcessMessage_IgnoresNonMatchingToolCall(t *testing.T) {
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{Name: "Read", Input: map[string]any{}}},
 	}
-	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, out.ToolCall)
+}
+
+// TestProcessMessage_ForwardsNonDraftToolCallToHooks locks in the docs/adr/0018
+// fix: a ToolUseBlock that isn't the turn's Draft (Read/Grep/Glob, bash, a
+// knowledge-query call) is genuine intermediate tool activity and must be
+// forwarded through hooks.onCall, not silently dropped the way it was
+// before this ADR (the claude CLI path "intentionally ignored" it).
+func TestProcessMessage_ForwardsNonDraftToolCallToHooks(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	var calls []string
+	hooks := &toolActivityHooks{
+		onCall:  func(name, argsJSON string) { calls = append(calls, name+":"+argsJSON) },
+		pending: make(map[string]string),
+	}
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
+			ToolUseID: "call-1", Name: "Read", Input: map[string]any{"path": "a.go"},
+		}},
+	}
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	require.Len(t, calls, 1)
+	assert.JSONEq(t, `{"path":"a.go"}`, strings.TrimPrefix(calls[0], "Read:"))
+	assert.Nil(t, out.ToolCall, "a non-Draft call must never populate out.ToolCall")
+	assert.Equal(t, "Read", hooks.pending["call-1"], "the call's name must be tracked for its later result to correlate against")
+}
+
+// TestProcessMessage_DraftToolCallNeverForwardedAsActivity ensures the two
+// mechanisms stay disjoint: the turn's actual Draft proposal (matches
+// in.Tools) must populate out.ToolCall as before, and must NOT also fire
+// hooks.onCall — Tool Activity (CONTEXT.md) is explicitly "distinct from a
+// Draft."
+func TestProcessMessage_DraftToolCallNeverForwardedAsActivity(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	var calls int
+	hooks := &toolActivityHooks{onCall: func(string, string) { calls++ }, pending: make(map[string]string)}
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
+			ToolUseID: "call-1", Name: "mcp__draft__propose_plan", Input: map[string]any{},
+		}},
+	}
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	require.NotNil(t, out.ToolCall)
+	assert.Zero(t, calls, "the Draft's own proposal call must never also surface as tool activity")
+	assert.Empty(t, hooks.pending, "a Draft call must not be tracked for result correlation either")
+}
+
+// TestProcessMessage_ForwardsToolResultCorrelatedByID covers the other half:
+// the claude CLI reports a ToolResultBlock in a later UserMessage carrying
+// only a toolUseID, not the tool's name — hooks.pending (populated when the
+// matching ToolUseBlock was seen) is what lets onResult still report which
+// tool this result belongs to.
+func TestProcessMessage_ForwardsToolResultCorrelatedByID(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	type result struct {
+		name    string
+		text    string
+		isError bool
+	}
+	var results []result
+	hooks := &toolActivityHooks{
+		onResult: func(name, text string, isError bool) { results = append(results, result{name, text, isError}) },
+		pending:  map[string]string{"call-1": "Grep"},
+	}
+
+	isError := true
+	msg := &claudecode.UserMessage{
+		Content: []claudecode.ContentBlock{
+			&claudecode.ToolResultBlock{ToolUseID: "call-1", Content: "no matches", IsError: &isError},
+		},
+	}
+	_, err := processMessage(msg, nil, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, result{"Grep", "no matches", true}, results[0])
+	assert.Empty(t, hooks.pending, "a correlated result must be popped from pending, not left to leak")
+}
+
+// TestProcessMessage_ThinkingBlockForwardsAsReasoningDelta locks in the
+// docs/adr/0018 forward-compatible fix: a ThinkingBlock (only ever present
+// once extended thinking is enabled — not done anywhere in this codebase
+// today) must feed onDelta's ReasoningContent, the same field/UI path the
+// OpenAI-SDK executors' reasoning_content already uses, rather than being
+// silently dropped by processMessage's switch.
+func TestProcessMessage_ThinkingBlockForwardsAsReasoningDelta(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	var received []chat.Delta
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.ThinkingBlock{Thinking: "considering the options..."}},
+	}
+	_, err := processMessage(msg, nil, &content, &out, func(d chat.Delta) error {
+		received = append(received, d)
+		return nil
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []chat.Delta{{ReasoningContent: "considering the options..."}}, received)
 }
 
 // TestProcessMessage_RequiresFullyQualifiedMcpName locks in a real bug
@@ -87,7 +191,7 @@ func TestProcessMessage_RequiresFullyQualifiedMcpName(t *testing.T) {
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{Name: "propose_plan", Input: map[string]any{}}},
 	}
-	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, out.ToolCall, "the bare tool name alone must not match — the CLI always reports it fully qualified")
 }
@@ -107,7 +211,7 @@ func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 			Input:     map[string]any{"concept_id": "x"},
 		}},
 	}
-	done, err := processMessage(msg, []string{"propose_review", "propose_knowledge"}, &content, &out, nil)
+	done, err := processMessage(msg, []string{"propose_review", "propose_knowledge"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
@@ -125,7 +229,7 @@ func TestProcessMessage_KeepsFirstToolCallOnly(t *testing.T) {
 			Input:     map[string]any{},
 		}},
 	}
-	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil)
+	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "first", out.ToolCall.ID)
 }
@@ -135,7 +239,7 @@ func TestProcessMessage_ResultMessageEndsTurnSuccessfully(t *testing.T) {
 	content.WriteString("final text")
 	var out RunOutput
 
-	done, err := processMessage(&claudecode.ResultMessage{IsError: false}, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processMessage(&claudecode.ResultMessage{IsError: false}, []string{"propose_plan"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.True(t, done)
 	assert.Equal(t, "final text", out.Content)
@@ -145,7 +249,7 @@ func TestProcessMessage_ResultMessageReportsError(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
 
-	done, err := processMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, []string{"propose_plan"}, &content, &out, nil)
+	done, err := processMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, []string{"propose_plan"}, &content, &out, nil, nil)
 	assert.True(t, done)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
@@ -163,7 +267,7 @@ func TestProcessMessage_StreamDeltaInvokesOnDelta(t *testing.T) {
 	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, func(d chat.Delta) error {
 		received = append(received, d)
 		return nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, []chat.Delta{{Content: "chunk"}}, received)
@@ -178,7 +282,7 @@ func TestProcessMessage_StreamDeltaPropagatesOnDeltaError(t *testing.T) {
 		"type":  claudecode.StreamEventTypeContentBlockDelta,
 		"delta": map[string]any{"text": "chunk"},
 	}}
-	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, func(chat.Delta) error { return wantErr })
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, func(chat.Delta) error { return wantErr }, nil)
 	assert.True(t, done)
 	assert.ErrorIs(t, err, wantErr)
 }
@@ -187,6 +291,45 @@ func TestStreamDeltaText_IgnoresNonDeltaEvents(t *testing.T) {
 	ev := &claudecode.StreamEvent{Event: map[string]any{"type": claudecode.StreamEventTypeMessageStop}}
 	_, ok := streamDeltaText(ev)
 	assert.False(t, ok)
+}
+
+// TestStreamReasoningDeltaText_ExtractsThinkingField locks in the docs/adr/0018
+// fix: a thinking_delta content_block_delta event carries its incremental
+// text under "thinking", not "text" — streamDeltaText alone (checking only
+// "text") silently drops it, which is exactly the bug this function closes.
+func TestStreamReasoningDeltaText_ExtractsThinkingField(t *testing.T) {
+	ev := &claudecode.StreamEvent{Event: map[string]any{
+		"type":  claudecode.StreamEventTypeContentBlockDelta,
+		"delta": map[string]any{"type": "thinking_delta", "thinking": "hmm, "},
+	}}
+	text, ok := streamReasoningDeltaText(ev)
+	require.True(t, ok)
+	assert.Equal(t, "hmm, ", text)
+
+	// A plain text_delta event must not also look like a reasoning delta.
+	_, ok = streamReasoningDeltaText(&claudecode.StreamEvent{Event: map[string]any{
+		"type":  claudecode.StreamEventTypeContentBlockDelta,
+		"delta": map[string]any{"text": "chunk"},
+	}})
+	assert.False(t, ok)
+}
+
+func TestProcessMessage_StreamReasoningDeltaInvokesOnDeltaAsReasoning(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+	var received []chat.Delta
+
+	msg := &claudecode.StreamEvent{Event: map[string]any{
+		"type":  claudecode.StreamEventTypeContentBlockDelta,
+		"delta": map[string]any{"type": "thinking_delta", "thinking": "chunk"},
+	}}
+	done, err := processMessage(msg, nil, &content, &out, func(d chat.Delta) error {
+		received = append(received, d)
+		return nil
+	}, nil)
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Equal(t, []chat.Delta{{ReasoningContent: "chunk"}}, received)
 }
 
 func TestProcessExecuteMessage_AccumulatesText(t *testing.T) {
@@ -333,6 +476,29 @@ func TestProcessExecuteMessage_StreamDeltaEmitsTextEvent(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, []ExecuteEvent{{Kind: "text", Text: "chunk"}}, events)
+}
+
+// TestProcessExecuteMessage_ThinkingBlockEmitsReasoningEvent mirrors
+// TestProcessMessage_ThinkingBlockForwardsAsReasoningDelta for the Execute
+// path (docs/adr/0018): a ThinkingBlock becomes a "reasoning" ExecuteEvent
+// rather than being silently dropped. No frontend currently renders this
+// Kind (ExecutePanel has no case for it) — the same "typed but not yet
+// rendered" posture ChatStreamEvent.ToolActivity had before this ADR.
+func TestProcessExecuteMessage_ThinkingBlockEmitsReasoningEvent(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+	var events []ExecuteEvent
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.ThinkingBlock{Thinking: "weighing approaches..."}},
+	}
+	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
+		events = append(events, e)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Equal(t, []ExecuteEvent{{Kind: "reasoning", Text: "weighing approaches..."}}, events)
 }
 
 func TestSumUsageTokens_NilMapReturnsZero(t *testing.T) {
