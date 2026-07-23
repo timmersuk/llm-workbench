@@ -29,15 +29,15 @@ type workspaceStatusResponse struct {
 // resolveStageRun's ResolveWorkspace call, GetWorkspaceStatus never
 // triggers a lazy clone: opening this view is never itself the trigger
 // for a first, potentially multi-minute, clone.
-func handleWorkspaceStatus(projects ProjectStore, reposRoot string) http.HandlerFunc {
+func (s *Server) handleWorkspaceStatus() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		proj, err := projects.Get(r.PathValue("projectId"))
+		proj, err := s.Projects.Get(r.PathValue("projectId"))
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
 
-		status, err := agentrunner.GetWorkspaceStatus(r.Context(), reposRoot, proj.Repositories)
+		status, err := agentrunner.GetWorkspaceStatus(r.Context(), s.ReposRoot, proj.Repositories)
 		if err != nil {
 			if errors.Is(err, agentrunner.ErrNoRepository) {
 				writeJSON(w, http.StatusOK, workspaceStatusResponse{})

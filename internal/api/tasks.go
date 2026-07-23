@@ -10,25 +10,30 @@ import (
 // resolveTaskStore confirms the project named by projectId exists, then
 // builds a TaskStore rooted at that project's tasks directory. Returns
 // false (having already written a response) if the project doesn't exist
-// or the id is otherwise invalid.
-func resolveTaskStore(w http.ResponseWriter, projects ProjectStore, factory TaskStoreFactory, projectId string) (TaskStore, bool) {
-	if _, err := projects.Get(projectId); err != nil {
+// or the id is otherwise invalid. A method rather than a free function
+// taking ProjectStore/TaskStoreFactory as parameters — the same shape as
+// stage_conversation.go's helpers, folded into the Server-methods
+// refactor even though it wasn't one of the five originally named in
+// docs/milestones/done/milestone8b.md's scan, since it re-passes the exact
+// same invariant deps to a dozen call sites (docs/adr/0016).
+func (s *Server) resolveTaskStore(w http.ResponseWriter, projectId string) (TaskStore, bool) {
+	if _, err := s.Projects.Get(projectId); err != nil {
 		writeGetError(w, err)
 		return nil, false
 	}
 
-	root, err := projects.TasksRoot(projectId)
+	root, err := s.Projects.TasksRoot(projectId)
 	if err != nil {
 		writeGetError(w, err)
 		return nil, false
 	}
 
-	return factory(root), true
+	return s.TaskStores(root), true
 }
 
-func handleListProjectTasks(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleListProjectTasks() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}
@@ -42,9 +47,9 @@ func handleListProjectTasks(projects ProjectStore, factory TaskStoreFactory) htt
 	}
 }
 
-func handleGetProjectTask(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleGetProjectTask() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}
@@ -58,10 +63,10 @@ func handleGetProjectTask(projects ProjectStore, factory TaskStoreFactory) http.
 	}
 }
 
-func handleCreateProjectTask(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleCreateProjectTask() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectId := r.PathValue("projectId")
-		store, ok := resolveTaskStore(w, projects, factory, projectId)
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
@@ -82,10 +87,10 @@ func handleCreateProjectTask(projects ProjectStore, factory TaskStoreFactory) ht
 	}
 }
 
-func handleUpdateProjectTask(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleUpdateProjectTask() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectId := r.PathValue("projectId")
-		store, ok := resolveTaskStore(w, projects, factory, projectId)
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}

@@ -26,7 +26,7 @@ func TestHandleGetTaskContext_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleGetTaskContext(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskContext()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Context
@@ -46,7 +46,7 @@ func TestHandleGetTaskContext_NotFinalizedYet(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleGetTaskContext(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskContext()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -63,7 +63,7 @@ func TestHandleGetTaskPlan_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleGetTaskPlan(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskPlan()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Plan
@@ -83,7 +83,7 @@ func TestHandleGetTaskPlan_NotFinalizedYet(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleGetTaskPlan(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskPlan()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

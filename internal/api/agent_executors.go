@@ -3,8 +3,6 @@ package api
 import (
 	"net/http"
 	"sort"
-
-	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 )
 
 // handleListAgentExecutors reports which agentRunners entries
@@ -13,10 +11,10 @@ import (
 // only offer an executor the server will actually accept, rather than
 // letting the user pick one that 400s (stage_conversation.go's "unknown
 // executor" check) or silently fails.
-func handleListAgentExecutors(agentRunners map[string]agentrunner.AgentRunner) http.HandlerFunc {
+func (s *Server) handleListAgentExecutors() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		executors := make([]string, 0, len(agentRunners))
-		for name, runner := range agentRunners {
+		executors := make([]string, 0, len(s.AgentRunners))
+		for name, runner := range s.AgentRunners {
 			if err := runner.CheckHealth(r.Context()); err != nil {
 				continue
 			}

@@ -24,11 +24,10 @@ func TestStageTool_ReviewReturnsProposeReview(t *testing.T) {
 }
 
 func TestBuildStagePrompt_ReviewUsesReviewSystemPrompt(t *testing.T) {
-	prompt := buildStagePrompt(
+	prompt := (&Server{KnowledgeReader: new(mockKnowledgeReader)}).buildStagePrompt(
 		task.Task{ID: "task-a", Objective: "ship it"},
 		project.Project{Name: "demo"},
 		task.StageReview,
-		new(mockKnowledgeReader),
 	)
 	// The review discipline (three phases, confined bash) leads the prompt.
 	assert.Contains(t, prompt, "reviewing a completed execution")
@@ -98,8 +97,8 @@ func TestBuildReviewContext_IncludesDiffAndVerificationSteps(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
 	seedReviewableTask(t, store, "task-a")
 
-	addendum, workspace, err := buildReviewContext(
-		context.Background(), reposRoot,
+	addendum, workspace, err := (&Server{ReposRoot: reposRoot}).buildReviewContext(
+		context.Background(),
 		project.Project{Repositories: []string{"github.com/x/myrepo"}},
 		store, "task-a", "main",
 	)
@@ -120,8 +119,8 @@ func TestBuildReviewContext_NoExecutionIsAnError(t *testing.T) {
 	_, err := store.Create(task.Task{ID: "task-b", Title: "B"})
 	require.NoError(t, err)
 
-	_, _, err = buildReviewContext(
-		context.Background(), reposRoot,
+	_, _, err = (&Server{ReposRoot: reposRoot}).buildReviewContext(
+		context.Background(),
 		project.Project{Repositories: []string{"github.com/x/myrepo"}},
 		store, "task-b", "main",
 	)
@@ -134,7 +133,7 @@ func TestBuildRejectedReviewContext_NoReviewsYet_ReturnsEmpty(t *testing.T) {
 	_, err := store.Create(task.Task{ID: "task-c", Title: "C"})
 	require.NoError(t, err)
 
-	addendum, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "task-c"}, "")
+	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "task-c"}, "")
 	require.NoError(t, err)
 	assert.Empty(t, addendum)
 }
@@ -145,7 +144,7 @@ func TestBuildRejectedReviewContext_LatestApproved_ReturnsEmpty(t *testing.T) {
 	_, err := store.FinalizeReview("task-d", task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: "looks good"})
 	require.NoError(t, err)
 
-	addendum, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "task-d"}, "")
+	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "task-d"}, "")
 	require.NoError(t, err)
 	assert.Empty(t, addendum)
 }
@@ -156,7 +155,7 @@ func TestBuildRejectedReviewContext_LatestRejected_IncludesNotesAndBranch(t *tes
 	_, err := store.FinalizeReview("task-e", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "wrong requirements entirely"})
 	require.NoError(t, err)
 
-	addendum, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "task-e"}, "")
+	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "task-e"}, "")
 	require.NoError(t, err)
 	assert.Contains(t, addendum, "wrong requirements entirely")
 	assert.Contains(t, addendum, "task-exec/task-e/exec-001")
@@ -166,7 +165,7 @@ func TestBuildRejectedReviewContext_LatestRejected_IncludesNotesAndBranch(t *tes
 func TestBuildRejectedReviewContext_InvalidTaskID_PropagatesError(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
 
-	_, err := buildRejectedReviewContext(context.Background(), store, nil, task.Task{ID: "../evil"}, "")
+	_, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "../evil"}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing reviews")
 }
@@ -188,7 +187,7 @@ func TestBuildRejectedReviewContext_LatestRejectedWithOpenPR_WritesCommentsFile(
 	prClient := &fakeGitHubPRClient{comments: agentrunner.PRCommentsYAML("- kind: comment\n  author: dana\n  body: please reconsider the approach\n")}
 	tk := task.Task{ID: "task-f", PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7}}
 
-	addendum, err := buildRejectedReviewContext(context.Background(), store, prClient, tk, workspace)
+	addendum, err := (&Server{PRClient: prClient}).buildRejectedReviewContext(context.Background(), store, tk, workspace)
 	require.NoError(t, err)
 	assert.Contains(t, addendum, ".llm-workbench/pr-comments/task-f.yaml")
 

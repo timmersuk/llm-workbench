@@ -33,7 +33,7 @@ func TestHandleFinalizeReview_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeReview(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeReview()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizeReviewResponse
@@ -56,7 +56,7 @@ func TestHandleFinalizeReview_WrongStage(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeReview(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeReview()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -72,7 +72,7 @@ func TestHandleFinalizeReview_InvalidBody(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeReview(projects, fixedTaskStoreFactory(tasks), nil)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeReview()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -97,7 +97,7 @@ func TestHandleFinalizeReview_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeReview(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeReview()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	runner.AssertCalled(t, "CloseSession", "TASK-0001:"+task.StageReview)
@@ -118,7 +118,7 @@ func TestHandleFinalizeReview_DoesNotCloseSessionsWhenFinalizeFails(t *testing.T
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleFinalizeReview(projects, fixedTaskStoreFactory(tasks), map[string]agentrunner.AgentRunner{"claude-code": runner})(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeReview()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	runner.AssertNotCalled(t, "CloseSession", mock.Anything)
@@ -140,7 +140,7 @@ func TestHandleListReviews_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleListReviews(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleListReviews()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got struct {
@@ -167,7 +167,7 @@ func TestHandleReviewDiff_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	handleReviewDiff(projects, fixedTaskStoreFactory(store), reposRoot, nil)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot}).handleReviewDiff()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got reviewDiffResponse
@@ -191,7 +191,7 @@ func TestHandleReviewDiff_NoExecutionIsNotFound(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-b")
 	w := httptest.NewRecorder()
-	handleReviewDiff(projects, fixedTaskStoreFactory(store), reposRoot, nil)(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot}).handleReviewDiff()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

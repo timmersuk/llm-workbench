@@ -5,9 +5,9 @@ import "net/http"
 // handleGetTaskContext returns the task's context.yaml, produced once
 // GrillMe's Draft has been Finalized. 404 (via writeGetError's fs.ErrNotExist
 // case) if requirements haven't been finalized yet.
-func handleGetTaskContext(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleGetTaskContext() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}
@@ -24,9 +24,9 @@ func handleGetTaskContext(projects ProjectStore, factory TaskStoreFactory) http.
 // handleGetTaskPlan returns the task's plan.yaml, produced once Planning
 // Mode's Draft has been Finalized. 404 if planning hasn't been finalized
 // yet.
-func handleGetTaskPlan(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleGetTaskPlan() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}

@@ -25,7 +25,7 @@ func TestHandleReviseRequirements_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleReviseRequirements(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleReviseRequirements()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -45,7 +45,7 @@ func TestHandleReviseRequirements_WrongStage(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleReviseRequirements(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleReviseRequirements()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -62,7 +62,7 @@ func TestHandleRevisePlan_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleRevisePlan(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleRevisePlan()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -82,7 +82,7 @@ func TestHandleRevisePlan_WrongStage(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	handleRevisePlan(projects, fixedTaskStoreFactory(tasks))(w, req)
+	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleRevisePlan()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }

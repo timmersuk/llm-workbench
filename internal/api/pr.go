@@ -19,22 +19,22 @@ import (
 // latest execution, and its latest (necessarily approving — see below)
 // review, per PR 2 decision 7. Returns the plain updated Task, now carrying
 // pull_request.
-func handlePushPR(projects ProjectStore, factory TaskStoreFactory, reposRoot string, prClient agentrunner.GitHubPRClient) http.HandlerFunc {
+func (s *Server) handlePushPR() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
 
-		proj, err := projects.Get(projectId)
+		proj, err := s.Projects.Get(projectId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
-		root, err := projects.TasksRoot(projectId)
+		root, err := s.Projects.TasksRoot(projectId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
-		store := factory(root)
+		store := s.TaskStores(root)
 
 		t, err := store.Get(taskId)
 		if err != nil {
@@ -84,7 +84,7 @@ func handlePushPR(projects ProjectStore, factory TaskStoreFactory, reposRoot str
 			existingBranch = t.PullRequest.Branch
 		}
 
-		dir, err := agentrunner.ResolveWorkspace(r.Context(), reposRoot, proj.Repositories)
+		dir, err := agentrunner.ResolveWorkspace(r.Context(), s.ReposRoot, proj.Repositories)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resolving workspace: %v", err), http.StatusInternalServerError)
 			return
@@ -92,7 +92,7 @@ func handlePushPR(projects ProjectStore, factory TaskStoreFactory, reposRoot str
 
 		url, number, branch, err := agentrunner.PushAndOpenPR(
 			r.Context(), dir, newBranch, prTitle(t), prBody(t, reviewNotes),
-			existingURL, existingNumber, existingBranch, prClient,
+			existingURL, existingNumber, existingBranch, s.PRClient,
 		)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("pushing and opening PR: %v", err), http.StatusInternalServerError)
@@ -133,9 +133,9 @@ func prBody(t task.Task, reviewNotes string) string {
 // human assertion that the PR was merged on GitHub, no polling and no
 // review-record write (task.MarkPRMerged). 409 if the task isn't at
 // pr_review, or if it has no pull_request recorded yet.
-func handleMarkPRMerged(projects ProjectStore, factory TaskStoreFactory) http.HandlerFunc {
+func (s *Server) handleMarkPRMerged() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolveTaskStore(w, projects, factory, r.PathValue("projectId"))
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
 		if !ok {
 			return
 		}

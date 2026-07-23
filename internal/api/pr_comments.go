@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/gitutil"
 )
 
@@ -31,14 +30,14 @@ func prCommentsRequirementsPath(workspace, taskID string) string {
 	return filepath.Join(workspace, filepath.FromSlash(prCommentsScratchDir), taskID+".yaml")
 }
 
-// writePRCommentsFile fetches number's PR comments via prClient and writes
-// them to filePath (which must be inside workspace), first ensuring
+// writePRCommentsFile fetches number's PR comments via s.PRClient and
+// writes them to filePath (which must be inside workspace), first ensuring
 // workspace's .git/info/exclude covers both scratch-file locations this
 // milestone uses — a single call handles either call site, since
 // .git/info/exclude is shared across a repository's checkout and every one
 // of its worktrees (gitutil.EnsureGitExclude).
-func writePRCommentsFile(ctx context.Context, prClient agentrunner.GitHubPRClient, workspace, filePath string, number int) error {
-	comments, err := prClient.Comments(ctx, workspace, number)
+func (s *Server) writePRCommentsFile(ctx context.Context, workspace, filePath string, number int) error {
+	comments, err := s.PRClient.Comments(ctx, workspace, number)
 	if err != nil {
 		return fmt.Errorf("fetching PR #%d comments: %w", number, err)
 	}

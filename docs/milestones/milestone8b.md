@@ -4,7 +4,8 @@
 Scoped via a `/grill-with-docs` session on 2026-07-23 — see "What this
 milestone does" below for the resolved design, and
 `docs/adr/0016-api-handlers-become-methods-on-an-internal-server-struct.md`
-for the pattern decision and rejected alternatives. Not yet implemented.
+for the pattern decision and rejected alternatives. **Shipped (2026-07-23)**
+in a single pass — see "What shipped" below.
 
 ## Why now
 
@@ -155,4 +156,54 @@ Full rationale and rejected alternatives:
 
 Single PR — the whole `internal/api` package migrates from free-function
 handlers to `Server` methods in one pass, per the migration-strategy
-decision above. Not implemented yet.
+decision above.
+
+## What shipped (2026-07-23)
+
+`router.go` gained the unexported `Server` struct exactly as scoped —
+`Projects`, `TaskStores`, `KnowledgeReader`, `AgentRunners`, `ReposRoot`,
+`PRClient`, `DefaultBranchResolver`, `FrontendFS`, `BuildId` — constructed
+once inside `NewRouter`, whose own signature is byte-for-byte unchanged.
+Every route registration became `s.handleFoo()` instead of
+`handleFoo(deps...)`; `cmd/server/main.go` required no changes.
+
+Every HTTP handler across all 13 non-test `internal/api` files
+(`agent_executors.go`, `chat.go`, `execution.go`, `finalize.go`, `pr.go`,
+`projects.go`, `review.go`, `revise.go`, `router.go`'s own
+healthcheck/version handlers, `stage_conversation.go`, `task_context.go`,
+`tasks.go`, `workspace_status.go`) is now a `*Server` method, plus the five
+helpers named during scoping (`resolveStageRun`, `buildReviewContext`,
+`buildRejectedReviewContext`, `buildStagePrompt`, `resolveStageStreamTarget`).
+
+Four more functions turned out to fit the exact same shape and were folded
+in during implementation, beyond the five originally named in the scoping
+scan — each mixes an invariant dependency with per-call data and is called
+from enough sites that leaving it a free function would have just moved
+the re-passing problem down one level, the same reasoning ADR-0016 already
+makes for the five named helpers:
+
+* `resolveTaskStore` (`tasks.go`) — `projects`/`factory` were invariant,
+  called from a dozen-plus handlers across nearly every file in the
+  package.
+* `ensureDefaultBranch` (`default_branch.go`) — `projects`/`resolver` were
+  invariant.
+* `writePRCommentsFile` (`pr_comments.go`) — `prClient` was invariant.
+* `closeSessions` (`finalize.go`) — `agentRunners` was invariant, called
+  from five different handler methods.
+
+A fifth, `appendWorkspaceAdvisories` (`stage_conversation.go`), also
+converted — it postdates this milestone's original scoping scan (it
+shipped in Milestone 8a PR 3, after the scan ran) but mixes `reposRoot`
+(invariant) with `repositories` (per-call) the identical way, and is
+called from the now-method `resolveStageRun`.
+
+`internal/agentrunner`'s workspace resolvers were left untouched, as
+scoped. No test-builder helper was added — every test file's positional
+handler calls became `(&Server{Field: value, ...}).handleFoo()(w, req)`
+literals, omitting whatever fields that test doesn't need.
+
+**Verified:** `go build ./...`, `go vet ./...`, and `go test ./...` all
+pass across the whole module, including `internal/api`'s full existing
+test suite (unit + integration) — this refactor is internal-only and
+behavior-preserving, so the pre-existing tests are the correctness proof;
+no new tests were needed or added.
