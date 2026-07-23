@@ -1,9 +1,10 @@
 # Milestone 8b — Handler Dependency Injection (`internal/api`)
 
 **Status:** Identified 2026-07-22, while reviewing Milestone 8a PR 2's diff.
-**Not yet scoped** — needs its own `/grill-with-docs` session before any
-implementation. This doc captures the problem and a codebase scan of
-candidates, not binding design decisions.
+Scoped via a `/grill-with-docs` session on 2026-07-23 — see "What this
+milestone does" below for the resolved design, and
+`docs/adr/0016-api-handlers-become-methods-on-an-internal-server-struct.md`
+for the pattern decision and rejected alternatives. Not yet implemented.
 
 ## Why now
 
@@ -101,32 +102,57 @@ worst offender — no other package in this codebase shows the same problem.
 parameters where a meaningful subset is call-invariant rather than
 per-call data.
 
-## Out of scope (for this doc, and presumably for whatever session picks it up)
+## What this milestone does (resolved via `/grill-with-docs`, 2026-07-23)
 
-* Any actual implementation — this is a future-scoped milestone, not
-  in-flight work.
+* **One `Server` struct**, not split by route family. The chat handlers are
+  the only family with a visibly smaller dependency set, and even they need
+  only a strict subset of the same union `NewRouter` already takes —
+  nothing needs a dependency *outside* that union, so splitting would only
+  add a classification problem with no realized benefit.
+* **Named `Server`** — idiomatic for the pattern
+  (`type Server struct { ... }`, handlers as `func (s *Server)
+  handleFoo(w, r)` methods), and nothing in the codebase already claims
+  that name.
+* **The five internal helpers become `Server` methods too**
+  (`resolveStageRun`, `buildReviewContext`, `buildRejectedReviewContext`,
+  `buildStagePrompt`, `resolveStageStreamTarget`) — leaving them as free
+  functions taking the struct as a parameter would just move the same
+  re-passing problem one level down the call stack.
+* **`NewRouter`'s public signature is unchanged.** `Server` stays
+  package-internal; `NewRouter` builds it internally and returns the
+  `http.Handler` as before. `cmd/server/main.go` doesn't change. Only one
+  call site exists and only ever will, so exporting `Server` would buy
+  flexibility nothing is positioned to use.
+* **Migrated in one pass, single PR.** Purely internal and
+  behavior-preserving — nothing about it is independently shippable, so
+  there's no partial-delivery value to capture by staging it, only a
+  straddling period where two calling conventions coexist in one package.
+  The existing handler test suite is the safety net.
+* **No test-builder helper.** Bare `Server{...}` named-field struct
+  literals already solve what a builder would solve — a test omits
+  whatever fields it doesn't need, instead of today's positional calls
+  padding irrelevant args with `nil`/`""`. A local builder is a cheap
+  follow-up if real repetition shows up later.
+* **`internal/agentrunner`'s workspace resolvers stay out of scope.**
+  Their `repositories` parameter varies per-*project*, not per-call — a
+  structurally different shape from `internal/api`'s "identical value on
+  every call" case, so they don't share the problem this milestone solves.
+
+Full rationale and rejected alternatives:
+`docs/adr/0016-api-handlers-become-methods-on-an-internal-server-struct.md`.
+
+## Out of scope
+
 * Forcing the struct-with-methods shape onto candidates that don't
-  genuinely fit it — `PushAndOpenPR` above, and `internal/agentrunner`'s
-  resolvers' `repositories` parameter (per-project, not invariant).
+  genuinely fit it — `PushAndOpenPR` (see scan above), and
+  `internal/agentrunner`'s resolvers' `repositories` parameter (per-project,
+  not invariant).
+* Exporting `Server`/`NewServer` or otherwise changing `NewRouter`'s public
+  signature or `cmd/server/main.go`.
+* A test-builder helper for constructing `Server` values.
 
-## Open questions for the eventual `/grill-with-docs` session
+## Phasing
 
-* One struct for all of `internal/api`'s handlers, or split by cohesive
-  route family (e.g. task/stage-conversation handlers vs. project handlers
-  vs. execution/review handlers) — `NewRouter` currently registers several
-  fairly unrelated groups of routes behind one flat parameter list.
-* Do internal helpers (`resolveStageRun`, `buildReviewContext`,
-  `buildRejectedReviewContext`, `buildStagePrompt`, `resolveStageStreamTarget`)
-  become methods on the same struct, or stay free functions that take it
-  (or its relevant fields) as a parameter?
-* Migration strategy — one pass converting everything at once, or
-  incremental (new struct introduced alongside the existing free
-  functions, routes migrated one at a time)?
-* Testing ergonomics — handler tests currently construct fresh mocks
-  per-test and pass them as constructor arguments directly
-  (`handleStartExecution(newExecutionProjectStore(...), ...)`). Does a
-  struct-based design need a test-builder helper to stay as low-friction as
-  today's call-with-mocks-directly pattern, and is that a net win?
-* Whether `internal/agentrunner`'s workspace resolvers are worth touching
-  in the same milestone at all, given the scan found their invariant/
-  per-call split is much weaker than `internal/api`'s.
+Single PR — the whole `internal/api` package migrates from free-function
+handlers to `Server` methods in one pass, per the migration-strategy
+decision above. Not implemented yet.
