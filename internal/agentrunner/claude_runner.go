@@ -13,6 +13,7 @@ import (
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/knowledgetool"
 )
 
 // lookPath is exec.LookPath, indirected so CheckHealth is deterministically
@@ -56,6 +57,17 @@ const executionKickoffMessage = "Begin executing the plan."
 // registered under (mcp__<mcpServerName>__<tool name> in WithAllowedTools).
 const mcpServerName = "draft"
 
+// knowledgeServerName is a second, always-registered in-process MCP server
+// (independent of mcpServerName/in.Tools) carrying the read-only knowledge
+// query tools (docs/milestones/milestone9.md) — kept separate from "draft"
+// because these are genuinely executed for real on every call and never end
+// a turn, unlike the Draft tools' fire-and-forget ack (draftToolHandler);
+// mixing the two into one server would make processMessage's Draft-call
+// matching (which only ever needs to recognize in.Tools' names) have to
+// start distinguishing real tool calls from Draft proposals within a single
+// server's tool set instead of by server.
+const knowledgeServerName = "knowledge"
+
 // ClaudeRunner implements AgentRunner backed by
 // github.com/severity1/claude-agent-sdk-go, which drives the `claude` CLI
 // as a subprocess. One claudecode.Client is created and connected lazily
@@ -64,11 +76,12 @@ const mcpServerName = "draft"
 // claudecode.Client-scoped (fixed at connect time, not per-query), so a
 // client cannot be shared across keys with different workspaces/prompts.
 type ClaudeRunner struct {
-	mu        sync.Mutex
-	clients   map[string]claudecode.Client
-	inFlight  map[string]bool
-	timeout   time.Duration
-	reposRoot string
+	mu             sync.Mutex
+	clients        map[string]claudecode.Client
+	inFlight       map[string]bool
+	timeout        time.Duration
+	reposRoot      string
+	knowledgeStore knowledgetool.Store
 	// newClient constructs a claudecode.Client from the given options —
 	// indirected (defaulting to claudecode.NewClient) purely so tests can
 	// substitute a fake client without spawning a real `claude` subprocess,
@@ -79,14 +92,18 @@ type ClaudeRunner struct {
 // NewClaudeRunner returns a ClaudeRunner whose Run calls are each bounded
 // by timeout (covering client connection, the query, and draining the
 // response stream). reposRoot is the configured AGENT_REPOS_ROOT value,
-// held so CheckHealth can report unavailable when it's unset.
-func NewClaudeRunner(timeout time.Duration, reposRoot string) *ClaudeRunner {
+// held so CheckHealth can report unavailable when it's unset. knowledgeStore,
+// if non-nil, is exposed on every Run call via a second always-registered
+// in-process MCP server (docs/milestones/milestone9.md) — nil just means
+// those two tools are never registered (e.g. tests that don't care).
+func NewClaudeRunner(timeout time.Duration, reposRoot string, knowledgeStore knowledgetool.Store) *ClaudeRunner {
 	return &ClaudeRunner{
-		clients:   make(map[string]claudecode.Client),
-		inFlight:  make(map[string]bool),
-		timeout:   timeout,
-		reposRoot: reposRoot,
-		newClient: claudecode.NewClient,
+		clients:        make(map[string]claudecode.Client),
+		inFlight:       make(map[string]bool),
+		timeout:        timeout,
+		reposRoot:      reposRoot,
+		knowledgeStore: knowledgeStore,
+		newClient:      claudecode.NewClient,
 	}
 }
 
@@ -300,6 +317,30 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 		server := claudecode.CreateSDKMcpServer(mcpServerName, "1.0.0", tools...)
 		opts = append(opts, claudecode.WithSdkMcpServer(mcpServerName, server))
 	}
+	// The knowledge query tools are always registered when a store is
+	// configured — independent of in.Tools/stage, per
+	// docs/milestones/milestone9.md's "available at every task stage".
+	// Unlike the Draft server's tools (acked only; the real handling is
+	// Finalize), these have real handlers: the `claude` CLI's own turn loop
+	// calls them, gets a real result, and continues — no change needed to
+	// processMessage, which only ever inspects the "draft" server's calls.
+	if r.knowledgeStore != nil {
+		handlers := map[string]claudecode.McpToolHandler{
+			knowledgetool.List.Name: r.knowledgeListHandler,
+			knowledgetool.Get.Name:  r.knowledgeGetHandler,
+		}
+		knowledgeTools := make([]*claudecode.McpTool, 0, len(knowledgetool.All()))
+		for _, d := range knowledgetool.All() {
+			schema, err := decodeToolSchema(d.Schema)
+			if err != nil {
+				return nil, err
+			}
+			knowledgeTools = append(knowledgeTools, claudecode.NewTool(d.Name, d.Description, schema, handlers[d.Name]))
+			allowedTools = append(allowedTools, qualifiedName(knowledgeServerName, d.Name))
+		}
+		server := claudecode.CreateSDKMcpServer(knowledgeServerName, "1.0.0", knowledgeTools...)
+		opts = append(opts, claudecode.WithSdkMcpServer(knowledgeServerName, server))
+	}
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
 
 	client = r.newClient(opts...)
@@ -364,12 +405,41 @@ func isStaleClaudeConnectionError(err error) bool {
 	return false
 }
 
-// mcpQualifiedName returns the fully-qualified tool name the `claude` CLI
+// qualifiedName returns the fully-qualified tool name the `claude` CLI
 // reports in a ToolUseBlock for an in-process MCP tool (mcp__<server>__
 // <tool>) — WithAllowedTools and ToolUseBlock.Name both use this qualified
-// form, never a bare tool name a caller passes in RunInput.Tools.
+// form, never a bare tool name.
+func qualifiedName(server, toolName string) string {
+	return "mcp__" + server + "__" + toolName
+}
+
+// mcpQualifiedName is qualifiedName scoped to the "draft" server — the only
+// server processMessage ever matches a Draft proposal against.
 func mcpQualifiedName(toolName string) string {
-	return "mcp__" + mcpServerName + "__" + toolName
+	return qualifiedName(mcpServerName, toolName)
+}
+
+// knowledgeListHandler/knowledgeGetHandler are the real, functional MCP
+// handlers for the knowledge query tools (unlike draftToolHandler's
+// fire-and-forget ack) — bound methods rather than free functions since
+// they need r.knowledgeStore. Errors surface to the model as an MCP tool
+// error result rather than aborting the CLI's turn, the same "the model can
+// see and recover from it" posture internal/toolloop's executeCall takes.
+func (r *ClaudeRunner) knowledgeListHandler(_ context.Context, _ map[string]any) (*claudecode.McpToolResult, error) {
+	text, err := knowledgetool.ExecuteList(r.knowledgeStore)
+	if err != nil {
+		return &claudecode.McpToolResult{Content: []claudecode.McpContent{{Type: "text", Text: err.Error()}}, IsError: true}, nil
+	}
+	return &claudecode.McpToolResult{Content: []claudecode.McpContent{{Type: "text", Text: text}}}, nil
+}
+
+func (r *ClaudeRunner) knowledgeGetHandler(_ context.Context, args map[string]any) (*claudecode.McpToolResult, error) {
+	conceptID, _ := args["concept_id"].(string)
+	text, err := knowledgetool.ExecuteGet(r.knowledgeStore, conceptID)
+	if err != nil {
+		return &claudecode.McpToolResult{Content: []claudecode.McpContent{{Type: "text", Text: err.Error()}}, IsError: true}, nil
+	}
+	return &claudecode.McpToolResult{Content: []claudecode.McpContent{{Type: "text", Text: text}}}, nil
 }
 
 func decodeToolSchema(parameters json.RawMessage) (map[string]any, error) {

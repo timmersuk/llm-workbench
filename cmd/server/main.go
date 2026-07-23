@@ -51,21 +51,25 @@ func main() {
 	configureLogging(logLevel, logFormat)
 
 	projectStore := project.NewFileStore(filepath.Join(workspaceRoot, "projects"))
-	knowledgeStore := knowledge.NewFileStore(filepath.Join(workspaceRoot, "knowledge"))
+	knowledgeRoot := filepath.Join(workspaceRoot, "knowledge")
+	knowledgeStore := knowledge.NewFileStore(knowledgeRoot)
 
 	// One shared map: registered runners are selectable from both
 	// Requirements/Planning stage conversations and the free-floating Chat
 	// tab, and both consume it identically — there is no separate
 	// stateless/bypass path for either. "local" wraps the same chatClient
 	// used by defaultModelCompleter below, giving it session-held history
-	// (chat.ChatClient.StreamSessionTurn) exactly like "claude-code".
+	// (chat.ChatClient.StreamSessionTurn) exactly like "claude-code". Every
+	// runner is given the same knowledgeStore/knowledgeRoot so the
+	// always-available knowledge query tools (docs/milestones/milestone9.md)
+	// answer identically regardless of which executor a conversation uses.
 	agentRunners := map[string]agentrunner.AgentRunner{
-		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentReposRoot),
-		"codex":       agentrunner.NewCodexRunner(agentTimeout, agentReposRoot, draftMCPPath),
+		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentReposRoot, knowledgeStore),
+		"codex":       agentrunner.NewCodexRunner(agentTimeout, agentReposRoot, draftMCPPath, knowledgeRoot),
 		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
 			client: chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout),
 			model:  llmModel,
-		}),
+		}, knowledgeStore),
 	}
 
 	frontendFS, err := fs.Sub(web.Files, "dist")

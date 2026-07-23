@@ -1,7 +1,8 @@
 # Milestone 9 — Knowledge-Base Promotion
 
-**Status:** Scoped via a `/grill-with-docs` session on 2026-07-22. PR 1
-shipped 2026-07-23 — see "What shipped (PR 1)" below. PRs 2-4 not started.
+**Status:** Scoped via a `/grill-with-docs` session on 2026-07-22. PRs 1-2
+shipped 2026-07-23 — see "What shipped (PR 1)"/"What shipped (PR 2)"
+below. PRs 3-4 not started.
 
 ## Why now
 
@@ -247,10 +248,11 @@ Delivered as sequential PRs, matching prior milestones' cadence:
   conversation with the two-way accept/reject decision. Proven via fixture
   tasks and unit tests before any UI exists, matching how Milestone 6 PR 1
   proved `RecordReview` first. See "What shipped (PR 1)" below.
-* **PR 2 — Read path: the query tool.** The native `toolloop.Tool` for
-  `ChatClientRunner`, plus resolving the `ClaudeRunner`/`CodexRunner`
-  always-on-tool-alongside-a-stop-condition-tool question below, so all
-  three runners can `List`/`Get` from any stage.
+* **PR 2 — Read path: the query tool. ✅ Shipped (2026-07-23).** The native
+  `toolloop.Tool` for `ChatClientRunner`, plus resolving the
+  `ClaudeRunner`/`CodexRunner` always-on-tool-alongside-a-stop-condition-tool
+  question below, so all three runners can `List`/`Get` from any stage. See
+  "What shipped (PR 2)" below.
 * **PR 3 — `KnowledgeDraftForm` frontend.** Mirrors `ReviewDraftForm`'s
   pattern; wires `propose_knowledge` into the Review-stage UI a human
   actually sees and acts on.
@@ -320,25 +322,81 @@ fixture tests (accept, reject, wrong stage, invalid body/decision,
 missing/invalid concept id). `go build ./...`, `go vet ./...`, and
 `go test ./...` all pass across the whole module.
 
+## What shipped (PR 2, 2026-07-23)
+
+New package `internal/knowledgetool` (mirroring `internal/drafttool`'s
+shape but for a fundamentally different kind of tool — see below):
+`list_knowledge_concepts`/`get_knowledge_concept` name/description/schema
+`Definition`s plus `All()`, a narrow `Store` interface (`Get`/`List` only —
+deliberately no `Put`; the write side stays reachable exclusively through
+`propose_knowledge`'s human accept/reject gate, never through a tool an
+executor can call unattended), and `ExecuteList`/`ExecuteGet` — the actual
+query logic, rendering results as plain text, shared verbatim by every
+caller that runs these tools for real.
+
+**The coexistence question resolved simpler than scoped.** The Open
+Questions below (as originally written) worried about generalizing
+`RunInput.Tools` to "some stop the turn, some don't." That generalization
+turned out to be unnecessary: `internal/toolloop.Config` already
+distinguishes `Tools` (executed for real, loop continues — what
+Read/Grep/Glob/bash already are) from `StopTools` (never executed, ends the
+loop — what Draft tools are). The knowledge tools are simply new `Tools`
+entries (`toolloop.KnowledgeTools`, new `tools_knowledge.go`), not a new
+concept the engine needed to learn. `ChatClientRunner.loopTools` (renamed
+from the free function `loopToolsFor`, now a method so it can read
+`r.knowledgeStore`) always includes them, independent of whether a usable
+workspace resolved this turn — data/knowledge/ is a workspace-wide bundle,
+not part of any project's checked-out repository, so a project with no
+configured repo still gets knowledge access even though its file tools
+degrade to none.
+
+**`ClaudeRunner`** registers a *second* in-process SDK MCP server
+(`knowledgeServerName = "knowledge"`, alongside the existing `"draft"`
+one), always present when constructed with a non-nil store, independent of
+`in.Tools`/stage. Its two tools carry real handlers
+(`knowledgeListHandler`/`knowledgeGetHandler`, methods so they can close
+over `r.knowledgeStore`) — unlike `draftToolHandler`'s fire-and-forget ack.
+`processMessage` needed no changes at all: it only ever inspects the
+`"draft"` server's calls for a Draft proposal, so a knowledge-tool call
+just flows through the `claude` CLI's own turn loop like any other
+MCP-executed tool, gets a real result, and the CLI continues on its own.
+
+**`CodexRunner`** has no in-process MCP mechanism, so the same
+external-process pattern PR 1 already relied on for Draft tools extends
+naturally: `cmd/draftmcp` gained a `--knowledge-root` flag; when set, it
+constructs its own `*knowledge.FileStore` and actually executes
+`list_knowledge_concepts`/`get_knowledge_concept` for real in `tools/call`
+(unlike the Draft tools, which stay ack-only — there's no event-stream side
+channel a query's real answer could travel through instead, the way a
+proposal's payload travels via `MCPToolCall.Arguments`). `NewCodexRunner`
+gained a `knowledgeRoot string` parameter, passed to the registered
+`draftmcp` process as an `args` entry in its persisted `mcp_servers.*`
+config; `registerDraftServer` also grants `approval_mode: "approve"` to
+`knowledgetool.All()`'s names (when `knowledgeRoot` is set) exactly as it
+already does for `drafttool.All()`'s.
+
+**Wiring**: `cmd/server/main.go` passes the same `knowledgeStore`
+(`*knowledge.FileStore`) into `NewClaudeRunner`/`NewChatClientRunner`, and
+`filepath.Join(workspaceRoot, "knowledge")` into `NewCodexRunner`, so all
+three executors answer identically regardless of which one a conversation
+uses. `internal/api/stage_conversation.go` needed **zero** changes — tool
+availability is entirely runner-construction-level now, not per-request,
+so "available at every task stage" fell out for free rather than requiring
+new per-stage wiring.
+
+Proven via `internal/knowledgetool`'s own unit tests, new coverage in
+`internal/toolloop`, `ChatClientRunner` (including a full tool-call round
+trip through the real engine), `ClaudeRunner`'s two handler methods, and
+`cmd/draftmcp`'s `tools/list`/`tools/call` behavior with and without
+`--knowledge-root`. `CodexRunner.registerDraftServer`'s config-writing path
+has no existing test seam (no prior test exercises it at all — it talks to
+a real `codex` CLI client with no fake indirection) and stays covered only
+by code review + the type system, a pre-existing gap this PR didn't
+introduce. `go build ./...`, `go vet ./...`, and `go test ./...` all pass
+across the whole module.
+
 ## Open questions for whoever executes this milestone
 
-* **How does the always-on query tool coexist with a Review conversation's
-  two stop-condition Draft tools (or any stage's one)?** `internal/drafttool`
-  already solves this cleanly for *proposal*-shaped tools (one more
-  `Definition` in `All()`, picked up by both `cmd/draftmcp` and the
-  per-stage registration for free) — but the query tool is not
-  proposal-shaped, it must not end the turn when called, and PR 1 only
-  generalized `RunInput.Tools`/`processMessage`/`toolloop.Config.StopTools`
-  to "stop on a call to any of several offered tools," not to "some offered
-  tools stop the turn and others don't." Candidates: widen further to mark
-  a subset of `RunInput.Tools` as non-stopping; or register the query tool
-  on a second in-process MCP server alongside the existing `"draft"` one.
-  Needs deciding during PR 2, not here.
-* **Same question for `CodexRunner`.** Its `cmd/draftmcp` static server is
-  currently framed entirely around `drafttool.All()`'s proposal tools. A
-  second static MCP server binary for the query tool, or a widened
-  `drafttool.Definition` carrying a "does this end the turn" flag, are the
-  two live options.
 * **Concept ID / directory layout for the pathology catalog** — not pinned
   during scoping; pick something descriptive under `data/knowledge/` when
   PR 4 lands (e.g. a `model-behavior/` or similar grouping), consistent

@@ -92,7 +92,7 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient = chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
-	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
+	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient, nil)}
 
 	router := NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
@@ -597,7 +597,7 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
-	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
+	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient, nil)}
 
 	router := NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
