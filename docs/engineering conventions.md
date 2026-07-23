@@ -293,7 +293,12 @@ doesn't have to be re-derived or re-litigated later.
   calling `ResolveWorkspace` — a Claude Code session started from the Chat
   tab gets read access rooted at the whole sibling-repos directory, not one
   specific repo. `AGENT_TIMEOUT` (default 5m) bounds a single `Run` call end
-  to end.
+  to end; `AGENT_EXECUTION_TIMEOUT` (default 30m) separately bounds a single
+  `Execute` call, since an unattended multi-step implementation run needs a
+  much larger budget than one turn of a human-paced conversation — sharing
+  one timeout between them cut autonomous executions off mid-run (visible as
+  a `context deadline exceeded` failure with 0 commits/tokens reported, at
+  exactly the `Run` timeout's duration) well before they could finish.
 * Safety guardrails, all in `internal/agentrunner`: `WithAllowedTools`
   restricted to `Read`/`Grep`/`Glob` plus the stage's Draft-proposing MCP
   tool(s) — no `Write`/`Edit`/`Bash`, ever, regardless of what the model asks

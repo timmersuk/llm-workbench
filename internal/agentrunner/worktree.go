@@ -265,7 +265,7 @@ func CollectExecutionPatch(ctx context.Context, ws ExecutionWorkspace, forkPoint
 }
 
 func splitNonEmptyLines(s string) []string {
-	var lines []string
+	lines := []string{}
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {

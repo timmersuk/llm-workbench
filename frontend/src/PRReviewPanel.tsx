@@ -117,7 +117,7 @@ export function PRReviewPanel({ projectId, taskId, task, onUpdated }: PRReviewPa
             {latest.execution_id} &middot; {latest.status}
             {latest.output.git_branch && <> &middot; {latest.output.git_branch}</>}
           </p>
-          {latest.output.commits.length > 0 && (
+          {(latest.output.commits?.length ?? 0) > 0 && (
             <>
               <strong>Commits</strong>
               <ul>

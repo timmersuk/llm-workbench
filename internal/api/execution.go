@@ -214,6 +214,8 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		commits, artifacts, collectErr := agentrunner.CollectExecutionOutput(context.Background(), ws, forkFrom)
 		if collectErr != nil {
 			logrus.WithError(collectErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Warn("collecting execution output")
+			commits = []string{}
+			artifacts = []string{}
 		}
 
 		durationSeconds := out.DurationSeconds
