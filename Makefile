@@ -13,7 +13,7 @@ all: frontend build
 
 .PHONY: frontend
 frontend:
-	corepack enable
+	command -v pnpm >/dev/null 2>&1 || corepack enable
 	cd frontend && pnpm install --frozen-lockfile && pnpm run build
 
 .PHONY: build
@@ -26,7 +26,7 @@ build-go-local:
 
 .PHONY: frontend-test
 frontend-test:
-	corepack enable
+	command -v pnpm >/dev/null 2>&1 || corepack enable
 	cd frontend && pnpm install --frozen-lockfile && pnpm run test
 
 .PHONY: test
