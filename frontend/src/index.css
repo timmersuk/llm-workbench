@@ -531,6 +531,22 @@ td button {
   background: var(--bg-alt);
 }
 
+/* The "what should change" comment box is a bare <textarea> directly in
+   .draft-review, not wrapped in a .form-row like the draft's own fields
+   (renderDraft), so it needs its own rule to pick up the same styling. */
+.draft-review > textarea {
+  font: inherit;
+  width: 100%;
+  margin-top: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+  box-sizing: border-box;
+}
+
 /* secondary-draft-review (propose_knowledge, docs/milestones/done/milestone9.md)
    can render alongside the main .draft-review at once — the margin keeps
    them visually separated rather than touching. */

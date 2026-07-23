@@ -90,6 +90,17 @@ interface StageConversationPanelProps<D, S = never> {
   emptyDraft: D
   renderDraft: (draft: D, onChange: (draft: D) => void) => ReactNode
   onFinalize: (draft: D) => Promise<void>
+  // normalizeDraft runs right after a proposed tool call is merged into D
+  // (both on the streamed tool_call event and on rehydration from a saved
+  // conversation) — the one seam to repair a shape the model got wrong
+  // despite the tool's JSON Schema (e.g. propose_context's `files` is
+  // schema'd as string[], but a model has been observed emitting
+  // {path, role} objects there instead). Left undefined, the parsed draft
+  // is used as-is. Backend Finalize decodes into a fixed Go struct, so an
+  // unrepaired shape mismatch there surfaces only as an opaque "invalid
+  // request body" 400 — normalizing here, before the human ever sees the
+  // draft, fixes both that and the editable form rendering it correctly.
+  normalizeDraft?: (draft: D) => D
   // autoStart controls whether the panel fires its opening turn the moment
   // it mounts on an empty conversation (GrillMe/Planning, whose opening turn
   // is just a question) or waits for an explicit Start click. Review passes
@@ -131,6 +142,7 @@ export function StageConversationPanel<D, S = never>({
   autoStart = true,
   startLabel,
   secondaryDraft,
+  normalizeDraft,
 }: StageConversationPanelProps<D, S>) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -213,7 +225,8 @@ export function StageConversationPanel<D, S = never>({
         }
         if (latestMainCall) {
           try {
-            setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(latestMainCall.arguments)))
+            const merged = mergeDraftDefaults(emptyDraft, JSON.parse(latestMainCall.arguments))
+            setPendingDraft(normalizeDraft ? normalizeDraft(merged) : merged)
           } catch {
             // Malformed arguments JSON from a past turn — nothing to
             // rehydrate, the human can just keep chatting.
@@ -350,7 +363,8 @@ export function StageConversationPanel<D, S = never>({
         return
       }
       try {
-        setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(event.tool_call.arguments)))
+        const merged = mergeDraftDefaults(emptyDraft, JSON.parse(event.tool_call.arguments))
+        setPendingDraft(normalizeDraft ? normalizeDraft(merged) : merged)
       } catch {
         // Malformed arguments JSON is surfaced via the chip only; the
         // human can keep chatting and ask the model to try again.
