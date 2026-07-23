@@ -1,0 +1,147 @@
+stage: planning
+messages:
+    - role: assistant
+      content: |-
+        Good — I've got a solid picture of the existing architecture: `internal/drafttool` defines shared tool schemas consumed by both `ClaudeRunner`/`ChatClientRunner` (native tool calling) and `cmd/draftmcp` (MCP server for `CodexRunner`), `stage_conversation.go`'s `stageTool()` registers per-stage tools and treats any matched tool call as a terminal "Draft" for the turn, and `StageConversationPanel.tsx` renders `toolCallName` as a chip plus a `pendingDraft` review panel below the whole conversation (with a `secondaryDraft` mechanism already precedented for a second independent tool, e.g. `propose_knowledge`).
+
+        One thing stands out as a first fork in the design tree: **which stages get `ask_question` registered.** `grillMeSystemPrompt` (Requirements) and `planningModeSystemPrompt` (Planning) both contain the identical "ask exactly one question per turn, with a recommended answer" discipline text verbatim — only `reviewSystemPrompt` uses a different, phase-based discipline. The task's assumptions say the Requirements-stage flow is "the primary consumer... scope should start there rather than trying to cover every future interview-shaped interaction up front," which could mean either "Requirements only, ship Planning later" or "start scoping from Requirements' shape, but since Planning shares the identical discipline text, wire both now since the marginal cost is one more line in `stageTool()`."
+
+        **My recommendation:** wire `ask_question` into both Requirements and Planning stages in this same plan (not Review), since they share verbatim identical interview-discipline prose — shipping it for only one would leave the other stage's identical rule un-upgraded for no real savings, while Review's different (phased, not one-question-at-a-time) discipline genuinely doesn't fit and stays out.
+
+        Do you want `ask_question` registered for both Requirements and Planning, or Requirements-only for this plan?
+      created_at: 2026-07-23T21:06:15.4999138Z
+    - role: user
+      content: both
+      created_at: 2026-07-23T21:07:36.0780429Z
+    - role: assistant
+      content: |-
+        Good — wiring both stages confirmed. Next fork: the `ask_question` schema's actual shape for options.
+
+        I looked at `internal/drafttool`'s existing schemas (`propose_plan`, `propose_review`, etc.) — they're all flat JSON Schema with plain string/array fields, no id-indirection anywhere. And `StageConversationPanel.tsx` shows the existing precedent for turning a tool call's structured data into a plain `sendMessage(text)` call (`handleRequestChanges`, `handleSecondaryDecision`) — nothing in the frontend currently needs a stable id to correlate back to, since the round-trip target is just the label text itself.
+
+        That points to two ways to shape `options`:
+
+        **A. Plain strings** — `options: string[]`, `recommended_option: string` (must exactly match one entry), `recommendation_reason: string`. No id concept at all; recommending an option means writing its exact text twice (once in the array, once in `recommended_option`).
+
+        **B. `{id, label}` objects** — `options: [{id, label}]`, `recommended_option_id: string`. The model references options by a short stable id instead of repeating the full label text, and clicking renders/sends `label`.
+
+        **My recommendation: A (plain strings).** It matches the codebase's existing schema style (no other Draft tool uses id-indirection), it's less for the model to get right (no risk of `recommended_option_id` typo'd against an `options[].id` that doesn't exist), and since nothing downstream ever needs to look an option up by id — the frontend only ever needs the chosen label text to hand to `sendMessage` — the id buys nothing here. The one thing B would help with (long labels needing a short reference) doesn't apply since there's no second field that needs to reference the option — recommendation *is* the option.
+
+        Do you want plain strings (A), or `{id, label}` objects (B)?
+      created_at: 2026-07-23T21:07:36.0780429Z
+    - role: user
+      content: A
+      created_at: 2026-07-23T21:09:08.4229032Z
+    - role: assistant
+      content: |-
+        Good — plain strings it is. Quick flag before moving on: the task brief's own constraint text names the field `recommended_option_id` when describing what the tool call carries ("options, recommended_option_id, and a short reason for the recommendation"), which reads like it's assuming id-indirection (option B). Your answer (A) means no id concept exists, so that field would actually be named something like `recommended_option` (a string matching one of the `options` entries) rather than `recommended_option_id`.
+
+        **My recommendation:** keep plain strings (A) and just rename the field to `recommended_option` — the brief's exact field name looks like shorthand for "which option is recommended" rather than a strict contract, and the task's actual success criteria only require "a concrete design exists for the schema (options, recommendation, free-text fallback)," not a specific field name. Diverging from the literal `_id` naming is a small, well-justified deviation given your stated reasoning (no id needed anywhere downstream).
+
+        Do you want to proceed with `recommended_option` (matching your A choice), or switch to `{id, label}` options so the field can literally be `recommended_option_id` as worded in the brief?
+      created_at: 2026-07-23T21:09:08.4229032Z
+    - role: user
+      content: A
+      created_at: 2026-07-23T21:13:24.3153421Z
+    - role: assistant
+      content: |-
+        Good — that confirms the shape I'd extend: `drafttool.go` would gain an `AskQuestionName` constant, an `AskQuestion` Definition with schema `{options: string[], recommended_option: string, recommendation_reason: string}`, and it'd flow through `chatToolFor` exactly like the others.
+
+        Now the more consequential fork. I traced how `StageConversationPanel.tsx` currently handles a matched tool call: it buckets every tool call into exactly one of two piles — the stage's **main Draft** (`pendingDraft`, requiring Finalize/Request-changes/Discard) or the **secondary Draft** (`pendingSecondaryDraft`, requiring Accept/Reject, today only Review's `propose_knowledge`). The rehydration walk (lines 213-228) assumes every tool call is one of those two — it doesn't know a third kind could exist.
+
+        `ask_question` doesn't fit either bucket: it's not a reviewable artifact awaiting Finalize, and it's not a create/discard decision awaiting Accept/Reject. Per your existing assumptions, selecting an option should *immediately* fire `sendMessage(optionLabel)` — no separate confirm step, exactly as if the human had typed and hit send.
+
+        That means this needs a **third, lighter category**: a `pendingQuestion` state (parallel to `pendingDraft`/`pendingSecondaryDraft`), populated when a tool call matches `ask_question`'s name, rendered as clickable option buttons (recommendation visually highlighted) sitting alongside the normal free-text input — and the rehydration walk's tool-call bucketing needs a third branch so an `ask_question` call is never mistaken for the stage's main Draft (which would otherwise try to parse its `{options, recommended_option}` args into a `RequirementsDraft`/`TaskPlan` shape and produce garbage).
+
+        **My recommendation:** yes — add this third `pendingQuestion` category rather than trying to force `ask_question` through the existing two mechanisms, since neither's confirm-step semantics (Finalize; Accept/Reject) match "click = send immediately."
+
+        Do you want this third-category approach, or would you rather reuse the existing `secondaryDraft` Accept/Reject mechanism for `ask_question` (with "Accept" meaning "send the recommended option")?
+      created_at: 2026-07-23T21:13:24.3153421Z
+    - role: user
+      content: third category. again, Claude/OpenCode's UX provides a visual model to follow
+      created_at: 2026-07-23T21:18:20.6496988Z
+    - role: assistant
+      content: |-
+        Good — that confirms the mechanism precisely: the backend (`stageTool()`) is the sole gate on *which stages* offer a tool at all (`offersToolNamed` silently drops anything not offered), while the frontend's bucketing (`secondaryDraft.toolName` vs. fallthrough "main") is pure client-side name-matching with no backend coordination needed beyond that gate.
+
+        That raises the next fork: how `ask_question` recognition gets wired into `StageConversationPanel`. Two ways:
+
+        **A. New opt-in prop**, e.g. `enableAskQuestion?: boolean`, mirroring `secondaryDraft`/`autoStart` — each call site (`GrillMe.tsx`, the Planning panel) explicitly turns it on.
+
+        **B. Always-on, hardcoded by name** — `StageConversationPanel` unconditionally checks `toolCall.name === drafttool.AskQuestionName` (well, its frontend constant equivalent) as a third branch, no new prop at all. Review's call site just never sees that name in its tool-call stream, since backend `stageTool()` never offers it there — so the branch is dead-but-harmless for Review, not something that needs suppressing.
+
+        **My recommendation: B.** Unlike `secondaryDraft` (genuinely different per stage — heading, custom `renderDraft`, accept/reject callbacks tied to Review's knowledge-concept shape), `ask_question`'s rendering and send-behavior are fully generic and identical wherever it's used — there's nothing for a per-stage config object to parametrize. Making it a prop would just be a second place (call site) that has to agree with `stageTool()`'s switch statement on which stages get it, with no benefit since the backend gate already makes that agreement automatic.
+
+        Do you want A (opt-in prop per call site) or B (always-on, hardcoded by tool-call name)?
+      created_at: 2026-07-23T21:18:20.6496988Z
+    - role: user
+      content: B
+      created_at: 2026-07-23T21:20:38.8394781Z
+    - role: assistant
+      content: |-
+        Good — that grounds the third-category design concretely against the actual component. One more consequential fork falls out of this: **rehydration semantics differ for `ask_question` versus the existing two categories.**
+
+        The current walk (lines 229–260) finds the *most recent* tool call of each kind anywhere in the loaded history, regardless of what came after it — correct for `pendingDraft`/`pendingSecondaryDraft`, since those only clear via an explicit Finalize/Discard/Accept/Reject action, so a draft proposed mid-conversation is still "pending" even if the human kept chatting afterward without acting on it.
+
+        `ask_question` doesn't work that way: per the earlier agreement, clicking an option (or typing a matching answer) immediately fires `sendMessage`, indistinguishable from a normal reply. So if the human already replied after the model's `ask_question` call, the question is *answered* — there's no separate accept/reject state, the next message *is* the answer. Reusing the same "most recent anywhere" walk would incorrectly resurface stale option buttons on reload even after the human already answered by typing something else entirely.
+
+        That means `pendingQuestion` needs a narrower rehydration rule: only resurface it if the `ask_question` tool call is on the *last* loaded message (i.e., nothing after it yet) — not "most recent regardless of position" like the other two.
+
+        **My recommendation:** adopt this narrower rule (last-message-only) for `pendingQuestion`'s rehydration, distinct from `pendingDraft`/`pendingSecondaryDraft`'s walk — it's a small isolated check (`loaded.length > 0 && loaded[loaded.length-1].tool_call?.name === AskQuestionName`) and matches the actual "answered by next message" semantics, whereas reusing the existing walk would show stale buttons the human has already effectively dismissed by replying.
+
+        Do you want this last-message-only rehydration rule for `pendingQuestion`, or would you rather it use the same "most recent anywhere" walk as the other two for implementation uniformity (accepting that stale buttons could resurface)?
+      created_at: 2026-07-23T21:20:38.8394781Z
+    - role: user
+      content: last-message-only
+      created_at: 2026-07-23T21:26:05.2281722Z
+    - role: assistant
+      content: |-
+        Good, I have a clear picture of the parsing/render precedent now. One more concrete design point remains before I can write a coherent plan.Now I have the full picture of both the backend gate and the frontend parsing precedent. One more concrete design point before I can write a coherent plan: what happens if the model's `recommended_option` string doesn't exactly match any entry in `options` (a typo, or paraphrasing instead of copying verbatim)?
+
+        I see two options, both consistent with existing precedent (`mergeDraftDefaults`/JSON.parse calls are wrapped in `try/catch` with silent no-op comments like "Malformed arguments JSON... the human can keep chatting"):
+
+        **A. Silent graceful degradation** — render all the option buttons normally, but skip highlighting any of them as "recommended" if `recommended_option` doesn't match an exact entry (treat it the same as "no recommendation" rather than an error). No validation anywhere, Go or TS.
+
+        **B. Reject the tool call** — server-side, `stage_conversation.go` decodes the `ask_question` args and checks `recommended_option ∈ options` before accepting it as a Draft-equivalent proposal; a mismatch gets treated like the existing "hallucinated tool call" path (logged, `toolCall = nil`, effectively ignored so the model's prose still shows but no buttons render).
+
+        **My recommendation: A.** Nowhere else in this codebase validates a Draft tool's argument *content* server-side — `offersToolNamed` only checks the tool *name* matches, never decodes/validates schema-level field relationships (e.g. `estimated_complexity`'s enum isn't cross-checked either). Adding validation only for `ask_question` would be a new pattern with no precedent, for a low-stakes failure mode (worst case: one option button isn't visually highlighted, the user can still click any of them or type free text).
+
+        Do you want A (silent graceful degradation, no validation), or B (server-side validation that rejects a mismatched tool call)?
+      created_at: 2026-07-23T21:26:05.2281722Z
+    - role: user
+      content: A
+      created_at: 2026-07-23T21:31:19.6791175Z
+    - role: assistant
+      content: |-
+        I've now traced every remaining implementation detail against real code (`stageTool()`'s switch, the two identical prompt blocks, `ReviewPanel.tsx`'s `proposeKnowledgeToolName` precedent for a hardcoded TS constant, and the full rehydration/render loop in `StageConversationPanel.tsx`). All seven design forks are resolved. Here's the concrete plan I'd finalize via `propose_plan`:
+
+        **Approach:** Add `ask_question` as a new Draft-style tool (`options: string[]`, `recommended_option: string`, `recommendation_reason: string`) alongside the existing `propose_context`/`propose_plan` tools, wire it into both Requirements' and Planning's stage tool lists and reword their shared interview-discipline prompt text to route the "recommended answer" rule through this tool call instead of prose, and give `StageConversationPanel` a third rendering category (`pendingQuestion`) — option buttons with the recommendation highlighted, sitting beside the normal free-text box, where a click fires the same `sendMessage` path a typed reply uses.
+
+        **Steps:**
+        1. `internal/drafttool/drafttool.go` — add `AskQuestionName`, `askQuestionSchema` (`options` required array, min 1 item; `recommended_option`; `recommendation_reason`), `AskQuestion` Definition, add to `All()`.
+        2. `internal/api/stage_conversation.go` — append `chatToolFor(drafttool.AskQuestion)` in `stageTool()`'s `StageRequirements` and `StagePlanning` cases only; reword the "recommended answer" bullet in `grillMeSystemPrompt`/`planningModeSystemPrompt` to direct the model to call `ask_question` (question text still in prose, options/recommendation in the tool call) rather than write it inline.
+        3. `frontend/src/StageConversationPanel.tsx` — add `askQuestionToolName = 'ask_question'` constant (mirrors `ReviewPanel.tsx`'s existing `proposeKnowledgeToolName` pattern), a `pendingQuestion` state, a branch in both the live `handleStreamEvent` tool-call handling and the rehydration walk that recognizes this name *before* the main/secondary bucketing (so it's never misparsed as a `RequirementsDraft`/`TaskPlan`), a narrower rehydration rule (only resurface if `ask_question` is on the *last* loaded message), rendering of option buttons (recommendation visually distinguished) next to the existing textarea, click → `sendMessage(label)` + clear `pendingQuestion`, and clearing it in `truncateAndResend` alongside `pendingDraft`.
+        4. Extend `GrillMePanel.test.tsx`/`PlanningModePanel.test.tsx` (already exercise `tool_call` delivery) with cases for: option rendering + recommendation highlight, click sends the label, free text still works alongside options, rehydration only on last-message, and a mismatched `recommended_option` degrading silently (no highlight, all options still shown).
+        5. Manual check with the `claude-code` executor on a real Requirements and Planning conversation, confirming the model actually calls `ask_question` (not just prose) and the clicked option is indistinguishable from typed text in the transcript.
+
+        **Risks:**
+        - Prompt wording alone doesn't guarantee the model calls the tool instead of asking in plain prose — needs the real end-to-end check in step 5, not just unit tests.
+        - Silent degradation on a mismatched `recommended_option` (no validation anywhere) is accepted by design, but worth confirming a fully missing `options` array (schema violation) doesn't crash the render rather than just showing no buttons.
+        - Plain-text round-tripping means "clicked vs. typed" provenance is unrecoverable from the transcript — known, deferred limitation, not a bug.
+
+        **estimated_complexity:** low — one new schema, one new stageTool wiring line, one new frontend rendering branch, no new dependencies, no backend validation.
+
+        **recommended_executor:** `claude-code` (matches the `e2e-tests`/`frontend-unit-tests` tasks' precedent for a boundaried Go+TS change).
+
+        Does this match your understanding — ready for me to finalize this as the plan (`propose_plan`), or is there anything you want changed first (e.g. the risk list, complexity, or executor recommendation)?
+      created_at: 2026-07-23T21:31:19.6791175Z
+    - role: user
+      content: "yes"
+      created_at: 2026-07-23T21:33:39.4207926Z
+    - role: assistant
+      content: The plan has been proposed for your review. Let me know if you'd like any changes, or if you're ready to finalize it.
+      tool_call:
+        id: toolu_01DAJXVAadZmu3geefzHA6u2
+        name: propose_plan
+        arguments: '{"approach":"Add `ask_question` as a new Draft-style tool (options: string[], recommended_option: string, recommendation_reason: string) alongside the existing propose_context/propose_plan tools, wire it into both Requirements'' and Planning''s stage tool lists, reword their shared interview-discipline prompt text to route the \"recommended answer\" rule through this tool call instead of prose, and give StageConversationPanel a third rendering category (pendingQuestion) — option buttons with the recommendation highlighted, sitting beside the normal free-text box, where a click fires the same sendMessage path a typed reply uses.","estimated_complexity":"low","recommended_executor":"claude-code","risks":["Prompt wording alone doesn''t guarantee the model calls the tool instead of asking in plain prose — needs the real end-to-end check in step 5, not just unit tests.","Silent degradation on a mismatched recommended_option (no validation anywhere) is accepted by design, but worth confirming a fully missing options array (schema violation) doesn''t crash the render rather than just showing no buttons.","Plain-text round-tripping means \"clicked vs. typed\" provenance is unrecoverable from the transcript — known, deferred limitation, not a bug."],"steps":["internal/drafttool/drafttool.go — add AskQuestionName, askQuestionSchema (options required array min 1 item; recommended_option; recommendation_reason), AskQuestion Definition, add to All().","internal/api/stage_conversation.go — append chatToolFor(drafttool.AskQuestion) in stageTool()''s StageRequirements and StagePlanning cases only; reword the \"recommended answer\" bullet in grillMeSystemPrompt/planningModeSystemPrompt to direct the model to call ask_question (question text still in prose, options/recommendation in the tool call) rather than write it inline.","frontend/src/StageConversationPanel.tsx — add askQuestionToolName = ''ask_question'' constant (mirrors ReviewPanel.tsx''s existing proposeKnowledgeToolName pattern), a pendingQuestion state, a branch in both the live handleStreamEvent tool-call handling and the rehydration walk that recognizes this name before the main/secondary bucketing (so it''s never misparsed as a RequirementsDraft/TaskPlan), a narrower rehydration rule (only resurface if ask_question is on the last loaded message), rendering of option buttons (recommendation visually distinguished) next to the existing textarea, click -\u003e sendMessage(label) + clear pendingQuestion, and clearing it in truncateAndResend alongside pendingDraft.","Extend GrillMePanel.test.tsx/PlanningModePanel.test.tsx (already exercise tool_call delivery) with cases for: option rendering + recommendation highlight, click sends the label, free text still works alongside options, rehydration only on last-message, and a mismatched recommended_option degrading silently (no highlight, all options still shown).","Manual check with the claude-code executor on a real Requirements and Planning conversation, confirming the model actually calls ask_question (not just prose) and the clicked option is indistinguishable from typed text in the transcript."]}'
+      created_at: 2026-07-23T21:33:39.4207926Z
