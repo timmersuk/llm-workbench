@@ -105,6 +105,87 @@ func TestClone_FailureIsError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestDirtyWorkingTree_CleanIsNotDirty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	initTestRepo(t, dir)
+
+	got := DirtyWorkingTree(context.Background(), dir)
+	assert.True(t, got.Known)
+	assert.False(t, got.Dirty)
+}
+
+func TestDirtyWorkingTree_ModifiedTrackedFileIsDirty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	initTestRepo(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("changed\n"), 0o644))
+
+	got := DirtyWorkingTree(context.Background(), dir)
+	assert.True(t, got.Known)
+	assert.True(t, got.Dirty)
+}
+
+func TestDirtyWorkingTree_UntrackedFileIsDirty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	initTestRepo(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "scratch.txt"), []byte("x\n"), 0o644))
+
+	got := DirtyWorkingTree(context.Background(), dir)
+	assert.True(t, got.Known)
+	assert.True(t, got.Dirty, "untracked files count as dirty (docs/milestones/milestone8a.md's resolved open question)")
+}
+
+func TestDirtyWorkingTree_NotAGitRepoIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+
+	got := DirtyWorkingTree(context.Background(), dir)
+	assert.False(t, got.Known)
+}
+
+func TestBehindOrigin_UpToDateIsZero(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "source-repo")
+	initTestRepo(t, src)
+	clone := filepath.Join(t.TempDir(), "clone")
+	require.NoError(t, Clone(context.Background(), src, clone))
+
+	got := BehindOrigin(context.Background(), clone)
+	assert.True(t, got.Known)
+	assert.Equal(t, 0, got.Behind)
+}
+
+func TestBehindOrigin_ReportsCommitsBehind(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "source-repo")
+	initTestRepo(t, src)
+	clone := filepath.Join(t.TempDir(), "clone")
+	require.NoError(t, Clone(context.Background(), src, clone))
+
+	// Advance the source after the clone, so the clone's origin/<branch> is
+	// now ahead of the clone's own HEAD.
+	require.NoError(t, os.WriteFile(filepath.Join(src, "second.txt"), []byte("x\n"), 0o644))
+	_, err := RunGit(context.Background(), src, "add", ".")
+	require.NoError(t, err)
+	_, err = RunGit(context.Background(), src, "commit", "-q", "-m", "second commit")
+	require.NoError(t, err)
+
+	got := BehindOrigin(context.Background(), clone)
+	assert.True(t, got.Known)
+	assert.Equal(t, 1, got.Behind)
+}
+
+func TestBehindOrigin_NoUpstreamIsUnknown(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	initTestRepo(t, dir) // plain init, no clone -> no origin, no upstream tracking
+
+	got := BehindOrigin(context.Background(), dir)
+	assert.False(t, got.Known)
+}
+
+func TestBehindOrigin_NotAGitRepoIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+
+	got := BehindOrigin(context.Background(), dir)
+	assert.False(t, got.Known)
+}
+
 func countOccurrences(haystack, needle string) int {
 	count := 0
 	for i := 0; i+len(needle) <= len(haystack); i++ {

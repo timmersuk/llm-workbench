@@ -22,6 +22,7 @@ import type {
   TaskPlan,
   UpdateProjectRequest,
   UpdateTaskRequest,
+  WorkspaceStatusResult,
 } from './types'
 
 // isAbortError reports whether err is the DOMException fetch/streamSSE
@@ -137,6 +138,13 @@ export function listReviews(projectId: string, taskId: string): Promise<ReviewsL
 // treats as "no diff to show" rather than an error.
 export function getReviewDiff(projectId: string, taskId: string): Promise<ReviewDiffResult> {
   return getJSON<ReviewDiffResult>(`${taskPath(projectId, taskId)}/review/diff`)
+}
+
+// getWorkspaceStatus reports the project's shared checkout's current
+// advisory hygiene status — project-scoped, not task-scoped, since the
+// shared checkout is one per project.
+export function getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusResult> {
+  return getJSON<WorkspaceStatusResult>(`/api/v1/projects/${encodeURIComponent(projectId)}/workspace-status`)
 }
 
 // pushPR is the "Push & Open PR" action for pr_review: pushes the task's

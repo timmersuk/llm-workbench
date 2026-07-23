@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { getProjectTask, getTaskContext, getTaskPlan, listReviews, reviseRequirements, revisePlan, updateProjectTask } from './api'
+import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listReviews, reviseRequirements, revisePlan, updateProjectTask } from './api'
 import { ExecutePanel } from './ExecutePanel'
 import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
 import { PRReviewPanel } from './PRReviewPanel'
 import { ReviewPanel } from './ReviewPanel'
-import type { Review, Task, TaskContext, TaskPlan, TaskStatus } from './types'
+import type { Review, Task, TaskContext, TaskPlan, TaskStatus, WorkspaceStatusResult } from './types'
 
 const STATUSES: TaskStatus[] = ['draft', 'ready', 'in_progress', 'blocked', 'failed', 'complete']
 
@@ -33,6 +33,10 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   // on in-session state. The PR link that screen also shows comes straight
   // off task.pull_request — already on hand, no extra fetch needed.
   const [review, setReview] = useState<Review | null>(null)
+  // Project-scoped, not task/stage-scoped — the shared checkout is one per
+  // project. Advisory only: a failed fetch just means no banner, never
+  // blocks the rest of the view (docs/milestones/milestone8a.md).
+  const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusResult | null>(null)
 
   useEffect(() => {
     setContext(null)
@@ -40,6 +44,13 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
       .then(setContext)
       .catch(() => undefined) // 404 just means requirements haven't been finalized yet
   }, [projectId, task.id, task.stage])
+
+  useEffect(() => {
+    setWorkspaceStatus(null)
+    getWorkspaceStatus(projectId)
+      .then(setWorkspaceStatus)
+      .catch(() => undefined)
+  }, [projectId])
 
   useEffect(() => {
     setPlan(null)
@@ -94,6 +105,23 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
     task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0 || context || plan,
   )
 
+  // Never mentions a clean or unknown signal — same "only say something
+  // when there's something to say" framing as the backend's own
+  // appendWorkspaceAdvisories (stage_conversation.go), so the two surfaces
+  // stay consistent.
+  const workspaceNotices: string[] = []
+  if (workspaceStatus?.repository_configured) {
+    const { behind_origin, dirty } = workspaceStatus.status
+    if (behind_origin.known && behind_origin.behind > 0) {
+      workspaceNotices.push(
+        `Shared checkout is ${behind_origin.behind} commit${behind_origin.behind === 1 ? '' : 's'} behind origin.`,
+      )
+    }
+    if (dirty.known && dirty.dirty) {
+      workspaceNotices.push('Shared checkout has uncommitted changes.')
+    }
+  }
+
   return (
     <div className="task-detail">
       <button type="button" className="back-link" onClick={onBack}>
@@ -113,6 +141,14 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
       <p>
         {task.id} &middot; stage: {task.stage}
       </p>
+
+      {workspaceNotices.length > 0 && (
+        <div className="workspace-status-banner">
+          {workspaceNotices.map((n) => (
+            <p key={n}>{n}</p>
+          ))}
+        </div>
+      )}
 
       {hasSummary && (
         <div className="task-summary">

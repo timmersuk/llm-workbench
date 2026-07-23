@@ -351,3 +351,30 @@ export interface ReviewsListResult {
 export interface ReviewDiffResult {
   patch: string
 }
+
+// BehindOriginStatus/DirtyStatus mirror gitutil.BehindOriginStatus/DirtyStatus
+// (internal/gitutil/gitutil.go) — known is false when the check couldn't be
+// completed (offline, checkout doesn't exist yet, no upstream configured,
+// ...), in which case behind/dirty are meaningless, not "false."
+export interface BehindOriginStatus {
+  known: boolean
+  behind: number
+}
+
+export interface DirtyStatus {
+  known: boolean
+  dirty: boolean
+}
+
+// WorkspaceStatusResult mirrors handleWorkspaceStatus's response
+// (internal/api/workspace_status.go) — live git-derived advisory status for
+// a project's shared checkout (docs/milestones/milestone8a.md's "Advisory
+// checks"). repository_configured is false when the project has no
+// repositories configured at all.
+export interface WorkspaceStatusResult {
+  repository_configured: boolean
+  status: {
+    behind_origin: BehindOriginStatus
+    dirty: DirtyStatus
+  }
+}

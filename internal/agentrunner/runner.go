@@ -248,17 +248,18 @@ func cloneIfAbsent(ctx context.Context, root, workspace, repository string) erro
 	return nil
 }
 
-// ResolveWorkspace derives a local filesystem workspace path from a
-// project's first configured repository identifier (e.g.
-// "github.com/timmersuk/llm-workbench"), by convention: the identifier's
-// last path segment joined under reposRoot (so a repo checked out as a
-// sibling directory of this workbench, e.g. "D:\projects\llm-workbench",
-// resolves correctly). If no local checkout exists yet, one is cloned
-// (over HTTPS, lazily, on this call) before proceeding — see
-// cloneIfAbsent. The result is validated to exist as a directory and to
-// never escape reposRoot — this is the only place an AgentRunner's cwd is
-// decided, so a caller can never point an agent at an arbitrary path.
-func ResolveWorkspace(ctx context.Context, reposRoot string, repositories []string) (string, error) {
+// workspacePath derives the local filesystem path a project's first
+// configured repository identifier resolves to under reposRoot (see
+// ResolveWorkspace's doc comment for the naming convention and traversal
+// protections), without touching the filesystem at all — no stat, no
+// clone. GetWorkspaceStatus (workspace_status.go) uses this instead of
+// ResolveWorkspace so a status check is never itself the trigger for a
+// first clone: a checkout that doesn't exist yet just makes whatever git
+// command runs against the returned path fail, which — per
+// gitutil.BehindOrigin/DirtyWorkingTree's own "unknown as data" contract —
+// resolves to "unknown" the same as any other unreadable git state, with
+// no special-casing needed here.
+func workspacePath(reposRoot string, repositories []string) (string, error) {
 	if len(repositories) == 0 {
 		return "", ErrNoRepository
 	}
@@ -293,13 +294,31 @@ func ResolveWorkspace(ctx context.Context, reposRoot string, repositories []stri
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: %q escapes repos root", ErrInvalidRepository, repositories[0])
 	}
+	return workspace, nil
+}
+
+// ResolveWorkspace derives a local filesystem workspace path from a
+// project's first configured repository identifier (e.g.
+// "github.com/timmersuk/llm-workbench"), by convention: the identifier's
+// last path segment joined under reposRoot (so a repo checked out as a
+// sibling directory of this workbench, e.g. "D:\projects\llm-workbench",
+// resolves correctly). If no local checkout exists yet, one is cloned
+// (over HTTPS, lazily, on this call) before proceeding — see
+// cloneIfAbsent. The result is validated to exist as a directory and to
+// never escape reposRoot — this is the only place an AgentRunner's cwd is
+// decided, so a caller can never point an agent at an arbitrary path.
+func ResolveWorkspace(ctx context.Context, reposRoot string, repositories []string) (string, error) {
+	workspace, err := workspacePath(reposRoot, repositories)
+	if err != nil {
+		return "", err
+	}
 
 	info, err := os.Stat(workspace)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return "", fmt.Errorf("%w: resolving workspace %s: %v", ErrInvalidRepository, workspace, err)
 		}
-		if err := cloneIfAbsent(ctx, root, workspace, repositories[0]); err != nil {
+		if err := cloneIfAbsent(ctx, filepath.Dir(workspace), workspace, repositories[0]); err != nil {
 			return "", err
 		}
 		info, err = os.Stat(workspace)

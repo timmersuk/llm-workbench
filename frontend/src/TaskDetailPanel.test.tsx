@@ -70,6 +70,12 @@ function stubNoContextOrPlan() {
   // unmocked call.
   vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
   vi.mocked(api.listExecutions).mockResolvedValue({ executions: [] })
+  // Default to "nothing to report" so tests that don't care about the
+  // workspace-status banner never see it appear unexpectedly.
+  vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+    repository_configured: false,
+    status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
+  })
 }
 
 describe('TaskDetailPanel — stage-conditional rendering', () => {
@@ -163,6 +169,10 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
   it('merged stage shows the verdict notes and a link to the merged pull request', async () => {
     vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
     vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
+    vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+      repository_configured: false,
+      status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
+    })
     vi.mocked(api.listReviews).mockResolvedValue({
       reviews: [
         { review_id: 'review-001', task_id: 'task-a', execution_id: 'exec-001', decision: 'needs_changes', notes: 'first pass', created_at: '2026-01-01T00:00:00Z' },
@@ -194,6 +204,10 @@ describe('TaskDetailPanel — Context/Plan sections', () => {
       open_questions: [],
     })
     vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
+    vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+      repository_configured: false,
+      status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
+    })
 
     render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
 
@@ -217,6 +231,10 @@ describe('TaskDetailPanel — Context/Plan sections', () => {
       risks: [],
       estimated_complexity: 'low',
       recommended_executor: '',
+    })
+    vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+      repository_configured: false,
+      status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
     })
 
     render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
@@ -276,5 +294,61 @@ describe('TaskDetailPanel — status select', () => {
       references: { knowledge: [], repo: [] },
     })
     await waitFor(() => expect(screen.getByDisplayValue('in_progress')).toBeInTheDocument())
+  })
+})
+
+describe('TaskDetailPanel — workspace status banner', () => {
+  it('shows a note when the shared checkout is behind origin', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+      repository_configured: true,
+      status: { behind_origin: { known: true, behind: 3 }, dirty: { known: true, dirty: false } },
+    })
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    expect(await screen.findByText(/3 commits behind origin/)).toBeInTheDocument()
+  })
+
+  it('shows a note when the shared checkout is dirty', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+      repository_configured: true,
+      status: { behind_origin: { known: true, behind: 0 }, dirty: { known: true, dirty: true } },
+    })
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    expect(await screen.findByText(/uncommitted changes/)).toBeInTheDocument()
+  })
+
+  it('shows nothing when the checkout is clean', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+      repository_configured: true,
+      status: { behind_origin: { known: true, behind: 0 }, dirty: { known: true, dirty: false } },
+    })
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    await screen.findByTestId('grillme-panel')
+    expect(screen.queryByText(/behind origin|uncommitted changes/)).not.toBeInTheDocument()
+    expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
+  })
+
+  it('shows nothing when there is no repository configured', async () => {
+    stubNoContextOrPlan() // default stub already returns repository_configured: false
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    await screen.findByTestId('grillme-panel')
+    expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
+  })
+
+  it('shows nothing when the fetch rejects', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.getWorkspaceStatus).mockRejectedValue(new Error('boom'))
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+
+    await screen.findByTestId('grillme-panel')
+    expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
   })
 })
