@@ -91,10 +91,10 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient = chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
-	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
+	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -197,9 +197,9 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
-	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
+	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeStore, nil, "", nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -256,8 +256,8 @@ func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing
 
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
-	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
-	router := NewRouter(projectStore, taskStores, knowledgeReader, nil, "", nil, nil, testFrontendFS(), "test-build")
+	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
+	router := NewRouter(projectStore, taskStores, knowledgeStore, nil, "", nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -596,10 +596,10 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
 	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
 	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
-	knowledgeReader := knowledge.NewFileReader(filepath.Join(root, "knowledge"))
+	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 

@@ -54,8 +54,11 @@ doesn't have to be re-derived or re-litigated later.
   described in `CLAUDE.md` / `project_summary.md` (`data/projects/<id>/project.yaml`,
   `data/projects/<id>/tasks/<taskId>/task.yaml`) — this section is about how
   the Go code reads/writes that layout, not the domain model itself.
-  `knowledge/`'s on-disk format (when that store is built) is an OKF
-  bundle, not `<root>/<ID>/<kind>.yaml` — see `docs/knowledge schema v0.md`.
+  `knowledge/`'s on-disk format is an OKF bundle, not
+  `<root>/<ID>/<kind>.yaml` — `internal/knowledge.FileStore` (also a
+  `Root string`, matching this same `FileStore` naming/shape convention)
+  implements `Get`/`List`/`Put` over it (Milestone 9 PR 1) — see
+  `docs/knowledge schema v0.md`.
 * Both `FileStore`s support `Create`/`Update` as well as `List`/`Get` —
   persistence is not read-only.
 * Structs carry matching `yaml:` and `json:` tags so the same type
@@ -241,9 +244,10 @@ doesn't have to be re-derived or re-litigated later.
   wrapper around the `claude` CLI subprocess — pin its version in `go.mod`,
   don't float it); `*ChatClientRunner` (`chat_client_runner.go`) adapts any
   `chat.ChatClient` (the local-LLM path) into the same interface, offering
-  `RunInput.Tool` to `chat.ChatClient.StreamSessionTurn`'s `tools` param so
-  Draft proposals (`propose_context`/`propose_plan`) work identically to
-  `ClaudeRunner`'s. A `codex_runner.go` is expected to follow the same
+  `RunInput.Tools` to `chat.ChatClient.StreamSessionTurn`'s `tools` param so
+  Draft proposals (`propose_context`/`propose_plan`; Review offers two at
+  once, `propose_review`/`propose_knowledge`, `docs/milestones/milestone9.md`)
+  work identically to `ClaudeRunner`'s. A `codex_runner.go` is expected to follow the same
   `AgentRunner` interface later. Adopting a third-party multi-agent
   orchestration framework (e.g. AgenticGoKit) instead of this hand-rolled
   layer was considered and deferred — see
@@ -292,8 +296,8 @@ doesn't have to be re-derived or re-litigated later.
   to end.
 * Safety guardrails, all in `internal/agentrunner`: `WithAllowedTools`
   restricted to `Read`/`Grep`/`Glob` plus the stage's Draft-proposing MCP
-  tool — no `Write`/`Edit`/`Bash`, ever, regardless of what the model asks
-  for; `RunInput.Tool` is optional (its zero value means no MCP tool is
+  tool(s) — no `Write`/`Edit`/`Bash`, ever, regardless of what the model asks
+  for; `RunInput.Tools` is optional (an empty slice means no MCP tool is
   registered at all — the shape free chat uses, since it has no Draft
   concept); the workspace path is always caller-resolved via
   `ResolveWorkspace` (or the free-chat default above), never agent-chosen;

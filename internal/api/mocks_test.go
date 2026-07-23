@@ -190,15 +190,29 @@ func (m *mockTaskStore) RecordPullRequest(id string, pr task.PullRequest) (task.
 	return t, args.Error(1)
 }
 
-type mockKnowledgeReader struct{ mock.Mock }
+type mockKnowledgeStore struct{ mock.Mock }
 
-func (m *mockKnowledgeReader) Get(conceptID string) (knowledge.Concept, error) {
+func (m *mockKnowledgeStore) Get(conceptID string) (knowledge.Concept, error) {
 	args := m.Called(conceptID)
 	var c knowledge.Concept
 	if v := args.Get(0); v != nil {
 		c = v.(knowledge.Concept)
 	}
 	return c, args.Error(1)
+}
+
+func (m *mockKnowledgeStore) List() ([]knowledge.ConceptSummary, error) {
+	args := m.Called()
+	var summaries []knowledge.ConceptSummary
+	if v := args.Get(0); v != nil {
+		summaries = v.([]knowledge.ConceptSummary)
+	}
+	return summaries, args.Error(1)
+}
+
+func (m *mockKnowledgeStore) Put(conceptID string, c knowledge.Concept) error {
+	args := m.Called(conceptID, c)
+	return args.Error(0)
 }
 
 // fixedTaskStoreFactory adapts an already-constructed TaskStore (typically

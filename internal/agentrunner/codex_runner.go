@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -147,10 +148,10 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 		return RunOutput{}, fmt.Errorf("starting codex thread for %s: %w", key, err)
 	}
 
-	toolName := in.Tool.Function.Name
+	names := toolNames(in.Tools)
 	prompt := in.UserMessage
-	if toolName != "" {
-		prompt = prompt + "\n\n" + draftToolInstruction(toolName)
+	if len(names) > 0 {
+		prompt = prompt + "\n\n" + draftToolInstruction(names)
 	}
 
 	events, err := thread.RunStreamed(runCtx, prompt, nil)
@@ -161,7 +162,7 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	var out RunOutput
 	var content strings.Builder
 	for ev := range events {
-		done, err := processCodexRunEvent(ev, toolName, &content, &out, onDelta)
+		done, err := processCodexRunEvent(ev, names, &content, &out, onDelta)
 		if err != nil {
 			return out, err
 		}
@@ -339,16 +340,21 @@ func worktreeGitDir(ctx context.Context, workspace string) (string, error) {
 	return gitDir, nil
 }
 
-// draftToolInstruction tells the model which MCP tool to call once its
+// draftToolInstruction tells the model which MCP tool(s) it may call once a
 // proposal is ready — codex has no equivalent of severity1's
 // WithAllowedTools scoping the conversation to a single expected tool, so
-// the model needs to be told explicitly which one of the statically
-// registered Draft tools (propose_context, propose_plan) applies here.
-func draftToolInstruction(toolName string) string {
+// the model needs to be told explicitly which of the statically registered
+// Draft tools (propose_context, propose_plan, ...) applies here. Usually
+// one name; Review offers two (propose_review, propose_knowledge).
+func draftToolInstruction(toolNames []string) string {
+	quoted := make([]string, len(toolNames))
+	for i, name := range toolNames {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
 	return fmt.Sprintf(
-		"When (and only when) you are ready to submit your proposal, call the MCP tool named %q "+
+		"When (and only when) you are ready to submit a proposal, call the appropriate MCP tool named %s "+
 			"(registered under the %q server) with your proposal as its arguments, matching its declared schema exactly.",
-		toolName, codexDraftServerName,
+		strings.Join(quoted, " or "), codexDraftServerName,
 	)
 }
 
@@ -394,9 +400,11 @@ func tomlQuote(s string) string {
 
 // processCodexRunEvent folds one types.ThreadEvent from a codex thread
 // into content/out for Run, mirroring claude_runner.go's processMessage.
-// toolName is in.Tool.Function.Name (empty for free-chat callers, in
-// which case no MCPToolCall is ever treated as the Draft proposal).
-func processCodexRunEvent(ev types.ThreadEvent, toolName string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error) (done bool, err error) {
+// toolNames are the Draft tool(s) this turn offered (empty for free-chat
+// callers, in which case no MCPToolCall is ever treated as the Draft
+// proposal); a session offering more than one (Review's propose_review and
+// propose_knowledge) surfaces whichever one the model actually called.
+func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error) (done bool, err error) {
 	switch e := ev.(type) {
 	case *types.ItemUpdated:
 		if delta, ok := e.Delta.(*types.AgentMessageDelta); ok && onDelta != nil {
@@ -409,12 +417,12 @@ func processCodexRunEvent(ev types.ThreadEvent, toolName string, content *string
 		case *types.AgentMessage:
 			content.WriteString(item.Text)
 		case *types.MCPToolCall:
-			if out.ToolCall == nil && toolName != "" && item.ToolName == toolName {
+			if out.ToolCall == nil && slices.Contains(toolNames, item.ToolName) {
 				out.ToolCall = &chat.ToolCall{
 					ID:   item.ID,
 					Type: "function",
 					Function: chat.ToolCallFunction{
-						Name:      toolName,
+						Name:      item.ToolName,
 						Arguments: string(item.Input),
 					},
 				}

@@ -174,7 +174,7 @@ func TestChatClientRunner_Run_ForwardsToolAndSurfacesToolCall(t *testing.T) {
 	out, err := runner.Run(context.Background(), RunInput{
 		SessionKey:  "sess-1",
 		UserMessage: "let's start",
-		Tool:        tool,
+		Tools:       []chat.Tool{tool},
 	}, func(chat.Delta) error { return nil })
 
 	require.NoError(t, err)

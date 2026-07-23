@@ -41,11 +41,14 @@ type Config struct {
 	// write-enabled set for Execute). May be empty — then the loop is a single
 	// completion, preserving the plain-chat path for callers with no workspace.
 	Tools []Tool
-	// StopTool, if set, is offered to the model but never executed: when the
-	// model calls it, the loop stops and returns that call as Result.StopCall.
-	// Run uses this for the Draft-proposing tool; Execute leaves it nil and
-	// stops only when the model finishes without a tool call.
-	StopTool *chat.Tool
+	// StopTools, if non-empty, are offered to the model but never executed:
+	// when the model calls any one of them, the loop stops and returns that
+	// call as Result.StopCall. Run uses this for the Draft-proposing tool(s)
+	// — more than one only when a stage offers a human more than one kind of
+	// proposal at once (e.g. Review's propose_review alongside
+	// propose_knowledge, docs/milestones/milestone9.md) — Execute leaves it
+	// empty and stops only when the model finishes without a tool call.
+	StopTools []chat.Tool
 	// MaxTurns bounds tool-call round-trips (claudeRunnerMaxTurns for Run,
 	// claudeExecutionMaxTurns for Execute). Reaching it returns Exhausted.
 	MaxTurns int
@@ -96,7 +99,7 @@ type Result struct {
 // reasoning deltas are forwarded to onDelta as they stream so a UI can render
 // them live; onDelta may be nil.
 func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, onDelta func(chat.Delta) error) (Result, error) {
-	specs := toolSpecs(cfg.Tools, cfg.StopTool)
+	specs := toolSpecs(cfg.Tools, cfg.StopTools)
 	byName := toolsByName(cfg.Tools)
 	maxCalls := cfg.MaxToolCallsPerTurn
 	if maxCalls <= 0 {
@@ -142,11 +145,13 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 			return Result{Content: lastText, Turns: turn, TokensUsed: totalTokens}, nil
 		}
 
-		// StopTool takes precedence: if the model proposed the Draft (or
+		// A StopTool takes precedence: if the model proposed a Draft (or
 		// whatever stop tool is configured), that ends the loop even if it
-		// also called a read tool in the same turn.
-		if cfg.StopTool != nil {
-			if sc := findCall(calls, cfg.StopTool.Function.Name); sc != nil {
+		// also called a read tool in the same turn. Checked in cfg.StopTools'
+		// order; a model that somehow calls more than one stop tool in the
+		// same turn resolves to whichever is listed first.
+		for _, stop := range cfg.StopTools {
+			if sc := findCall(calls, stop.Function.Name); sc != nil {
 				return Result{Content: lastText, StopCall: sc, Turns: turn, TokensUsed: totalTokens}, nil
 			}
 		}
@@ -222,18 +227,16 @@ func logPreview(s string) string {
 }
 
 // toolSpecs assembles the OpenAI-compatible tool declarations offered to the
-// model: the executable tools plus the non-executed StopTool, if any.
-func toolSpecs(tools []Tool, stop *chat.Tool) []chat.Tool {
-	if len(tools) == 0 && stop == nil {
+// model: the executable tools plus the non-executed StopTools, if any.
+func toolSpecs(tools []Tool, stopTools []chat.Tool) []chat.Tool {
+	if len(tools) == 0 && len(stopTools) == 0 {
 		return nil
 	}
-	specs := make([]chat.Tool, 0, len(tools)+1)
+	specs := make([]chat.Tool, 0, len(tools)+len(stopTools))
 	for _, t := range tools {
 		specs = append(specs, t.Spec())
 	}
-	if stop != nil {
-		specs = append(specs, *stop)
-	}
+	specs = append(specs, stopTools...)
 	return specs
 }
 

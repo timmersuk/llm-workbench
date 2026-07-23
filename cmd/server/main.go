@@ -51,7 +51,7 @@ func main() {
 	configureLogging(logLevel, logFormat)
 
 	projectStore := project.NewFileStore(filepath.Join(workspaceRoot, "projects"))
-	knowledgeReader := knowledge.NewFileReader(filepath.Join(workspaceRoot, "knowledge"))
+	knowledgeStore := knowledge.NewFileStore(filepath.Join(workspaceRoot, "knowledge"))
 
 	// One shared map: registered runners are selectable from both
 	// Requirements/Planning stage conversations and the free-floating Chat
@@ -74,7 +74,7 @@ func main() {
 	}
 
 	taskStores := func(root string) api.TaskStore { return task.NewFileStore(root) }
-	router := api.NewRouter(projectStore, taskStores, knowledgeReader, agentRunners, agentReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
+	router := api.NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, agentReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":           httpAddr,

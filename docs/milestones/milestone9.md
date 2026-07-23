@@ -1,7 +1,7 @@
 # Milestone 9 — Knowledge-Base Promotion
 
-**Status:** Scoped via a `/grill-with-docs` session on 2026-07-22. Not
-started.
+**Status:** Scoped via a `/grill-with-docs` session on 2026-07-22. PR 1
+shipped 2026-07-23 — see "What shipped (PR 1)" below. PRs 2-4 not started.
 
 ## Why now
 
@@ -240,13 +240,13 @@ Deferred deliberately, named rather than dropped:
 
 Delivered as sequential PRs, matching prior milestones' cadence:
 
-* **PR 1 — `KnowledgeStore` + write path, backend only.** The
-  `FileReader`→`FileStore` rename, `List`/`Put` additions, the
-  `ConceptSummary` type, and `propose_knowledge`
+* **PR 1 — `KnowledgeStore` + write path, backend only. ✅ Shipped
+  (2026-07-23).** The `FileReader`→`FileStore` rename, `List`/`Put`
+  additions, the `ConceptSummary` type, and `propose_knowledge`
   (`internal/drafttool.ProposeKnowledge`) wired into the Review-stage
   conversation with the two-way accept/reject decision. Proven via fixture
   tasks and unit tests before any UI exists, matching how Milestone 6 PR 1
-  proved `RecordReview` first.
+  proved `RecordReview` first. See "What shipped (PR 1)" below.
 * **PR 2 — Read path: the query tool.** The native `toolloop.Tool` for
   `ChatClientRunner`, plus resolving the `ClaudeRunner`/`CodexRunner`
   always-on-tool-alongside-a-stop-condition-tool question below, so all
@@ -258,19 +258,82 @@ Delivered as sequential PRs, matching prior milestones' cadence:
   `data/knowledge/` concept doc; live-verify an executor finding and citing
   it via the new query tool, end to end.
 
+## What shipped (PR 1, 2026-07-23)
+
+`internal/knowledge`: `FileReader`→`FileStore` (`NewFileReader`→
+`NewFileStore`), plus `ConceptSummary` (conceptID, type, title, description,
+tags) and two new methods — `List()` (walks the bundle, skipping the
+reserved `index.md`/`log.md` filenames, logging and skipping any concept
+that fails to parse rather than failing the whole listing — an empty/
+not-yet-existing bundle root returns `nil, nil`, not an error) and `Put`
+(a whole-file create-or-replace by concept id; `c.Type` is authoritative
+over `c.Frontmatter["type"]`, so a `Get`→`Put`→`Get` round-trip is always
+consistent). `internal/api/router.go`'s `KnowledgeReader` interface and
+`Server.KnowledgeReader` field are renamed `KnowledgeStore`, widened to the
+full `Get`/`List`/`Put` shape scoped above.
+
+`internal/drafttool` gained `ProposeKnowledge` (`propose_knowledge`),
+added to `All()` — picked up by `cmd/draftmcp`'s `tools/list` and
+`CodexRunner.ensureRegistered`'s per-tool approval grant automatically,
+with no changes needed in either place.
+
+Wiring `propose_knowledge` into the Review-stage conversation *alongside*
+`propose_review` (rather than instead of it — either may be called
+independently within one conversation) meant Review needed to offer two
+Draft tools where every runner previously assumed exactly one. Resolved by
+widening the singular-tool shape to a slice, not by inventing an
+always-on/non-stop distinction (that remains PR 2's problem for the
+read-only query tool, which must coexist with *whichever* Draft tool(s)
+a stage offers without ending the turn — a different, harder shape than
+"offer two, stop on whichever one is called"):
+`internal/toolloop.Config.StopTool *chat.Tool` → `StopTools []chat.Tool`
+(the loop stops on a call to any of them); `agentrunner.RunInput.Tool
+chat.Tool` → `Tools []chat.Tool`; `ClaudeRunner.clientFor` registers every
+offered tool on the same in-process SDK MCP server (`CreateSDKMcpServer`
+already took a tools-variadic signature, so this needed no SDK-level
+change) and `processMessage` matches a call against any of their qualified
+names; `ChatClientRunner` passes `in.Tools` straight through to
+`cfg.StopTools`; `CodexRunner` tells the model about every offered tool
+name in its prompt instruction and matches a call against any of them.
+`stage_conversation.go`'s `stageTool(stage)` now returns `[]chat.Tool`
+(one for Requirements/Planning, two for Review), and
+`runStageTurn`'s hallucination guard checks membership in the offered set
+rather than equality with a single name.
+
+A new handler, `handleFinalizeKnowledge` (`internal/api/knowledge_draft.go`,
+`POST .../tasks/{taskId}/knowledge/finalize`), is the backend half of the
+two-way accept/reject decision — deliberately not a `TaskStore` method or a
+task-state transition of any kind, since a knowledge concept lives in a
+workspace-wide store independent of any one task, and Review's own
+conversation/verdict continues regardless of what a human decides here. On
+accept it calls `KnowledgeStore.Put`; on reject it's a no-op beyond
+acknowledging the decision — there is no "needs_changes" record the way
+Review's own three-way verdict has, since a rejected proposal is just more
+conversation the executor can redraft within. Gated on the task currently
+being at `stage: review` (the only stage `propose_knowledge` is ever
+offered from), even though the write itself touches no task state.
+
+No UI yet, as scoped — proven via `internal/knowledge`'s unit tests, the
+new multi-tool coverage in `toolloop`/`claude_runner`/`codex_runner`'s own
+test suites, and `internal/api/knowledge_draft_test.go`'s handler-level
+fixture tests (accept, reject, wrong stage, invalid body/decision,
+missing/invalid concept id). `go build ./...`, `go vet ./...`, and
+`go test ./...` all pass across the whole module.
+
 ## Open questions for whoever executes this milestone
 
-* **How does the always-on query tool coexist with `ClaudeRunner`'s
-  single stop-condition Draft tool?** `internal/drafttool` already solves
-  this cleanly for *proposal*-shaped tools (one more `Definition` in
-  `All()`, picked up by both `cmd/draftmcp` and the per-stage registration
-  for free) — but the query tool is not proposal-shaped, it must not end
-  the turn when called, and today's `RunInput.Tool`/`processMessage`
-  assume exactly one tool per session whose call always means "done."
-  Candidates: widen `RunInput.Tool` to a slice with one marked as the stop
-  condition; or register the query tool on a second in-process MCP server
-  alongside the existing `"draft"` one. Needs deciding during PR 2, not
-  here.
+* **How does the always-on query tool coexist with a Review conversation's
+  two stop-condition Draft tools (or any stage's one)?** `internal/drafttool`
+  already solves this cleanly for *proposal*-shaped tools (one more
+  `Definition` in `All()`, picked up by both `cmd/draftmcp` and the
+  per-stage registration for free) — but the query tool is not
+  proposal-shaped, it must not end the turn when called, and PR 1 only
+  generalized `RunInput.Tools`/`processMessage`/`toolloop.Config.StopTools`
+  to "stop on a call to any of several offered tools," not to "some offered
+  tools stop the turn and others don't." Candidates: widen further to mark
+  a subset of `RunInput.Tools` as non-stopping; or register the query tool
+  on a second in-process MCP server alongside the existing `"draft"` one.
+  Needs deciding during PR 2, not here.
 * **Same question for `CodexRunner`.** Its `cmd/draftmcp` static server is
   currently framed entirely around `drafttool.All()`'s proposal tools. A
   second static MCP server binary for the query tool, or a widened

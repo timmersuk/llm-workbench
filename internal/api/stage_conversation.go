@@ -21,14 +21,16 @@ import (
 )
 
 // Tool names for the Draft mechanism (CONTEXT.md): GrillMe registers
-// propose_context, Planning Mode registers propose_plan. The actual
+// propose_context, Planning Mode registers propose_plan, and Review
+// registers both propose_review and propose_knowledge at once. The actual
 // name/description/schema live in internal/drafttool, shared with
 // cmd/draftmcp's static MCP server (CodexRunner's Draft-tool mechanism) so
 // both call sites see the same tool shape by construction.
 const (
-	proposeContextToolName = drafttool.ProposeContextName
-	proposePlanToolName    = drafttool.ProposePlanName
-	proposeReviewToolName  = drafttool.ProposeReviewName
+	proposeContextToolName   = drafttool.ProposeContextName
+	proposePlanToolName      = drafttool.ProposePlanName
+	proposeReviewToolName    = drafttool.ProposeReviewName
+	proposeKnowledgeToolName = drafttool.ProposeKnowledgeName
 )
 
 // grillMeSystemPrompt and planningModeSystemPrompt encode the "grilling"
@@ -80,6 +82,8 @@ A failing check is not a rejection on its own — humans own the intent. Surface
 
 Do not call propose_review until you have worked through the checks AND the human has confirmed the outcome. Propose the decision (approved | rejected | needs_changes) with notes summarizing the findings that justify it. If the human's reply contains a fenced JSON block editing a review you already proposed, treat that block as the authoritative starting point for your revision.
 
+If this review surfaces a durable, reusable learning — a coding standard worth codifying, a pitfall worth recording, a decision worth explaining to a future task — call propose_knowledge with the concept's full content (concept_id, type, frontmatter, body) for the human to accept or reject, alongside (not instead of) proposing the review verdict itself. Not every review has one; only propose when there is something genuinely worth keeping.
+
 `
 )
 
@@ -90,32 +94,35 @@ Do not call propose_review until you have worked through the checks AND the huma
 // persisted; only the assistant's resulting first question is.
 const kickoffUserMessage = "Begin the interview now: use the task/project/knowledge context above (and the repository, if you have tools) to ask your first question."
 
-// stageTool returns the Draft-proposing tool registered for stage, and
-// whether stage is a valid Conversation stage at all (requirements or
-// planning — see task.ErrInvalidStage). Name/description/schema come from
-// internal/drafttool, shared with cmd/draftmcp.
-func stageTool(stage string) (chat.Tool, bool) {
+// chatToolFor adapts a drafttool.Definition into the chat.Tool shape
+// RunInput.Tools expects.
+func chatToolFor(d drafttool.Definition) chat.Tool {
+	return chat.Tool{Type: "function", Function: chat.ToolSchema{
+		Name:        d.Name,
+		Description: d.Description,
+		Parameters:  d.Schema,
+	}}
+}
+
+// stageTool returns the Draft-proposing tool(s) registered for stage, and
+// whether stage is a valid Conversation stage at all (requirements,
+// planning, or review — see task.ErrInvalidStage). Requirements/Planning
+// each offer exactly one; Review offers two at once — propose_review (the
+// stage's own verdict) and propose_knowledge (folding a durable learning
+// into the Knowledge layer, docs/milestones/milestone9.md) — since either
+// may be called independently within the same conversation, not in a fixed
+// order. Name/description/schema come from internal/drafttool, shared with
+// cmd/draftmcp.
+func stageTool(stage string) ([]chat.Tool, bool) {
 	switch stage {
 	case task.StageRequirements:
-		return chat.Tool{Type: "function", Function: chat.ToolSchema{
-			Name:        drafttool.ProposeContext.Name,
-			Description: drafttool.ProposeContext.Description,
-			Parameters:  drafttool.ProposeContext.Schema,
-		}}, true
+		return []chat.Tool{chatToolFor(drafttool.ProposeContext)}, true
 	case task.StagePlanning:
-		return chat.Tool{Type: "function", Function: chat.ToolSchema{
-			Name:        drafttool.ProposePlan.Name,
-			Description: drafttool.ProposePlan.Description,
-			Parameters:  drafttool.ProposePlan.Schema,
-		}}, true
+		return []chat.Tool{chatToolFor(drafttool.ProposePlan)}, true
 	case task.StageReview:
-		return chat.Tool{Type: "function", Function: chat.ToolSchema{
-			Name:        drafttool.ProposeReview.Name,
-			Description: drafttool.ProposeReview.Description,
-			Parameters:  drafttool.ProposeReview.Schema,
-		}}, true
+		return []chat.Tool{chatToolFor(drafttool.ProposeReview), chatToolFor(drafttool.ProposeKnowledge)}, true
 	default:
-		return chat.Tool{}, false
+		return nil, false
 	}
 }
 
@@ -300,7 +307,7 @@ func stageAssistantMessage(content string, proposed *chat.ToolCall, streamErr er
 func (s *Server) handlePostStageMessage() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
-		tool, ok := stageTool(stage)
+		tools, ok := stageTool(stage)
 		if !ok {
 			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
 			return
@@ -348,7 +355,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 				SystemPrompt:   run.SystemPrompt,
 				UserMessage:    req.Content,
 				Model:          req.Model,
-				Tool:           tool,
+				Tools:          tools,
 				EnableBashTool: run.EnableBash,
 				History:        conversationHistoryToChatMessages(history),
 			}, writeEvent)
@@ -385,7 +392,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 func (s *Server) handleStartStageConversation() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
-		tool, ok := stageTool(stage)
+		tools, ok := stageTool(stage)
 		if !ok {
 			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
 			return
@@ -436,7 +443,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 				SystemPrompt:   run.SystemPrompt,
 				UserMessage:    kickoffUserMessage,
 				Model:          req.Model,
-				Tool:           tool,
+				Tools:          tools,
 				EnableBashTool: run.EnableBash,
 			}, writeEvent)
 		}
@@ -532,7 +539,7 @@ type stageRegenerateRequest struct {
 func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
-		tool, ok := stageTool(stage)
+		tools, ok := stageTool(stage)
 		if !ok {
 			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
 			return
@@ -598,7 +605,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 				SystemPrompt:   run.SystemPrompt,
 				UserMessage:    req.Content,
 				Model:          req.Model,
-				Tool:           tool,
+				Tools:          tools,
 				EnableBashTool: run.EnableBash,
 				History:        conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
 			}, writeEvent)
@@ -632,7 +639,7 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 	// read_file/grep_search/glob/bash calls and their results) live, so a
 	// client can render "ran go test ./... -> ok" as it happens. These are
 	// the loop's EXECUTED tools — kept distinct from the single final Draft
-	// (validated against in.Tool below), which is never routed here. General
+	// (validated against in.Tools below), which is never routed here. General
 	// across all three stages: Requirements/Planning only ever make read-only
 	// calls, Review adds bash.
 	in.OnToolCall = func(name, argsJSON string) {
@@ -649,13 +656,14 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 	// A local OpenAI-compatible model can hallucinate a tool_calls delta for
 	// a tool it was never offered (e.g. one primed by the "explore the
 	// repo" instruction in the system prompt but never actually registered
-	// here) — only ever trust a call whose name matches the one tool this
-	// turn actually offered, in.Tool, or a hallucination gets surfaced to
-	// the human as a real Draft proposal and persisted as one.
-	if toolCall != nil && toolCall.Function.Name != in.Tool.Function.Name {
+	// here) — only ever trust a call whose name matches one of the tools
+	// this turn actually offered, in.Tools (usually one; Review offers two
+	// at once), or a hallucination gets surfaced to the human as a real
+	// Draft proposal and persisted as one.
+	if toolCall != nil && !offersToolNamed(in.Tools, toolCall.Function.Name) {
 		logrus.WithFields(logrus.Fields{
-			"session_key": in.SessionKey, "expected_tool": in.Tool.Function.Name, "got_tool": toolCall.Function.Name,
-		}).Warn("ignoring tool call that doesn't match the stage's registered tool")
+			"session_key": in.SessionKey, "expected_tools": toolNames(in.Tools), "got_tool": toolCall.Function.Name,
+		}).Warn("ignoring tool call that doesn't match any of the stage's registered tools")
 		toolCall = nil
 	}
 	if toolCall != nil {
@@ -665,6 +673,25 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 		}})
 	}
 	return out.Content, toolCall, runErr
+}
+
+// offersToolNamed reports whether tools contains one named name.
+func offersToolNamed(tools []chat.Tool, name string) bool {
+	for _, t := range tools {
+		if t.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// toolNames returns the bare names of tools, for logging.
+func toolNames(tools []chat.Tool) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Function.Name
+	}
+	return names
 }
 
 // conversationHistoryToChatMessages maps a stage's persisted Conversation
@@ -730,7 +757,7 @@ func (s *Server) buildStagePrompt(t task.Task, proj project.Project, stage strin
 
 	conceptIDs := append(append([]string{}, proj.Knowledge...), t.References.Knowledge...)
 	for _, id := range conceptIDs {
-		concept, err := s.KnowledgeReader.Get(id)
+		concept, err := s.KnowledgeStore.Get(id)
 		if err != nil {
 			logrus.WithError(err).WithField("concept", id).Warn("skipping knowledge concept that failed to resolve")
 			continue

@@ -90,7 +90,7 @@ func TestDeveloperInstructionsArgs(t *testing.T) {
 }
 
 func TestDraftToolInstruction_NamesToolAndServer(t *testing.T) {
-	instr := draftToolInstruction("propose_plan")
+	instr := draftToolInstruction([]string{"propose_plan"})
 	assert.Contains(t, instr, "propose_plan")
 	assert.Contains(t, instr, codexDraftServerName)
 }
@@ -101,7 +101,7 @@ func TestProcessCodexRunEvent_StreamsTextDelta(t *testing.T) {
 	var streamed string
 
 	ev := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "hel"}}
-	done, err := processCodexRunEvent(ev, "propose_plan", &content, &out, func(d chat.Delta) error {
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, func(d chat.Delta) error {
 		streamed += d.Content
 		return nil
 	})
@@ -115,7 +115,7 @@ func TestProcessCodexRunEvent_AccumulatesAgentMessageText(t *testing.T) {
 	var out RunOutput
 
 	ev := &types.ItemCompleted{Item: &types.AgentMessage{Text: "hello "}}
-	done, err := processCodexRunEvent(ev, "propose_plan", &content, &out, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "hello ", content.String())
@@ -130,7 +130,7 @@ func TestProcessCodexRunEvent_CapturesMatchingMCPToolCall(t *testing.T) {
 		ToolName: "propose_plan",
 		Input:    []byte(`{"approach":"do it"}`),
 	}}
-	done, err := processCodexRunEvent(ev, "propose_plan", &content, &out, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
@@ -139,12 +139,31 @@ func TestProcessCodexRunEvent_CapturesMatchingMCPToolCall(t *testing.T) {
 	assert.JSONEq(t, `{"approach":"do it"}`, out.ToolCall.Function.Arguments)
 }
 
+// TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools covers Review's
+// shape (docs/milestones/milestone9.md): a session can offer more than one
+// Draft tool at once, and a call to either is recognized as the proposal.
+func TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+
+	ev := &types.ItemCompleted{Item: &types.MCPToolCall{
+		ID:       "call-1",
+		ToolName: "propose_knowledge",
+		Input:    []byte(`{"concept_id":"x"}`),
+	}}
+	done, err := processCodexRunEvent(ev, []string{"propose_review", "propose_knowledge"}, &content, &out, nil)
+	require.NoError(t, err)
+	assert.False(t, done)
+	require.NotNil(t, out.ToolCall)
+	assert.Equal(t, "propose_knowledge", out.ToolCall.Function.Name)
+}
+
 func TestProcessCodexRunEvent_IgnoresNonMatchingMCPToolCall(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
 
 	ev := &types.ItemCompleted{Item: &types.MCPToolCall{ToolName: "activate_project", Input: []byte(`{}`)}}
-	done, err := processCodexRunEvent(ev, "propose_plan", &content, &out, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Nil(t, out.ToolCall)
@@ -155,7 +174,7 @@ func TestProcessCodexRunEvent_TurnCompletedSuccess(t *testing.T) {
 	content.WriteString("final answer")
 	var out RunOutput
 
-	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "completed"}, "propose_plan", &content, &out, nil)
+	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "completed"}, []string{"propose_plan"}, &content, &out, nil)
 	require.NoError(t, err)
 	assert.True(t, done)
 	assert.Equal(t, "final answer", out.Content)
@@ -165,7 +184,7 @@ func TestProcessCodexRunEvent_TurnCompletedFailedStatus(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
 
-	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "failed"}, "propose_plan", &content, &out, nil)
+	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "failed"}, []string{"propose_plan"}, &content, &out, nil)
 	assert.True(t, done)
 	assert.Error(t, err)
 }
@@ -174,7 +193,7 @@ func TestProcessCodexRunEvent_TurnFailed(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
 
-	done, err := processCodexRunEvent(&types.TurnFailed{Message: "boom"}, "propose_plan", &content, &out, nil)
+	done, err := processCodexRunEvent(&types.TurnFailed{Message: "boom"}, []string{"propose_plan"}, &content, &out, nil)
 	assert.True(t, done)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
