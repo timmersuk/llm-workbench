@@ -29,3 +29,6 @@ An entry in `context.yaml`'s `verification: []` list, classified `agent_executab
 
 **Conversation**:
 A persisted, append-only message history attached to a Task, scoped to a single stage (one Conversation for GrillMe/requirements, a separate one for Planning Mode/planning) rather than one continuous history for the Task's whole lifetime. A Conversation is reopenable: revisiting its stage (see **Revise**) resumes appending to the same Conversation rather than starting a fresh one.
+
+**Tool Activity**:
+The ordered list of read-only (or, for Review, Bash) tool calls and results an agent made while producing one Conversation turn — distinct from a **Draft**, which is the single proposal-ending tool call a turn may end with. Persisted on that turn's assistant message (capped in size), not a separate Conversation entry, and rendered collapsed as a single per-turn summary ("Used N tools") that expands to each call paired with its result. Never itself a Draft and never Finalized — it's a record of what the agent looked at on the way to its answer, not a proposal a human accepts.
