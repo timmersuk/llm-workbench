@@ -1,0 +1,27 @@
+stage: planning
+messages:
+    - role: assistant
+      content: |-
+        I dug into the repo before asking anything. Key findings:
+
+        - This task already has a fully-drafted `task.yaml`, `context.yaml`, and `plan.yaml` under `data/projects/llm-workbench/tasks/native-desktop-window/`, and the requirements conversation (`conversation-requirements.yaml`) shows you already confirmed the objective, constraints, assumptions, and success criteria in a prior session (ending with "leave as-is").
+        - There's already a `plan.yaml` draft too — approach, 3 steps, 1 risk, `estimated_complexity: medium`, empty `recommended_executor`.
+        - I cross-checked ADR-0014 (`docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md`) and `internal/api/router.go` / `internal/web/assets.go` — they match what the requirements draft claims: `NewRouter` returns a plain `http.Handler`, the UI is embedded via `go:embed all:dist`, and ADR-0014 already surveyed Wails as the webview fallback.
+
+        One inconsistency I found worth resolving before I treat this plan as coherent: **`plan.yaml`'s step 3 says "Decide replace-vs-coexist with windows-systray-icon before scoping implementation steps in detail"** — but the confirmed `context.yaml` assumptions already settled that question: *"The systray icon remains the affordance for background/service mode... the native window is a richer 'app-like' client layered on top for active use, not a replacement for the tray."* That was explicitly added as a working hypothesis in the requirements conversation, moving it out of open questions.
+
+        **Question 1:** Should I reword/drop `plan.yaml` step 3 so it no longer poses "replace vs. coexist" as an open decision, and instead frames it as *validating* the coexist hypothesis (e.g., "Confirm the coexist hypothesis still holds once the tray's real-world usage is observed, rather than re-litigating replace-vs-coexist from scratch")?
+
+        My recommendation: yes — reword it that way. Reason: keeping it phrased as an open decision contradicts the already-confirmed assumption and risks a future reader re-doing settled work, same failure mode the requirements conversation already caught once with ADR-0014.
+      created_at: 2026-07-23T17:04:23.2546453Z
+    - role: user
+      content: yes, reword it
+      created_at: 2026-07-23T17:06:17.9717553Z
+    - role: assistant
+      content: |-
+        I need your permission to edit `plan.yaml` — the tool call is being blocked. Could you approve the write when prompted (or let me know if you'd rather I hold off and just show you the wording first)?
+
+        Proposed step 3 replacement:
+
+        > "Confirm the coexist hypothesis still holds once the tray's real-world usage is observed (native window as an 'app-like' client layered on top of the tray, not a replacement for it), rather than re-litigating replace-vs-coexist from scratch."
+      created_at: 2026-07-23T17:06:17.9717553Z

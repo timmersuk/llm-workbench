@@ -1,0 +1,166 @@
+stage: requirements
+messages:
+    - role: assistant
+      content: |-
+        I explored the repo before asking anything. Useful findings:
+
+        - This task already has a fairly complete draft: `task.yaml`, `context.yaml`, and even a `plan.yaml`, all created 2026-07-07 alongside `graceful-shutdown`, `windows-background-service`, and `windows-systray-icon`. Of those four, only `graceful-shutdown` has advanced past `stage: requirements`.
+        - There's already **ADR-0014** (`docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md`) that did real evaluation work directly relevant here: it surveyed Fyne vs. gioui vs. Wails vs. lxn/walk, ruled Wails in specifically as "the webview bodge" fallback if E2E-test rigor (Vitest/Playwright) matters more than a "genuinely native" UI. This task's own `context.yaml` open questions ("Wails vs other options — not evaluated yet") are actually partially answered by that ADR already, but the ADR isn't listed in `native-desktop-window/task.yaml`'s `references`.
+        - `plan.yaml`'s first step says "revisit this task only once the tray-based experience is in daily use" — but `task.yaml`'s `constraints` only state this task doesn't *block* the other three; it doesn't say this task is itself *gated on* them shipping and being used first. That's currently a one-directional statement in the machine-readable requirements, with the real sequencing logic only living in prose in `plan.yaml`.
+
+        That second gap seems like the most concrete thing worth sharpening before this counts as a coherent, confirmed draft.
+
+        **Question 1:** Should `task.yaml`'s `constraints` be updated to explicitly state this task is gated on `windows-systray-icon` having shipped and seen real usage (not just "doesn't block" it)? My recommendation: yes — add something like *"Depends on windows-systray-icon shipping and being used in practice first; the entire point of this task is deciding whether the tray already solved the problem, so starting it earlier would be answering that question blind."* Reason: right now that sequencing logic only exists as prose in `plan.yaml` step 1, not as a structured constraint — if someone picks this task up by reading `task.yaml` alone (the normal entry point), they could miss it and start speculative work.
+      created_at: 2026-07-23T16:08:35.68812Z
+    - role: user
+      content: "yes"
+      created_at: 2026-07-23T16:15:18.7212798Z
+    - role: assistant
+      content: |-
+        Path is right — this looks like a one-off permission prompt gate on this tool call, not a path issue. Let me retry.Got it — I won't fight the file-write permission gate; these draft files should go through `propose_context` once we've converged, not raw edits. I'll fold the constraint change in then. Continuing the interview.
+
+        **Question 2:** Should `task.yaml`'s `references.knowledge` list add ADR-0014 (`docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md`), and should `context.yaml`'s open question *"Wails vs other options — not evaluated yet"* be reworded to reflect that ADR-0014 already did a first pass (Wails named as the fallback specifically if E2E-test rigor via Vitest/Playwright matters more than a "genuinely native" UI)?
+
+        My recommendation: yes to both — add the reference, and reword the open question to something like *"Wails vs other webview options for the specific in-process-server-plus-webview shape this task assumes — ADR-0014 already ruled Wails in as the fallback if E2E-test tooling matters, but didn't evaluate it against this task's exact reuse-of-api.NewRouter approach."*
+
+        Reason: right now the draft reads as if this ADR doesn't exist yet, which understates how much groundwork is already done and risks a future reader re-litigating a decision that's half-made.
+      created_at: 2026-07-23T16:15:18.7212798Z
+    - role: user
+      content: yes to both
+      created_at: 2026-07-23T16:18:09.4541793Z
+    - role: assistant
+      content: |-
+        Good — checked the convention: in other tasks (`bash-os-sandboxing`, `execute-bash-tool`), ADR docs live under `references.repo`, not `references.knowledge` (which is reserved for things like the engineering conventions doc). I'll follow that pattern rather than my earlier assumption.
+
+        Here's the consolidated diff I'm about to submit via `propose_context` — please confirm before I send it:
+
+        **`task.yaml`**
+        ```yaml
+        constraints:
+          - "Not blocking graceful-shutdown, windows-background-service, or windows-systray-icon — those should ship independently of this task."
+          - "Depends on windows-systray-icon shipping and being used in practice first; the entire point of this task is deciding whether the tray already solved the problem, so starting it earlier would be answering that question blind."
+
+        references:
+          knowledge:
+            - docs/engineering conventions.md
+          repo:
+            - internal/web/assets.go
+            - internal/api/router.go
+            - docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md
+        ```
+
+        **`context.yaml`** — reword open question 2:
+        ```yaml
+        open_questions:
+          - "Is a native window worth building at all given windows-systray-icon already covers the main pain point (no manual browser tab, no port-number-remembering)? Or does it stay a browser-based UI indefinitely, with the tray as the only desktop affordance?"
+          - "If pursued: Wails vs. other webview options for the specific in-process-server-plus-webview shape this task assumes — ADR-0014 already ruled Wails in as the fallback if E2E-test tooling (Vitest/Playwright) matters more than a \"genuinely native\" UI, but didn't evaluate it against this task's exact reuse-of-api.NewRouter approach."
+          - "Would a native window replace the systray icon, or coexist with it (tray remains for background/service mode, native window is an optional richer client)?"
+        ```
+
+        Does this match your intent, and is the draft otherwise coherent enough to submit as-is?
+      created_at: 2026-07-23T16:18:09.4541793Z
+    - role: user
+      content: confirmed
+      created_at: 2026-07-23T16:28:39.0744803Z
+    - role: assistant
+      content: |-
+        Now I have the full current state. Submitting the consolidated proposal.The revised draft has been proposed for your review — it folds in both changes we discussed:
+
+        1. **`task.yaml` constraints** now state the dependency explicitly: this task is gated on `windows-systray-icon` shipping and seeing real usage first, not just "doesn't block" it.
+        2. **ADR-0014 reference** added under `references.repo` (matching the pattern used by `bash-os-sandboxing` and `execute-bash-tool`), plus the open question about Wails is reworded to acknowledge the ADR already did a first pass, while flagging the specific gap: it didn't evaluate Wails against this task's exact reuse-of-`api.NewRouter` shape.
+
+        Let me know if you'd like any adjustments, or if it's good to finalize.
+      tool_call:
+        id: toolu_01TJriTMMx8xUo1qy38Xwe7v
+        name: propose_context
+        arguments: '{"assumptions":["A native window would likely reuse the same api.NewRouter handler and embedded frontend, either via an in-process webview pointed at a locally-bound port or a library-level embed, rather than requiring a UI rewrite."],"constraints":["Not blocking graceful-shutdown, windows-background-service, or windows-systray-icon — those should ship independently of this task.","Depends on windows-systray-icon shipping and being used in practice first; the entire point of this task is deciding whether the tray already solved the problem, so starting it earlier would be answering that question blind."],"context":{"background":"Surfaced 2026-07-07 during the same architectural-pivot assessment as the other three tasks in this group, then explicitly deferred: the systray icon already solves \"no manual browser tab\" for most practical purposes, so a full native window is lower-value, later work rather than part of the initial background-service pivot. ADR-0014 (docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md) already did a first pass surveying Fyne, gioui, Wails, and lxn/walk, ruling Wails in as the fallback specifically if E2E-test rigor (Vitest/Playwright) matters more than a \"genuinely native\" UI — but it didn''t evaluate Wails against this task''s exact reuse-of-api.NewRouter, in-process-server-plus-webview shape.","detail":"The server binary is already a single self-contained executable — UI embedded via go:embed, no CGO, no OS-specific code anywhere in the tree — so a native-window wrapper is additive packaging on top of an already-working foundation, not a prerequisite for or blocker of graceful-shutdown, windows-background-service, or windows-systray-icon. Those three should ship independently of whatever this task eventually decides.\n\nThis task is gated on windows-systray-icon shipping and being used in daily practice first: the whole point of this exploration is to judge whether the tray already solved the \"no manual browser tab\" problem well enough, so starting it before that real-world signal exists would mean answering the question blind.\n\nNot designed in any depth yet: no decision on whether this would replace or coexist with the systray icon, and no assessment of packaging/signing overhead per OS. ADR-0014 gives a head start on the library survey but was written for the frontend-architecture decision generally, not this task''s specific in-process-webview shape.","files":[{"path":"internal/web/assets.go","role":"the existing //go:embed all:dist embedding — a native window would most likely reuse this exact embedded filesystem rather than requiring any UI rewrite"},{"path":"internal/api/router.go","role":"NewRouter already returns a plain http.Handler serving the embedded UI and API together — a native window could point a webview at an in-process instance of this handler (e.g. bound to a loopback port, or via a library-level embed) without changing its shape"},{"path":"docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md","role":"prior evaluation of native-UI options (Fyne, gioui, Wails, lxn/walk) for the frontend generally; names Wails as the fallback if E2E-test tooling matters more than genuinely-native feel, but doesn''t assess it against this task''s specific reuse-of-api.NewRouter approach"}],"open_questions":["Is a native window worth building at all given windows-systray-icon already covers the main pain point (no manual browser tab, no port-number-remembering)? Or does it stay a browser-based UI indefinitely, with the tray as the only desktop affordance?","If pursued: Wails vs. other webview options for the specific in-process-server-plus-webview shape this task assumes — ADR-0014 already ruled Wails in as the fallback if E2E-test tooling (Vitest/Playwright) matters more than a \"genuinely native\" UI, but didn''t evaluate it against this task''s exact reuse-of-api.NewRouter approach.","Would a native window replace the systray icon, or coexist with it (tray remains for background/service mode, native window is an optional richer client)?"],"summary":"Explore replacing the browser tab with an actual native window (e.g. Wails) around the existing embedded UI, as a fuller desktop-app experience beyond windows-systray-icon''s tray affordance. Deliberately scoped as exploration-only for now, not a committed build.","verification":[{"description":"N/A at this stage — this task''s own success criterion is a documented decision, not a working feature.","kind":"human_judgment"}]},"objective":"Explore replacing the browser tab with an actual native window (e.g. Wails) around the existing embedded UI (internal/web, served by api.NewRouter) — the fuller desktop-app experience beyond the systray icon in windows-systray-icon. Deliberately deferred and lower priority: the server binary is already a single self-contained executable with the UI embedded via go:embed and no CGO, so this is additive packaging on top of an already-working foundation, not a blocker for the background service or systray work. Needs its own exploration/plan pass when picked up — not detailed here.","success_criteria":["A decision is documented on whether a native window is worth building given the systray icon already covers \"no manual browser tab\" for most use cases, and if so, a follow-up plan exists for it."]}'
+      created_at: 2026-07-23T16:28:39.0744803Z
+    - role: user
+      content: |-
+        I suspect the tray remains for background/service mode, and the native window is the 'native ui' quality means of interacting with it, and makes the experience more 'app like'
+
+        ```json
+        {
+          "objective": "Explore replacing the browser tab with an actual native window (e.g. Wails) around the existing embedded UI (internal/web, served by api.NewRouter) — the fuller desktop-app experience beyond the systray icon in windows-systray-icon. Deliberately deferred and lower priority: the server binary is already a single self-contained executable with the UI embedded via go:embed and no CGO, so this is additive packaging on top of an already-working foundation, not a blocker for the background service or systray work. Needs its own exploration/plan pass when picked up — not detailed here.",
+          "constraints": [
+            "Not blocking graceful-shutdown, windows-background-service, or windows-systray-icon — those should ship independently of this task.",
+            "Depends on windows-systray-icon shipping and being used in practice first; the entire point of this task is deciding whether the tray already solved the problem, so starting it earlier would be answering that question blind."
+          ],
+          "assumptions": [
+            "A native window would likely reuse the same api.NewRouter handler and embedded frontend, either via an in-process webview pointed at a locally-bound port or a library-level embed, rather than requiring a UI rewrite."
+          ],
+          "success_criteria": [
+            "A decision is documented on whether a native window is worth building given the systray icon already covers \"no manual browser tab\" for most use cases, and if so, a follow-up plan exists for it."
+          ],
+          "context": {
+            "summary": "Explore replacing the browser tab with an actual native window (e.g. Wails) around the existing embedded UI, as a fuller desktop-app experience beyond windows-systray-icon's tray affordance. Deliberately scoped as exploration-only for now, not a committed build.",
+            "background": "Surfaced 2026-07-07 during the same architectural-pivot assessment as the other three tasks in this group, then explicitly deferred: the systray icon already solves \"no manual browser tab\" for most practical purposes, so a full native window is lower-value, later work rather than part of the initial background-service pivot. ADR-0014 (docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md) already did a first pass surveying Fyne, gioui, Wails, and lxn/walk, ruling Wails in as the fallback specifically if E2E-test rigor (Vitest/Playwright) matters more than a \"genuinely native\" UI — but it didn't evaluate Wails against this task's exact reuse-of-api.NewRouter, in-process-server-plus-webview shape.",
+            "files": [
+              {
+                "path": "internal/web/assets.go",
+                "role": "the existing //go:embed all:dist embedding — a native window would most likely reuse this exact embedded filesystem rather than requiring any UI rewrite"
+              },
+              {
+                "path": "internal/api/router.go",
+                "role": "NewRouter already returns a plain http.Handler serving the embedded UI and API together — a native window could point a webview at an in-process instance of this handler (e.g. bound to a loopback port, or via a library-level embed) without changing its shape"
+              },
+              {
+                "path": "docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md",
+                "role": "prior evaluation of native-UI options (Fyne, gioui, Wails, lxn/walk) for the frontend generally; names Wails as the fallback if E2E-test tooling matters more than genuinely-native feel, but doesn't assess it against this task's specific reuse-of-api.NewRouter approach"
+              }
+            ],
+            "detail": "The server binary is already a single self-contained executable — UI embedded via go:embed, no CGO, no OS-specific code anywhere in the tree — so a native-window wrapper is additive packaging on top of an already-working foundation, not a prerequisite for or blocker of graceful-shutdown, windows-background-service, or windows-systray-icon. Those three should ship independently of whatever this task eventually decides.\n\nThis task is gated on windows-systray-icon shipping and being used in daily practice first: the whole point of this exploration is to judge whether the tray already solved the \"no manual browser tab\" problem well enough, so starting it before that real-world signal exists would mean answering the question blind.\n\nNot designed in any depth yet: no decision on whether this would replace or coexist with the systray icon, and no assessment of packaging/signing overhead per OS. ADR-0014 gives a head start on the library survey but was written for the frontend-architecture decision generally, not this task's specific in-process-webview shape.",
+            "verification": [
+              {
+                "description": "N/A at this stage — this task's own success criterion is a documented decision, not a working feature.",
+                "kind": "human_judgment"
+              }
+            ],
+            "open_questions": [
+              "Is a native window worth building at all given windows-systray-icon already covers the main pain point (no manual browser tab, no port-number-remembering)? Or does it stay a browser-based UI indefinitely, with the tray as the only desktop affordance?",
+              "If pursued: Wails vs. other webview options for the specific in-process-server-plus-webview shape this task assumes — ADR-0014 already ruled Wails in as the fallback if E2E-test tooling (Vitest/Playwright) matters more than a \"genuinely native\" UI, but didn't evaluate it against this task's exact reuse-of-api.NewRouter approach.",
+              "Would a native window replace the systray icon, or coexist with it (tray remains for background/service mode, native window is an optional richer client)?"
+            ]
+          }
+        }
+        ```
+      created_at: 2026-07-23T16:30:56.1865114Z
+    - role: assistant
+      content: |-
+        Good — that resolves open question 3 (replace vs. coexist). I'll fold it in as a new assumption and drop it from the open-questions list, since it's now a working hypothesis guiding the exploration rather than an unresolved fork.
+
+        Here's the updated diff on top of what you confirmed:
+
+        **`assumptions`** — add:
+        ```yaml
+          - "The systray icon remains the affordance for background/service mode (start on boot, quick actions, quit); the native window is a richer 'app-like' client layered on top for active use, not a replacement for the tray."
+        ```
+
+        **`context.open_questions`** — remove the third item (\"Would a native window replace the systray icon, or coexist with it...\") since it's now answered by the assumption above, leaving:
+        ```yaml
+        open_questions:
+          - "Is a native window worth building at all given windows-systray-icon already covers the main pain point (no manual browser tab, no port-number-remembering)? Or does it stay a browser-based UI indefinitely, with the tray as the only desktop affordance?"
+          - "If pursued: Wails vs. other webview options for the specific in-process-server-plus-webview shape this task assumes — ADR-0014 already ruled Wails in as the fallback if E2E-test tooling (Vitest/Playwright) matters more than a \"genuinely native\" UI, but didn't evaluate it against this task's exact reuse-of-api.NewRouter approach."
+        ```
+
+        That leaves one open question instead of two, focused purely on "worth it at all" and "which library" — the "replace vs. coexist" fork is settled.
+
+        **Question:** Should I also touch `success_criteria` to reflect this — e.g. reword it to say the decision includes *"whether a native window (coexisting with the tray) is worth building"* rather than the current more neutral phrasing? My recommendation: leave `success_criteria` as-is — it already says "whether a native window is worth building," which still holds; the coexistence detail lives correctly in `assumptions`, not in the success criterion itself. Reason: keeping the success criterion terse avoids duplicating context that's already captured elsewhere.
+      created_at: 2026-07-23T16:30:56.1865114Z
+    - role: user
+      content: leave as-is
+      created_at: 2026-07-23T16:31:37.4284912Z
+    - role: assistant
+      content: |-
+        The updated draft has been proposed. Changes from the last confirmed version:
+
+        1. **`assumptions`** — added the working hypothesis that the tray stays as the background/service affordance, with the native window as an optional richer "app-like" client layered on top for active use.
+        2. **`context.open_questions`** — dropped the "replace vs. coexist" question since it's now answered by that assumption; the two remaining questions are "worth it at all?" and "which library, given ADR-0014?"
+        3. **`success_criteria`** — left unchanged, as you confirmed.
+
+        Let me know if this is ready to finalize, or if you want further adjustments.
+      tool_call:
+        id: toolu_01Db7v31QoAK6egnrRD9TTmk
+        name: propose_context
+        arguments: '{"assumptions":["A native window would likely reuse the same api.NewRouter handler and embedded frontend, either via an in-process webview pointed at a locally-bound port or a library-level embed, rather than requiring a UI rewrite.","The systray icon remains the affordance for background/service mode (start on boot, quick actions, quit); the native window is a richer ''app-like'' client layered on top for active use, not a replacement for the tray."],"constraints":["Not blocking graceful-shutdown, windows-background-service, or windows-systray-icon — those should ship independently of this task.","Depends on windows-systray-icon shipping and being used in practice first; the entire point of this task is deciding whether the tray already solved the problem, so starting it earlier would be answering that question blind."],"context":{"background":"Surfaced 2026-07-07 during the same architectural-pivot assessment as the other three tasks in this group, then explicitly deferred: the systray icon already solves \"no manual browser tab\" for most practical purposes, so a full native window is lower-value, later work rather than part of the initial background-service pivot. ADR-0014 (docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md) already did a first pass surveying Fyne, gioui, Wails, and lxn/walk, ruling Wails in as the fallback specifically if E2E-test rigor (Vitest/Playwright) matters more than a \"genuinely native\" UI — but it didn''t evaluate Wails against this task''s exact reuse-of-api.NewRouter, in-process-server-plus-webview shape.","detail":"The server binary is already a single self-contained executable — UI embedded via go:embed, no CGO, no OS-specific code anywhere in the tree — so a native-window wrapper is additive packaging on top of an already-working foundation, not a prerequisite for or blocker of graceful-shutdown, windows-background-service, or windows-systray-icon. Those three should ship independently of whatever this task eventually decides.\n\nThis task is gated on windows-systray-icon shipping and being used in daily practice first: the whole point of this exploration is to judge whether the tray already solved the \"no manual browser tab\" problem well enough, so starting it before that real-world signal exists would mean answering the question blind.\n\nWorking hypothesis (not yet validated): the tray remains the affordance for background/service mode, and a native window would be an optional richer client layered on top for active use — not a replacement for the tray. Also not designed in any depth yet: no assessment of packaging/signing overhead per OS. ADR-0014 gives a head start on the library survey but was written for the frontend-architecture decision generally, not this task''s specific in-process-webview shape.","files":[{"path":"internal/web/assets.go","role":"the existing //go:embed all:dist embedding — a native window would most likely reuse this exact embedded filesystem rather than requiring any UI rewrite"},{"path":"internal/api/router.go","role":"NewRouter already returns a plain http.Handler serving the embedded UI and API together — a native window could point a webview at an in-process instance of this handler (e.g. bound to a loopback port, or via a library-level embed) without changing its shape"},{"path":"docs/adr/0014-defer-native-go-frontend-in-favor-of-react-spa.md","role":"prior evaluation of native-UI options (Fyne, gioui, Wails, lxn/walk) for the frontend generally; names Wails as the fallback if E2E-test tooling matters more than genuinely-native feel, but doesn''t assess it against this task''s specific reuse-of-api.NewRouter approach"}],"open_questions":["Is a native window worth building at all given windows-systray-icon already covers the main pain point (no manual browser tab, no port-number-remembering)? Or does it stay a browser-based UI indefinitely, with the tray as the only desktop affordance?","If pursued: Wails vs. other webview options for the specific in-process-server-plus-webview shape this task assumes — ADR-0014 already ruled Wails in as the fallback if E2E-test tooling (Vitest/Playwright) matters more than a \"genuinely native\" UI, but didn''t evaluate it against this task''s exact reuse-of-api.NewRouter approach."],"summary":"Explore replacing the browser tab with an actual native window (e.g. Wails) around the existing embedded UI, as a fuller desktop-app experience beyond windows-systray-icon''s tray affordance. Deliberately scoped as exploration-only for now, not a committed build.","verification":[{"description":"N/A at this stage — this task''s own success criterion is a documented decision, not a working feature.","kind":"human_judgment"}]},"objective":"Explore replacing the browser tab with an actual native window (e.g. Wails) around the existing embedded UI (internal/web, served by api.NewRouter) — the fuller desktop-app experience beyond the systray icon in windows-systray-icon. Deliberately deferred and lower priority: the server binary is already a single self-contained executable with the UI embedded via go:embed and no CGO, so this is additive packaging on top of an already-working foundation, not a blocker for the background service or systray work. Needs its own exploration/plan pass when picked up — not detailed here.","success_criteria":["A decision is documented on whether a native window is worth building given the systray icon already covers \"no manual browser tab\" for most use cases, and if so, a follow-up plan exists for it."]}'
+      created_at: 2026-07-23T16:31:37.4284912Z
