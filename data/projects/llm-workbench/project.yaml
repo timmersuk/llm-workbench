@@ -1,17 +1,12 @@
 id: llm-workbench
 name: LLM Workbench
-description: >-
-  The workbench's own Go + Vite codebase. Dogfooding: this project exists so
-  the tool can track its own work as Tasks instead of ad-hoc prose TODOs.
-
+description: 'The workbench''s own Go + Vite codebase. Dogfooding: this project exists so the tool can track its own work as Tasks instead of ad-hoc prose TODOs.'
 repositories:
-  - github.com/timmersuk/llm-workbench
-
+    - github.com/timmersuk/llm-workbench
+default_branch: main
 knowledge: []
-
 constraints:
-  - Follow docs/engineering conventions.md for implementation choices.
-  - "No new runtime dependency without a stated reason (see architectural invariants: prefer open standards)."
-
+    - Follow docs/engineering conventions.md for implementation choices.
+    - 'No new runtime dependency without a stated reason (see architectural invariants: prefer open standards).'
 created_at: 2026-07-05T00:00:00Z
-updated_at: 2026-07-05T00:00:00Z
+updated_at: 2026-07-23T21:37:49.126038Z

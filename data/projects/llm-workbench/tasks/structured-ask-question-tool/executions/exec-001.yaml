@@ -1,0 +1,23 @@
+execution_id: exec-001
+task_id: structured-ask-question-tool
+executor:
+    type: claude-code
+    version: ""
+input:
+    plan_ref: plan.yaml
+    context_refs: []
+    review_feedback: ""
+output:
+    artifacts: []
+    git_branch: task-exec/structured-ask-question-tool/exec-001
+    commits: []
+    forked_from_branch: ""
+metrics:
+    duration_seconds: 300.0811541
+    tokens_used: 0
+    cost_estimate: 0
+status: failure
+failure:
+    type: execution
+    message: context deadline exceeded
+created_at: 2026-07-23T21:42:49.4874957Z
