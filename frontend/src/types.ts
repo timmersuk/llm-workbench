@@ -338,6 +338,35 @@ export interface FinalizeReviewResponse {
   review: Review
 }
 
+// KnowledgeConceptDraftDecision mirrors internal/api's knowledgeDecision*
+// constants (knowledge_draft.go) — two-way, unlike ReviewDecision's three:
+// a knowledge proposal has no prior execution branch for a "needs_changes"
+// state to continue from, so a rejected proposal is just more conversation,
+// not a state the backend records (docs/milestones/milestone9.md).
+export type KnowledgeConceptDraftDecision = 'accepted' | 'rejected'
+
+// KnowledgeConceptDraft is the propose_knowledge tool-call / knowledge
+// Finalize body — always the concept's full resulting content (never a
+// diff), covering both a brand-new concept_id and an edit to an existing
+// one with the same shape. Mirrors internal/api's finalizeKnowledgeRequest
+// minus its decision field, which travels as finalizeKnowledge's separate
+// parameter instead (so KnowledgeDraftForm's onChange never has to know
+// about the decision being made around it).
+export interface KnowledgeConceptDraft {
+  concept_id: string
+  type: string
+  frontmatter?: Record<string, unknown>
+  body: string
+}
+
+// FinalizeKnowledgeResponse mirrors internal/api finalizeKnowledgeResponse.
+// concept is only populated on an accepted decision.
+export interface FinalizeKnowledgeResponse {
+  concept_id: string
+  decision: KnowledgeConceptDraftDecision
+  concept?: { type: string; frontmatter?: Record<string, unknown>; body: string }
+}
+
 // ReviewsListResult mirrors handleListReviews' response — every verdict for a
 // task, oldest first. Nullable for the same reason executions is: a task with
 // no reviews yet has no reviews/ directory.

@@ -57,7 +57,27 @@ function toDisplayMessage(m: ConversationMessage): DisplayMessage {
   }
 }
 
-interface StageConversationPanelProps<D> {
+// SecondaryDraftConfig lets a stage register a second Draft-proposing tool
+// that coexists with the stage's own (main) one — today only Review, whose
+// propose_knowledge tool (docs/milestones/milestone9.md) can be called
+// independently of propose_review, any number of times, without ending the
+// conversation. Unlike the main draft's Finalize/Request-changes/Discard
+// trio, this is a plain two-way accept/reject decision (no "needs_changes"
+// concept, no state to reopen — a rejected proposal is just more
+// conversation the executor can redraft within), so no "request changes"
+// affordance is offered here; the human can just reply normally in chat.
+export interface SecondaryDraftConfig<S> {
+  // toolName is the tool call name that routes here instead of to the main
+  // draft (chat.ToolSchema's Name — drafttool.ProposeKnowledgeName today).
+  toolName: string
+  emptyDraft: S
+  heading: string
+  renderDraft: (draft: S, onChange: (draft: S) => void) => ReactNode
+  onAccept: (draft: S) => Promise<void>
+  onReject: (draft: S) => Promise<void>
+}
+
+interface StageConversationPanelProps<D, S = never> {
   projectId: string
   taskId: string
   stage: string
@@ -79,6 +99,9 @@ interface StageConversationPanelProps<D> {
   // startLabel names the explicit Start button shown when autoStart is false
   // (e.g. "Start Review"); ignored when autoStart is true.
   startLabel?: string
+  // secondaryDraft, if set, additionally tracks and renders a second Draft
+  // tool independent of the main one — see SecondaryDraftConfig.
+  secondaryDraft?: SecondaryDraftConfig<S>
 }
 
 // localChatOption is always available — the local-LLM chat path
@@ -96,7 +119,7 @@ const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', c
 // that streams the assistant's reply, and — when the model calls its
 // registered tool — a Draft, shown via renderDraft for the human to edit
 // before Finalize or discard (which just clears local state; no API call).
-export function StageConversationPanel<D>({
+export function StageConversationPanel<D, S = never>({
   projectId,
   taskId,
   stage,
@@ -107,7 +130,8 @@ export function StageConversationPanel<D>({
   onFinalize,
   autoStart = true,
   startLabel,
-}: StageConversationPanelProps<D>) {
+  secondaryDraft,
+}: StageConversationPanelProps<D, S>) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   // initializing is true until the mount effect has resolved the existing
@@ -128,6 +152,13 @@ export function StageConversationPanel<D>({
   const [pendingDraft, setPendingDraft] = useState<D | null>(null)
   const [finalizing, setFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
+  // pendingSecondaryDraft/secondaryFinalizing/secondaryError mirror the
+  // main draft's own trio, for secondaryDraft (see SecondaryDraftConfig) —
+  // kept entirely independent so both a review verdict and a knowledge
+  // proposal can be pending at the same time.
+  const [pendingSecondaryDraft, setPendingSecondaryDraft] = useState<S | null>(null)
+  const [secondaryFinalizing, setSecondaryFinalizing] = useState(false)
+  const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [requestChangesComment, setRequestChangesComment] = useState('')
   // editingIndex is the position of the user message currently being
   // edited (draft holds its in-progress edited text), or null when not
@@ -153,20 +184,46 @@ export function StageConversationPanel<D>({
         }
         setMessages(loaded.map(toDisplayMessage))
         loadedEmpty = loaded.length === 0
-        // Rehydrate the pending draft from the most recent proposed tool
-        // call — a reload or server restart must not lose a proposal the
-        // human hasn't finalized or discarded yet, since it's already sat
-        // for review in a prior session.
+        // Rehydrate the pending draft(s) from the most recent proposed tool
+        // call of each kind — a reload or server restart must not lose a
+        // proposal the human hasn't finalized or discarded yet, since it's
+        // already sat for review in a prior session. Walked once, tracking
+        // the main and secondary tool calls independently since they can be
+        // interleaved throughout the conversation. Note: this can re-surface
+        // a secondaryDraft proposal that was already accepted/rejected in a
+        // prior session, since accept/reject leave no mark on the
+        // conversation history itself — accepted/lightly re-confirms only
+        // (KnowledgeStore.Put is a no-op re-write; reject was always a
+        // no-op), not a correctness issue, just a UX rough edge.
+        let latestMainCall: { arguments: string } | undefined
+        let latestSecondaryCall: { arguments: string } | undefined
         for (let i = loaded.length - 1; i >= 0; i--) {
           const toolCall = loaded[i].tool_call
-          if (toolCall) {
-            try {
-              setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(toolCall.arguments)))
-            } catch {
-              // Malformed arguments JSON from a past turn — nothing to
-              // rehydrate, the human can just keep chatting.
-            }
+          if (!toolCall) {
+            continue
+          }
+          if (secondaryDraft && toolCall.name === secondaryDraft.toolName) {
+            latestSecondaryCall ??= toolCall
+          } else {
+            latestMainCall ??= toolCall
+          }
+          if (latestMainCall && (!secondaryDraft || latestSecondaryCall)) {
             break
+          }
+        }
+        if (latestMainCall) {
+          try {
+            setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(latestMainCall.arguments)))
+          } catch {
+            // Malformed arguments JSON from a past turn — nothing to
+            // rehydrate, the human can just keep chatting.
+          }
+        }
+        if (secondaryDraft && latestSecondaryCall) {
+          try {
+            setPendingSecondaryDraft(mergeDraftDefaults(secondaryDraft.emptyDraft, JSON.parse(latestSecondaryCall.arguments)))
+          } catch {
+            // Same as above.
           }
         }
       } catch (err) {
@@ -283,6 +340,15 @@ export function StageConversationPanel<D>({
     }
     if (event.tool_call) {
       updateLastMessage((msg) => ({ ...msg, toolCallName: event.tool_call!.name }))
+      if (secondaryDraft && event.tool_call.name === secondaryDraft.toolName) {
+        try {
+          setPendingSecondaryDraft(mergeDraftDefaults(secondaryDraft.emptyDraft, JSON.parse(event.tool_call.arguments)))
+        } catch {
+          // Malformed arguments JSON is surfaced via the chip only; the
+          // human can keep chatting and ask the model to try again.
+        }
+        return
+      }
       try {
         setPendingDraft(mergeDraftDefaults(emptyDraft, JSON.parse(event.tool_call.arguments)))
       } catch {
@@ -523,6 +589,26 @@ export function StageConversationPanel<D>({
     }
   }
 
+  // handleSecondaryDecision drives both Accept and Reject for
+  // secondaryDraft — same shape, differing only in which of
+  // onAccept/onReject runs, mirroring how handleFinalize just runs
+  // onFinalize with whatever decision is already encoded in the draft.
+  async function handleSecondaryDecision(action: (draft: S) => Promise<void>) {
+    if (!secondaryDraft || !pendingSecondaryDraft || secondaryFinalizing) {
+      return
+    }
+    setSecondaryFinalizing(true)
+    setSecondaryError(null)
+    try {
+      await action(pendingSecondaryDraft)
+      setPendingSecondaryDraft(null)
+    } catch (err) {
+      setSecondaryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSecondaryFinalizing(false)
+    }
+  }
+
   // notStarted is the pre-Start state of an autoStart=false panel (Review):
   // the mount effect has finished, the conversation is genuinely empty, and
   // nothing errored — so show the explicit Start button and withhold the
@@ -659,6 +745,22 @@ export function StageConversationPanel<D>({
             </button>
             <button type="button" onClick={() => setPendingDraft(null)} disabled={finalizing}>
               Discard
+            </button>
+          </div>
+        </div>
+      )}
+
+      {secondaryDraft && pendingSecondaryDraft && (
+        <div className="draft-review secondary-draft-review">
+          <h4>{secondaryDraft.heading}</h4>
+          {secondaryDraft.renderDraft(pendingSecondaryDraft, setPendingSecondaryDraft)}
+          {secondaryError && <p className="error">{secondaryError}</p>}
+          <div className="stage-actions">
+            <button type="button" onClick={() => handleSecondaryDecision(secondaryDraft.onAccept)} disabled={secondaryFinalizing}>
+              {secondaryFinalizing ? 'Saving...' : 'Accept'}
+            </button>
+            <button type="button" onClick={() => handleSecondaryDecision(secondaryDraft.onReject)} disabled={secondaryFinalizing}>
+              Reject
             </button>
           </div>
         </div>

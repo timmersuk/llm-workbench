@@ -531,6 +531,13 @@ td button {
   background: var(--bg-alt);
 }
 
+/* secondary-draft-review (propose_knowledge, docs/milestones/milestone9.md)
+   can render alongside the main .draft-review at once — the margin keeps
+   them visually separated rather than touching. */
+.secondary-draft-review {
+  margin-top: 16px;
+}
+
 .stage-actions {
   display: flex;
   gap: 8px;

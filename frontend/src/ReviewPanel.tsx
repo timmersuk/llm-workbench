@@ -1,14 +1,26 @@
 import { useEffect, useState } from 'react'
-import { finalizeReview, getReviewDiff, listExecutions } from './api'
+import { finalizeKnowledge, finalizeReview, getReviewDiff, listExecutions } from './api'
+import { KnowledgeDraftForm } from './KnowledgeDraftForm'
 import { ReviewDraftForm } from './ReviewDraftForm'
 import { StageConversationPanel } from './StageConversationPanel'
-import type { Execution, Review, ReviewDraft, Task } from './types'
+import type { Execution, KnowledgeConceptDraft, Review, ReviewDraft, Task } from './types'
 
 // needs_changes is the neutral default for a proposal that omits the field —
 // it neither approves nor rejects, so a malformed tool call can't accidentally
 // complete or reopen a task. The agent's propose_review always sets it in
 // practice; this only fills a gap.
 const EMPTY_DRAFT: ReviewDraft = { decision: 'needs_changes', notes: '' }
+
+// EMPTY_KNOWLEDGE_DRAFT is propose_knowledge's neutral default — an empty
+// concept_id/type/body just means there's nothing sensible to rehydrate or
+// merge into, matching EMPTY_DRAFT's own role above.
+const EMPTY_KNOWLEDGE_DRAFT: KnowledgeConceptDraft = { concept_id: '', type: '', frontmatter: {}, body: '' }
+
+// proposeKnowledgeToolName mirrors drafttool.ProposeKnowledgeName
+// (internal/drafttool/drafttool.go) — no shared codegen between the Go and
+// TypeScript sides, so this string is kept in sync by convention, the same
+// way every other tool_call.name string this frontend matches against is.
+const proposeKnowledgeToolName = 'propose_knowledge'
 
 interface ReviewPanelProps {
   projectId: string
@@ -87,12 +99,12 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
         </div>
       )}
 
-      <StageConversationPanel<ReviewDraft>
+      <StageConversationPanel<ReviewDraft, KnowledgeConceptDraft>
         projectId={projectId}
         taskId={taskId}
         stage="review"
         title="Review"
-        description="Start the review to have the agent run the tests, review the diff, and walk the verification steps — then finalize an approved, needs-changes, or rejected verdict."
+        description="Start the review to have the agent run the tests, review the diff, and walk the verification steps — then finalize an approved, needs-changes, or rejected verdict. It may also propose a knowledge concept worth recording along the way; accept or reject that independently of the review verdict."
         emptyDraft={EMPTY_DRAFT}
         autoStart={false}
         startLabel="Start Review"
@@ -100,6 +112,18 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
         onFinalize={async (draft) => {
           const result = await finalizeReview(projectId, taskId, draft)
           onFinalized(result.task, result.review)
+        }}
+        secondaryDraft={{
+          toolName: proposeKnowledgeToolName,
+          emptyDraft: EMPTY_KNOWLEDGE_DRAFT,
+          heading: 'Proposed knowledge concept',
+          renderDraft: (draft, onChange) => <KnowledgeDraftForm draft={draft} onChange={onChange} />,
+          onAccept: async (draft) => {
+            await finalizeKnowledge(projectId, taskId, draft, 'accepted')
+          },
+          onReject: async (draft) => {
+            await finalizeKnowledge(projectId, taskId, draft, 'rejected')
+          },
         }}
       />
     </div>

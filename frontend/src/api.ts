@@ -8,7 +8,10 @@ import type {
   CreateTaskRequest,
   ExecuteStreamEvent,
   ExecutionsListResult,
+  FinalizeKnowledgeResponse,
   FinalizeReviewResponse,
+  KnowledgeConceptDraft,
+  KnowledgeConceptDraftDecision,
   ModelsListResult,
   Project,
   ProjectListResult,
@@ -123,6 +126,19 @@ export function finalizePlan(projectId: string, taskId: string, plan: TaskPlan):
 
 export function finalizeReview(projectId: string, taskId: string, draft: ReviewDraft): Promise<FinalizeReviewResponse> {
   return mutateJSON<FinalizeReviewResponse>('POST', `${taskPath(projectId, taskId)}/review/finalize`, draft)
+}
+
+// finalizeKnowledge is the human's accept/reject decision on a
+// propose_knowledge Draft (docs/milestones/milestone9.md) — unlike
+// finalizeReview, this never changes the task's stage; the Review
+// conversation continues regardless of what's decided here.
+export function finalizeKnowledge(
+  projectId: string,
+  taskId: string,
+  draft: KnowledgeConceptDraft,
+  decision: KnowledgeConceptDraftDecision,
+): Promise<FinalizeKnowledgeResponse> {
+  return mutateJSON<FinalizeKnowledgeResponse>('POST', `${taskPath(projectId, taskId)}/knowledge/finalize`, { ...draft, decision })
 }
 
 // listReviews returns every recorded verdict for a task, oldest first — the
