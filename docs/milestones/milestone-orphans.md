@@ -73,6 +73,10 @@ again anywhere in the repo — no backlog task stub was ever created for it,
 unlike every other item on this page. This is the one entry here that had
 no tracking at all before today.
 
+Now has a backlog stub:
+`data/projects/llm-workbench/tasks/structured-ask-question-tool/task.yaml`
+(`status: draft`, `stage: requirements`, created 2026-07-23).
+
 ## From Milestone 5 — `human` executor type stays schema-only
 
 `execution.yaml`'s `executor.type` enum (`docs/task schema v0.md`) lists
@@ -128,9 +132,11 @@ than a narrower mocked boundary) deliberately, but "that's what the
 codebase already does" was flagged as too weak a bar on its own — the same
 kind of gap a second-pass review (the Opus pass that caught PR 2's real
 mechanism gaps during Milestone 7's initial scoping) is meant to catch
-before an unexamined pattern hardens into unquestioned convention. No
-backlog stub existed for this before today; needs its own dedicated look
-at this project's test-layering habits.
+before an unexamined pattern hardens into unquestioned convention.
+
+Now has a backlog stub:
+`data/projects/llm-workbench/tasks/testing-practices-re-review/task.yaml`
+(`status: draft`, `stage: requirements`, created 2026-07-23).
 
 ## From Milestone 7 — `FinalizeReview`/`RecordExecution` coupling
 
@@ -140,6 +146,10 @@ comment (`internal/task/lifecycle.go:127-132`) holds today only because
 (`internal/task/execution.go:180-198`) — true by construction across two
 functions, not verified by either one. No bug today; worth a second look
 if either function changes.
+
+Now has a backlog stub:
+`data/projects/llm-workbench/tasks/finalize-review-record-execution-coupling/task.yaml`
+(`status: draft`, `stage: requirements`, created 2026-07-23).
 
 ## From Milestone 7 — No repo auto-clone
 
@@ -160,3 +170,27 @@ the worktree-fork point — the one place a wrong answer is expensive to
 undo — while behind-origin and dirty-working-tree stay advisory,
 surfaced both in the stage-conversation system prompt and a frontend
 banner. No longer an orphan.
+
+## From `native-desktop-window` — decision-only tasks don't fit the code-shaped Implementation/Review stages
+
+Surfaced 2026-07-23 while fixing an unrelated Finalize 400 on that task's
+GrillMe draft. `native-desktop-window`'s own `context.yaml` already flags
+the gap directly: its one `verification` entry reads "N/A at this stage —
+this task's own success criterion is a documented decision, not a working
+feature." The workflow's Implementation/Review stages assume an Execution
+produces a code diff — Review's automatic step runs "the real test suite +
+a code-review pass in a worktree" (`StageConversationPanel.tsx`'s
+`autoStart=false` doc comment) — but a task whose entire committed output
+is a go/no-go decision has no code to test and no diff to review under
+that model.
+
+Not a hard block: the workaround is to make the decision itself the diff
+(an added `docs/adr/*.md` file), so Execution/Review still run
+structurally, with the test-suite step reduced to a costless no-op and the
+code-review pass still doing something useful (judging the write-up
+itself). But there's currently no way for a task to declare "no code
+expected" so Review could skip the test-run step instead of silently
+no-op-ing it.
+
+No backlog stub yet — too vague to be its own task off a single occurrence.
+Revisit if a second decision-only task surfaces the same friction.

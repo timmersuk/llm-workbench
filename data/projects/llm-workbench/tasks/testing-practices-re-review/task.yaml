@@ -1,0 +1,35 @@
+id: testing-practices-re-review
+title: Re-review this project's test-layering habits
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-23T00:00:00Z
+updated_at: 2026-07-23T00:00:00Z
+
+objective: >-
+  Milestone 7 PR 3 followed existing precedent (handleReviewDiff's handler
+  test exercising real git rather than a narrower mocked boundary)
+  deliberately, but "that's what the codebase already does" was flagged as
+  too weak a bar on its own during scoping. Take a dedicated look at this
+  project's test-layering habits (what gets a handler-level test against
+  real dependencies vs. a narrower unit test against a mocked boundary, and
+  why) before an unexamined pattern hardens into unquestioned convention —
+  the same kind of gap a second-pass review is meant to catch.
+
+constraints: []
+
+assumptions:
+  - "This is a review/decision task, not implementation — the output is a documented convention (or a confirmation of the existing one), not a test-suite rewrite."
+
+success_criteria:
+  - A documented decision exists on when handler tests should exercise real dependencies vs. mock a narrower boundary, added to docs/engineering conventions.md or a dedicated ADR.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+  repo:
+    - docs/milestones/milestone-orphans.md
+    - docs/milestones/done/milestone7.md

@@ -1,0 +1,39 @@
+id: finalize-review-record-execution-coupling
+title: Verify or enforce the FinalizeReview/RecordExecution invariant directly
+project: llm-workbench
+
+status: draft
+
+stage: requirements
+
+created_at: 2026-07-23T00:00:00Z
+updated_at: 2026-07-23T00:00:00Z
+
+objective: >-
+  FinalizeReview's "no new execution can have been recorded since Review"
+  comment (internal/task/lifecycle.go:127-132) holds today only because
+  RecordExecution separately guards success writes to StageImplementation
+  (internal/task/execution.go:180-198) — true by construction across two
+  functions, not verified by either one. No bug today, but the invariant is
+  implicit and could silently break if either function changes without the
+  other being revisited. Decide whether to add an explicit check/test that
+  ties the two together, or document the coupling clearly enough that a
+  future change to either function is guaranteed to trip a reviewer's
+  attention.
+
+constraints:
+  - "No bug to fix today — this is about making an implicit cross-function invariant explicit, not changing current behavior."
+
+assumptions:
+  - "A regression test asserting the invariant (rather than a runtime check) may be the cheapest way to make this safe against future changes to either function."
+
+success_criteria:
+  - Either a test/assertion exists that fails if the invariant is broken by a future change to either function, or a code comment/ADR cross-links both functions clearly enough that changing one prompts checking the other.
+
+references:
+  knowledge: []
+  repo:
+    - docs/milestones/milestone-orphans.md
+    - docs/milestones/done/milestone7.md
+    - internal/task/lifecycle.go
+    - internal/task/execution.go
