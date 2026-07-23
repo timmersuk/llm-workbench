@@ -16,7 +16,7 @@ import (
 )
 
 func TestClaudeRunner_TryLockRejectsConcurrentSameKey(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 
 	assert.True(t, r.tryLock("task-a:planning"))
 	assert.False(t, r.tryLock("task-a:planning"), "a second lock for the same key must be rejected")
@@ -514,7 +514,7 @@ func TestToolResultText_EncodesStructuredContentAsJSON(t *testing.T) {
 }
 
 func TestClaudeRunner_CheckHealth_FailsWhenReposRootEmpty(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	err := r.CheckHealth(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AGENT_REPOS_ROOT")
@@ -525,7 +525,7 @@ func TestClaudeRunner_CheckHealth_FailsWhenCLINotOnPath(t *testing.T) {
 	lookPath = func(string) (string, error) { return "", errors.New("not found") }
 	defer func() { lookPath = original }()
 
-	r := NewClaudeRunner(time.Minute, t.TempDir(), nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, t.TempDir(), nil)
 	err := r.CheckHealth(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "claude CLI not found on PATH")
@@ -536,7 +536,7 @@ func TestClaudeRunner_CheckHealth_OKWhenReposRootSetAndCLIFound(t *testing.T) {
 	lookPath = func(string) (string, error) { return "/usr/bin/claude", nil }
 	defer func() { lookPath = original }()
 
-	r := NewClaudeRunner(time.Minute, t.TempDir(), nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, t.TempDir(), nil)
 	assert.NoError(t, r.CheckHealth(context.Background()))
 }
 
@@ -580,7 +580,7 @@ func TestIsStaleClaudeConnectionError_IgnoresUnrelatedErrors(t *testing.T) {
 // Run must evict it (Disconnect + remove from the cache) and retry against
 // a freshly constructed client rather than surfacing the raw pipe error.
 func TestClaudeRunner_Run_ReconnectsOnceOnStaleConnectionThenSucceeds(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	key := "task-a:requirements"
 
 	stale := &fakeClaudeClient{queryErr: errors.New("write |1: The pipe is being closed.")}
@@ -604,7 +604,7 @@ func TestClaudeRunner_Run_ReconnectsOnceOnStaleConnectionThenSucceeds(t *testing
 // also fails, that error (not the original stale-pipe one) is what
 // surfaces, and Run doesn't loop forever trying to reconnect.
 func TestClaudeRunner_Run_SurfacesErrorWhenReconnectAlsoFails(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	key := "task-a:requirements"
 
 	stale := &fakeClaudeClient{queryErr: errors.New("broken pipe")}
@@ -626,7 +626,7 @@ func TestClaudeRunner_Run_SurfacesErrorWhenReconnectAlsoFails(t *testing.T) {
 // query failure must surface immediately, not silently retry against a
 // second, unnecessary subprocess.
 func TestClaudeRunner_Run_NonStaleQueryErrorIsNotRetried(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	key := "task-a:requirements"
 
 	client := &fakeClaudeClient{queryErr: errors.New("some other failure")}
@@ -644,7 +644,7 @@ func TestClaudeRunner_Run_NonStaleQueryErrorIsNotRetried(t *testing.T) {
 }
 
 func TestClaudeRunner_ClientFor_ErrorsWhenWorkspaceEmpty(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: ""})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "claude-code requires a project repository")
@@ -678,7 +678,7 @@ func (f *fakeKnowledgeStore) Get(conceptID string) (knowledge.Concept, error) {
 }
 
 func TestClaudeRunner_KnowledgeListHandler_ReturnsRealContent(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", &fakeKnowledgeStore{summaries: []knowledge.ConceptSummary{
+	r := NewClaudeRunner(time.Minute, time.Minute, "", &fakeKnowledgeStore{summaries: []knowledge.ConceptSummary{
 		{ConceptID: "coding-standards/logging", Type: "Coding Standard"},
 	}})
 	result, err := r.knowledgeListHandler(context.Background(), nil)
@@ -689,7 +689,7 @@ func TestClaudeRunner_KnowledgeListHandler_ReturnsRealContent(t *testing.T) {
 }
 
 func TestClaudeRunner_KnowledgeListHandler_StoreErrorSurfacesAsMcpError(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", &fakeKnowledgeStore{listErr: errors.New("disk on fire")})
+	r := NewClaudeRunner(time.Minute, time.Minute, "", &fakeKnowledgeStore{listErr: errors.New("disk on fire")})
 	result, err := r.knowledgeListHandler(context.Background(), nil)
 	require.NoError(t, err, "a store failure must surface as an MCP error result, not a Go error")
 	assert.True(t, result.IsError)
@@ -697,7 +697,7 @@ func TestClaudeRunner_KnowledgeListHandler_StoreErrorSurfacesAsMcpError(t *testi
 }
 
 func TestClaudeRunner_KnowledgeGetHandler_ReturnsRealContent(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", &fakeKnowledgeStore{concepts: map[string]knowledge.Concept{
+	r := NewClaudeRunner(time.Minute, time.Minute, "", &fakeKnowledgeStore{concepts: map[string]knowledge.Concept{
 		"a": {Type: "Reference", Body: "hello\n"},
 	}})
 	result, err := r.knowledgeGetHandler(context.Background(), map[string]any{"concept_id": "a"})
@@ -707,21 +707,21 @@ func TestClaudeRunner_KnowledgeGetHandler_ReturnsRealContent(t *testing.T) {
 }
 
 func TestClaudeRunner_KnowledgeGetHandler_MissingConceptSurfacesAsMcpError(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", &fakeKnowledgeStore{})
+	r := NewClaudeRunner(time.Minute, time.Minute, "", &fakeKnowledgeStore{})
 	result, err := r.knowledgeGetHandler(context.Background(), map[string]any{"concept_id": "missing"})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
 }
 
 func TestClaudeRunner_ListModels_ReturnsEmptyNotError(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	models, err := r.ListModels(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, models)
 }
 
 func TestClaudeRunner_CloseSession_DisconnectsAndRemovesCachedClient(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	client := &fakeClaudeClient{}
 	r.clients["task-a:planning"] = client
 
@@ -733,7 +733,7 @@ func TestClaudeRunner_CloseSession_DisconnectsAndRemovesCachedClient(t *testing.
 }
 
 func TestClaudeRunner_CloseSession_OnUnknownKeyIsANoOp(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, "", nil)
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	assert.NotPanics(t, func() { r.CloseSession("no-such-session") })
 }
 

@@ -187,7 +187,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
             <li key={e.execution_id} className={`execution-status execution-status-${e.status}`}>
               {e.execution_id}: {e.status}
               {e.output.git_branch && <> &middot; {e.output.git_branch}</>}
-              {e.output.commits.length > 0 && <> &middot; {e.output.commits.length} commit(s)</>}
+              {(e.output.commits?.length ?? 0) > 0 && <> &middot; {e.output.commits.length} commit(s)</>}
               {e.failure && <> &middot; {e.failure.message}</>}
             </li>
           ))}

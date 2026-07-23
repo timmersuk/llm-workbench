@@ -54,19 +54,22 @@ type CodexRunner struct {
 	mu       sync.Mutex
 	inFlight map[string]bool
 
-	timeout       time.Duration
-	reposRoot     string
-	draftMCPPath  string
-	knowledgeRoot string
+	timeout        time.Duration
+	executeTimeout time.Duration
+	reposRoot      string
+	draftMCPPath   string
+	knowledgeRoot  string
 
 	registerOnce sync.Once
 	registerErr  error
 }
 
-// NewCodexRunner returns a CodexRunner whose Run/Execute calls are each
-// bounded by timeout. reposRoot is the configured AGENT_REPOS_ROOT value
-// (same role as NewClaudeRunner's). draftMCPPath is the absolute path to
-// the compiled cmd/draftmcp binary; CodexRunner registers it as an MCP
+// NewCodexRunner returns a CodexRunner whose Run calls are each bounded by
+// timeout and whose Execute calls are separately bounded by executeTimeout
+// — split the same way and for the same reason as NewClaudeRunner's
+// timeout/executeTimeout. reposRoot is the configured AGENT_REPOS_ROOT
+// value (same role as NewClaudeRunner's). draftMCPPath is the absolute path
+// to the compiled cmd/draftmcp binary; CodexRunner registers it as an MCP
 // server the first time Run or Execute is actually called (see
 // ensureRegistered), not at construction time. knowledgeRoot, if non-empty,
 // is passed to that same draftmcp process as its --knowledge-root flag
@@ -74,13 +77,14 @@ type CodexRunner struct {
 // list_knowledge_concepts/get_knowledge_concept tools ClaudeRunner and
 // ChatClientRunner do — an empty knowledgeRoot just omits the flag, the
 // same as running draftmcp directly with no --knowledge-root.
-func NewCodexRunner(timeout time.Duration, reposRoot string, draftMCPPath string, knowledgeRoot string) *CodexRunner {
+func NewCodexRunner(timeout, executeTimeout time.Duration, reposRoot string, draftMCPPath string, knowledgeRoot string) *CodexRunner {
 	return &CodexRunner{
-		inFlight:      make(map[string]bool),
-		timeout:       timeout,
-		reposRoot:     reposRoot,
-		draftMCPPath:  draftMCPPath,
-		knowledgeRoot: knowledgeRoot,
+		inFlight:       make(map[string]bool),
+		timeout:        timeout,
+		executeTimeout: executeTimeout,
+		reposRoot:      reposRoot,
+		draftMCPPath:   draftMCPPath,
+		knowledgeRoot:  knowledgeRoot,
 	}
 }
 
@@ -199,7 +203,7 @@ func (r *CodexRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func
 		return ExecuteOutput{}, errors.New("codex requires a resolved execution workspace")
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	runCtx, cancel := context.WithTimeout(ctx, r.executeTimeout)
 	defer cancel()
 
 	start := time.Now()

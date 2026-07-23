@@ -80,6 +80,7 @@ type ClaudeRunner struct {
 	clients        map[string]claudecode.Client
 	inFlight       map[string]bool
 	timeout        time.Duration
+	executeTimeout time.Duration
 	reposRoot      string
 	knowledgeStore knowledgetool.Store
 	// newClient constructs a claudecode.Client from the given options —
@@ -89,18 +90,25 @@ type ClaudeRunner struct {
 	newClient func(opts ...claudecode.Option) claudecode.Client
 }
 
-// NewClaudeRunner returns a ClaudeRunner whose Run calls are each bounded
-// by timeout (covering client connection, the query, and draining the
-// response stream). reposRoot is the configured AGENT_REPOS_ROOT value,
-// held so CheckHealth can report unavailable when it's unset. knowledgeStore,
-// if non-nil, is exposed on every Run call via a second always-registered
-// in-process MCP server (docs/milestones/done/milestone9.md) — nil just means
-// those two tools are never registered (e.g. tests that don't care).
-func NewClaudeRunner(timeout time.Duration, reposRoot string, knowledgeStore knowledgetool.Store) *ClaudeRunner {
+// NewClaudeRunner returns a ClaudeRunner whose Run calls are each bounded by
+// timeout (covering client connection, the query, and draining the response
+// stream), and whose Execute calls are separately bounded by executeTimeout.
+// The two are split because they bound very different things: Run is one
+// turn of a human-paced, read-only conversation, while Execute is an
+// unattended multi-step implementation run to completion — reusing Run's
+// budget for Execute cut autonomous executions off mid-run well before they
+// could finish (see the blank-page bug this split was introduced to fix).
+// reposRoot is the configured AGENT_REPOS_ROOT value, held so CheckHealth
+// can report unavailable when it's unset. knowledgeStore, if non-nil, is
+// exposed on every Run call via a second always-registered in-process MCP
+// server (docs/milestones/done/milestone9.md) — nil just means those two
+// tools are never registered (e.g. tests that don't care).
+func NewClaudeRunner(timeout, executeTimeout time.Duration, reposRoot string, knowledgeStore knowledgetool.Store) *ClaudeRunner {
 	return &ClaudeRunner{
 		clients:        make(map[string]claudecode.Client),
 		inFlight:       make(map[string]bool),
 		timeout:        timeout,
+		executeTimeout: executeTimeout,
 		reposRoot:      reposRoot,
 		knowledgeStore: knowledgeStore,
 		newClient:      claudecode.NewClient,
@@ -223,7 +231,7 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		return ExecuteOutput{}, errors.New("claude-code requires a resolved execution workspace")
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	runCtx, cancel := context.WithTimeout(ctx, r.executeTimeout)
 	defer cancel()
 
 	client := r.newClient(

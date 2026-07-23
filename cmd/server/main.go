@@ -39,6 +39,12 @@ func main() {
 	// total-duration timeout for non-streaming calls.
 	llmTimeout := utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second)
 	agentTimeout := utils.GetEnvDefault("AGENT_TIMEOUT", 5*time.Minute)
+	// Execute (an unattended, multi-step Implementation-stage run to
+	// completion) needs a much larger budget than Run (one turn of a
+	// human-paced conversation) — sharing AGENT_TIMEOUT between them cut
+	// autonomous executions off mid-run well before they could finish (see
+	// docs/engineering conventions.md's AGENT_TIMEOUT entry).
+	agentExecutionTimeout := utils.GetEnvDefault("AGENT_EXECUTION_TIMEOUT", 30*time.Minute)
 	// Required: any agent runner that can introspect a task's reference
 	// repository (claude-code, codex) needs to know where to find/clone
 	// it, so the server refuses to start without one.
@@ -64,8 +70,8 @@ func main() {
 	// always-available knowledge query tools (docs/milestones/done/milestone9.md)
 	// answer identically regardless of which executor a conversation uses.
 	agentRunners := map[string]agentrunner.AgentRunner{
-		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentReposRoot, knowledgeStore),
-		"codex":       agentrunner.NewCodexRunner(agentTimeout, agentReposRoot, draftMCPPath, knowledgeRoot),
+		"claude-code": agentrunner.NewClaudeRunner(agentTimeout, agentExecutionTimeout, agentReposRoot, knowledgeStore),
+		"codex":       agentrunner.NewCodexRunner(agentTimeout, agentExecutionTimeout, agentReposRoot, draftMCPPath, knowledgeRoot),
 		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
 			client: chat.NewOpenAIClient(llmBaseURL, llmAPIKey, llmTimeout),
 			model:  llmModel,

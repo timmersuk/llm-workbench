@@ -70,7 +70,7 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
             {latest.execution_id} &middot; {latest.status}
             {latest.output.git_branch && <> &middot; {latest.output.git_branch}</>}
           </p>
-          {latest.output.commits.length > 0 && (
+          {(latest.output.commits?.length ?? 0) > 0 && (
             <>
               <strong>Commits</strong>
               <ul>
@@ -80,7 +80,7 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
               </ul>
             </>
           )}
-          {latest.output.artifacts.length > 0 && (
+          {(latest.output.artifacts?.length ?? 0) > 0 && (
             <>
               <strong>Changed files</strong>
               <ul>
