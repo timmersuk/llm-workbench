@@ -1,5 +1,15 @@
 # Hand-roll the shared tool-loop engine; keep eino on record as the fallback
 
+> The local-model tool-loop pathology catalog below ("Why hand-rolled beat
+> the winning framework") has been promoted into a reusable knowledge
+> concept — `data/knowledge/model-behavior/local-tool-loop-pathologies.md`
+> (Milestone 9 PR 4) — synthesized from this ADR plus the spike's raw
+> working notes, for consumption outside this specific framework-choice
+> decision (e.g. by `agent-shell`'s own planned local-model agent runner).
+> This ADR's own content is unchanged and remains the historical record of
+> *why hand-rolled was chosen*; the knowledge concept is the standalone,
+> query-tool-accessible version of *what the pathologies are*.
+
 Milestone 8's Phase 0 called for a time-boxed spike comparing three
 implementation vehicles for the shared tool-loop engine of
 `docs/adr/0009-shared-tool-loop-engine-for-run-and-execute.md` —
