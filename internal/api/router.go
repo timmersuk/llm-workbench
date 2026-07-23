@@ -98,6 +98,7 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeRead
 	mux.HandleFunc("POST /api/v1/projects", handleCreateProject(projects))
 	mux.HandleFunc("GET /api/v1/projects/{id}", handleGetProject(projects))
 	mux.HandleFunc("PUT /api/v1/projects/{id}", handleUpdateProject(projects))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/workspace-status", handleWorkspaceStatus(projects, reposRoot))
 
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", handleListProjectTasks(projects, taskStores))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", handleCreateProjectTask(projects, taskStores))

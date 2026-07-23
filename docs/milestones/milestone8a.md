@@ -8,7 +8,10 @@ not after. **PR 1 shipped** (2026-07-22): lazy auto-clone, live-verified —
 see "What shipped (PR 1)" below. **PR 2 shipped** (2026-07-22):
 `Project.DefaultBranch` determination plus the blocking wrong-branch gate,
 unit-tested (no live `gh`/GitHub call — see "What shipped (PR 2)" below for
-why that's still an honest verification, not a shortcut).
+why that's still an honest verification, not a shortcut). **PR 3 shipped**
+(2026-07-23): the two advisory checks and both surfacing paths, live-verified
+against this repo's own real checkout — see "What shipped (PR 3)" below.
+**Milestone complete.**
 
 ## Why now
 
@@ -275,15 +278,56 @@ blocking/fail-closed control flow around it (unit-tested via the
   `handleStartExecution`, `handleReviewDiff`, `resolveStageRun`/
   `buildReviewContext`.
 
-**PR 3 (not yet built):**
+**PR 3 (shipped):**
 
-* `internal/gitutil`: new primitives for `git fetch` (TTL-throttled,
-  wrapped so a failure returns "unknown" rather than propagating) and
-  `git status --porcelain` (dirty-tree check), alongside the existing
-  `RunGit`/`CurrentBranch`/`Clone`.
-* `internal/api/stage_conversation.go`: system-prompt injection for the two
-  advisory signals.
-* Frontend: a banner component surfacing the same two advisory signals.
+* `internal/gitutil`: new `BehindOriginStatus`/`DirtyStatus` types and
+  `BehindOrigin`/`DirtyWorkingTree` functions — both return their result as
+  data (a `Known bool` field), never a Go error, so a fetch failure or a
+  non-git directory collapses to "unknown" uniformly.
+* `internal/agentrunner`: `ResolveWorkspace`'s path derivation extracted
+  into `workspacePath` (pure refactor, no behavior change) so the new
+  status check can reuse it without ever cloning. New `workspace_status.go`
+  — `WorkspaceStatus`, `GetWorkspaceStatus`, and a TTL-cached/locked
+  behind-origin check (`behindOriginLocks`/`behindOriginCache`, the same
+  per-path-`sync.Map` shape PR 1's `cloneLocks` already established).
+* `internal/api`: new `workspace_status.go` (`handleWorkspaceStatus`,
+  `GET /api/v1/projects/{projectId}/workspace-status`) and
+  `appendWorkspaceAdvisories` in `stage_conversation.go`, wired into
+  `resolveStageRun` once — covering both the Review and non-Review
+  branches with one call, since `ResolveReviewWorkspace` already resolves
+  the shared checkout internally regardless of which stage is asking.
+* Frontend: `WorkspaceStatusResult` (`types.ts`), `getWorkspaceStatus`
+  (`api.ts`), and a new banner in `TaskDetailPanel.tsx` — plain inline JSX,
+  not a new component, matching the existing inline Context/Plan sections'
+  pattern; a new `--warning` CSS token alongside the existing `--error`
+  one, since an advisory isn't a failure and reusing red would misrepresent
+  severity.
+
+Both signals only ever produce text when true — a clean or unknown
+checkout adds nothing to the system prompt and shows no banner, matching
+`buildRejectedReviewContext`'s existing minimal-noise convention (PR 2) and
+keeping the two surfaces consistent with each other.
+
+One design point surfaced during implementation, not in the original
+scoping: the new status endpoint must never itself trigger a lazy clone —
+opening a task's detail view isn't a reason to kick off a first,
+potentially multi-minute clone just because a banner asked for status.
+`workspacePath` (used by `GetWorkspaceStatus`) only derives the path;
+`ResolveWorkspace` (used everywhere a real workspace is actually needed)
+is the only one that clones.
+
+**Live-verified**, not just unit-tested: with the dev server pointed at
+this repository's own real checkout (`AGENT_REPOS_ROOT` set to its parent
+directory), the `llm-workbench` project's task view showed "Shared
+checkout has uncommitted changes" — accurately reflecting this session's
+own in-progress work — while `behind_origin` correctly reported `known:
+true, behind: 0` (not shown, since it's not true) and a project with no
+repository configured (`agent-shell`) showed no banner at all. The actual
+`GET /workspace-status` JSON response was inspected directly to confirm
+the wire shape, and the banner's computed CSS confirmed the new
+`--warning` token resolved correctly (verified in dark mode, the browser's
+default; light mode uses the same variable mechanism but wasn't separately
+checked).
 
 ## Out of scope
 
@@ -314,21 +358,34 @@ blocking/fail-closed control flow around it (unit-tested via the
   `ResolveExecutionWorkspace`/`ResolveReviewWorkspace`. This is the
   safety-critical piece and lands before the advisory checks. See "What
   shipped (PR 2)" below.
-* **PR 3 — Advisory checks and surfacing.** TTL-throttled behind-origin
-  fetch, dirty-working-tree check, system-prompt injection, and the
-  frontend banner.
+* **PR 3 — Advisory checks and surfacing. ✅ Shipped (2026-07-23).**
+  TTL-throttled behind-origin fetch, dirty-working-tree check,
+  system-prompt injection, and the frontend banner. See "What shipped
+  (PR 3)" below.
 
 ## Open questions for whoever executes this milestone
 
-* **Does `git status --porcelain` count untracked files as "dirty," or
-  only modifications to already-tracked files?** Counting untracked files
-  risks false positives from incidental scratch files; not decided during
-  scoping.
-* **Exact TTL for the behind-origin fetch throttle** — "short" was agreed,
-  a specific duration (e.g. 2 vs 5 minutes) wasn't pinned down.
+All resolved before/during PR 3's implementation:
+
+* ~~**Does `git status --porcelain` count untracked files as "dirty," or
+  only modifications to already-tracked files?**~~ Resolved: untracked
+  files count. Plain `git status --porcelain`, not `--untracked-files=no`.
+* ~~**Exact TTL for the behind-origin fetch throttle**~~ Resolved: 5
+  minutes, matching `AGENT_TIMEOUT`'s existing default elsewhere in this
+  codebase.
 * ~~**The blocking gate's error message/recovery hint**~~ — resolved in PR 2:
   `checkDefaultBranch` reports the plain mismatch (`shared checkout is on
-  %q, expected %q`), no explicit "switch to X" recovery hint. Revisit if
-  PR 3's frontend banner needs friendlier copy than the raw backend error.
-* **Frontend banner placement** — which view(s) show the advisory
-  staleness banner; not specified during scoping.
+  %q, expected %q`), no explicit "switch to X" recovery hint. Not revisited
+  in PR 3 — the frontend banner uses its own plain wording for the advisory
+  checks, unrelated to this blocking-gate error text.
+* ~~**Frontend banner placement**~~ Resolved: `TaskDetailPanel.tsx`, not
+  `ProjectDetailPanel.tsx` — most contextually tied to the moment a human
+  is about to work Requirements/Planning/Execute/Review against that
+  checkout.
+* A design point that emerged during PR 3's implementation, not in the
+  original scoping: **the new `GET .../workspace-status` endpoint must
+  never trigger a lazy clone** — opening a task's detail view must not be
+  the trigger for a first, potentially multi-minute clone just because a
+  banner asked for status. Solved by extracting `ResolveWorkspace`'s path
+  derivation into a shared `workspacePath` helper the status check uses
+  instead of `ResolveWorkspace` itself.

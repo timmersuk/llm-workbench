@@ -758,6 +758,38 @@ type stageRun struct {
 	EnableBash   bool
 }
 
+// appendWorkspaceAdvisories appends a short, one-sentence note per true
+// advisory signal (docs/milestones/milestone8a.md's "Advisory checks") to
+// systemPrompt — never when a signal is clean or unknown, so a healthy
+// checkout doesn't clutter every conversation with reassuring or unhelpful
+// "can't tell" noise, matching buildRejectedReviewContext's existing
+// minimal-noise convention (no addendum when there's nothing to report).
+// Always checked against the project's shared checkout (proj.Repositories
+// via GetWorkspaceStatus), never whatever workspace this particular turn
+// actually resolved to — Review's own workspace is an isolated execution
+// worktree (ResolveReviewWorkspace), but the hygiene these signals describe
+// is a shared-checkout property regardless of which stage is asking, and
+// ResolveReviewWorkspace itself resolves the shared checkout internally on
+// every call anyway (worktree.go). Best-effort: a failure here (most
+// commonly ErrNoRepository, a project with no configured repo) just means
+// no advisory text is added — this must never fail the turn, matching
+// every other advisory-only contract in this milestone.
+func appendWorkspaceAdvisories(ctx context.Context, systemPrompt, reposRoot string, repositories []string) string {
+	status, err := agentrunner.GetWorkspaceStatus(ctx, reposRoot, repositories)
+	if err != nil {
+		return systemPrompt
+	}
+	var b strings.Builder
+	b.WriteString(systemPrompt)
+	if status.BehindOrigin.Known && status.BehindOrigin.Behind > 0 {
+		fmt.Fprintf(&b, "\nNote: the project's shared checkout is %d commit(s) behind its origin upstream.\n", status.BehindOrigin.Behind)
+	}
+	if status.Dirty.Known && status.Dirty.Dirty {
+		b.WriteString("\nNote: the project's shared checkout has uncommitted changes (possibly including untracked files).\n")
+	}
+	return b.String()
+}
+
 // resolveStageRun assembles the stageRun for a turn. Requirements/Planning run
 // read-only against the project's shared checkout (a project with no repo is
 // tolerated, yielding an empty workspace and a text-only turn). Review runs
@@ -766,6 +798,7 @@ type stageRun struct {
 // can actually run the tests and check the real change (Milestone 6).
 func resolveStageRun(ctx context.Context, reposRoot string, proj project.Project, store TaskStore, t task.Task, stage string, knowledgeReader KnowledgeReader, prClient agentrunner.GitHubPRClient, projects ProjectStore, defaultBranchResolver agentrunner.DefaultBranchResolver) (stageRun, error) {
 	systemPrompt := buildStagePrompt(t, proj, stage, knowledgeReader)
+	systemPrompt = appendWorkspaceAdvisories(ctx, systemPrompt, reposRoot, proj.Repositories)
 
 	if stage != task.StageReview {
 		ws, err := agentrunner.ResolveWorkspace(ctx, reposRoot, proj.Repositories)

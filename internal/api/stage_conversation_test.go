@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
@@ -104,6 +106,143 @@ func newStageMessageServer(t *testing.T, tasks *mockTaskStore, repositories []st
 	}, nil)
 	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 	return projects, fixedTaskStoreFactory(tasks)
+}
+
+// newAdvisoryStageWorkspace mirrors newStageMessageWorkspace but backs
+// "demo-repo" with a real git clone (proper upstream tracking, the same
+// way gitutil.Clone's own tests rely on), so appendWorkspaceAdvisories'
+// gitutil calls actually resolve instead of failing to "unknown" — used
+// only by the tests in this file that assert on the injected advisory
+// text itself. newStageMessageWorkspace's plain, non-git directory is
+// deliberately left as-is for every other test in this file, so those
+// keep seeing "unknown" (no injected text) and stay unaffected.
+func newAdvisoryStageWorkspace(t *testing.T) (reposRoot string, repositories []string, sourceDir string) {
+	t.Helper()
+	sourceDir = filepath.Join(t.TempDir(), "source")
+	require.NoError(t, os.MkdirAll(sourceDir, 0o755))
+	gitRun(t, sourceDir, "init", "-q")
+	gitRun(t, sourceDir, "config", "user.email", "t@example.com")
+	gitRun(t, sourceDir, "config", "user.name", "T")
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "README.md"), []byte("hi\n"), 0o644))
+	gitRun(t, sourceDir, "add", ".")
+	gitRun(t, sourceDir, "commit", "-q", "-m", "init")
+
+	reposRoot = t.TempDir()
+	require.NoError(t, gitutil.Clone(context.Background(), sourceDir, filepath.Join(reposRoot, "demo-repo")))
+	return reposRoot, []string{"github.com/timmersuk/demo-repo"}, sourceDir
+}
+
+func newAdvisoryPostRequest(t *testing.T) *http.Request {
+	t.Helper()
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "hi"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	return req
+}
+
+func TestHandlePostStageMessage_SystemPromptOmitsAdvisoryNotesOnCleanCheckout(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+
+	reposRoot, repositories, _ := newAdvisoryStageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	var gotIn agentrunner.RunInput
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
+		gotIn = in
+		return true
+	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "ok"}, nil)
+
+	w := httptest.NewRecorder()
+	handlePostStageMessage(projects, factory, new(mockKnowledgeReader),
+		map[string]agentrunner.AgentRunner{"local": runner}, reposRoot, nil, nil)(w, newAdvisoryPostRequest(t))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.NotContains(t, gotIn.SystemPrompt, "commit(s) behind")
+	assert.NotContains(t, gotIn.SystemPrompt, "uncommitted changes")
+}
+
+func TestHandlePostStageMessage_SystemPromptIncludesDirtyNote(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+
+	reposRoot, repositories, _ := newAdvisoryStageWorkspace(t)
+	require.NoError(t, os.WriteFile(filepath.Join(reposRoot, "demo-repo", "scratch.txt"), []byte("x\n"), 0o644))
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	var gotIn agentrunner.RunInput
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
+		gotIn = in
+		return true
+	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "ok"}, nil)
+
+	w := httptest.NewRecorder()
+	handlePostStageMessage(projects, factory, new(mockKnowledgeReader),
+		map[string]agentrunner.AgentRunner{"local": runner}, reposRoot, nil, nil)(w, newAdvisoryPostRequest(t))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, gotIn.SystemPrompt, "uncommitted changes")
+}
+
+func TestHandlePostStageMessage_SystemPromptIncludesBehindOriginNote(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+
+	reposRoot, repositories, sourceDir := newAdvisoryStageWorkspace(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "second.txt"), []byte("x\n"), 0o644))
+	gitRun(t, sourceDir, "add", ".")
+	gitRun(t, sourceDir, "commit", "-q", "-m", "second commit")
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	var gotIn agentrunner.RunInput
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
+		gotIn = in
+		return true
+	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "ok"}, nil)
+
+	w := httptest.NewRecorder()
+	handlePostStageMessage(projects, factory, new(mockKnowledgeReader),
+		map[string]agentrunner.AgentRunner{"local": runner}, reposRoot, nil, nil)(w, newAdvisoryPostRequest(t))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, gotIn.SystemPrompt, "commit(s) behind")
+}
+
+// TestResolveStageRun_ReviewStageIncludesAdvisoryNoteFromSharedCheckout
+// locks in appendWorkspaceAdvisories' design decision: the advisory check
+// always runs against the project's shared checkout (proj.Repositories),
+// not whatever workspace a given stage actually resolved to — a Review
+// conversation's own run.Workspace is the isolated execution worktree
+// (ResolveReviewWorkspace), which stays clean here, yet the note must
+// still appear because the *shared* checkout is dirty.
+func TestResolveStageRun_ReviewStageIncludesAdvisoryNoteFromSharedCheckout(t *testing.T) {
+	reposRoot := t.TempDir()
+	initReviewRepo(t, reposRoot) // shared checkout "myrepo" (branch "main") + exec-001 worktree
+
+	require.NoError(t, os.WriteFile(filepath.Join(reposRoot, "myrepo", "scratch.txt"), []byte("x\n"), 0o644))
+
+	store := task.NewFileStore(t.TempDir())
+	seedReviewableTask(t, store, "task-a")
+	tk, err := store.Get("task-a")
+	require.NoError(t, err)
+
+	proj := project.Project{Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}
+	run, err := resolveStageRun(context.Background(), reposRoot, proj, store, tk, task.StageReview, new(mockKnowledgeReader), nil, new(mockProjectStore), nil)
+	require.NoError(t, err)
+	assert.Contains(t, run.SystemPrompt, "uncommitted changes")
 }
 
 func TestHandleStartStageConversation_InvalidStage(t *testing.T) {

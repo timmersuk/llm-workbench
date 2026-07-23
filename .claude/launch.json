@@ -8,6 +8,13 @@
       "cwd": "frontend",
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "backend-dev",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:AGENT_REPOS_ROOT = (Resolve-Path '..').Path; go run ./cmd/server"],
+      "cwd": ".",
+      "port": 8080
     }
   ]
 }

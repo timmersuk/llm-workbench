@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -47,6 +48,67 @@ func Clone(ctx context.Context, url, dest string) error {
 		return fmt.Errorf("cloning %s into %s: %w", url, dest, err)
 	}
 	return nil
+}
+
+// BehindOriginStatus is the result of BehindOrigin — a small struct rather
+// than (bool, error), so "the fetch failed / staleness is unknown" is
+// representable as ordinary data every caller reads, not a Go error every
+// caller must specially unwrap (docs/milestones/milestone8a.md: a fetch
+// failure "degrades to 'staleness unknown,' not an error").
+type BehindOriginStatus struct {
+	// Known is false when the check couldn't be completed (offline, git not
+	// installed, dir isn't a git checkout, current branch has no configured
+	// upstream, ...) — Behind is meaningless when Known is false.
+	Known bool `json:"known"`
+	// Behind is how many commits dir's current branch is behind its own
+	// tracked upstream (@{upstream}); 0 if up to date or ahead. Only
+	// meaningful when Known is true.
+	Behind int `json:"behind"`
+}
+
+// BehindOrigin runs `git fetch` in dir, then reports how many commits dir's
+// current branch is behind its own tracked upstream. Never returns a Go
+// error: any failure along the way (offline, git not installed, dir isn't a
+// git checkout, current branch has no configured upstream) collapses to
+// BehindOriginStatus{} (Known: false) — this is an advisory-only signal
+// (docs/milestones/milestone8a.md) that must never propagate as an error a
+// caller has to handle.
+func BehindOrigin(ctx context.Context, dir string) BehindOriginStatus {
+	if _, err := RunGit(ctx, dir, "fetch", "--quiet"); err != nil {
+		return BehindOriginStatus{}
+	}
+	out, err := RunGit(ctx, dir, "rev-list", "--count", "HEAD..@{upstream}")
+	if err != nil {
+		return BehindOriginStatus{}
+	}
+	behind, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return BehindOriginStatus{}
+	}
+	return BehindOriginStatus{Known: true, Behind: behind}
+}
+
+// DirtyStatus is the result of DirtyWorkingTree — the same "unknown as
+// data, not an error" shape as BehindOriginStatus.
+type DirtyStatus struct {
+	Known bool `json:"known"`
+	// Dirty is true when `git status --porcelain` reported any change —
+	// including untracked files (plain --porcelain, not
+	// --untracked-files=no; docs/milestones/milestone8a.md's resolved open
+	// question). Only meaningful when Known is true.
+	Dirty bool `json:"dirty"`
+}
+
+// DirtyWorkingTree reports whether dir's working tree has any uncommitted
+// change, tracked or untracked. No network call, but can still fail (dir
+// isn't a git checkout, git not installed) — like BehindOrigin, any failure
+// collapses to DirtyStatus{} (Known: false) rather than a Go error.
+func DirtyWorkingTree(ctx context.Context, dir string) DirtyStatus {
+	out, err := RunGit(ctx, dir, "status", "--porcelain")
+	if err != nil {
+		return DirtyStatus{}
+	}
+	return DirtyStatus{Known: true, Dirty: strings.TrimSpace(out) != ""}
 }
 
 // EnsureGitExclude idempotently adds any of patterns not already present to
