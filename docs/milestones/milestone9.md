@@ -1,8 +1,8 @@
 # Milestone 9 — Knowledge-Base Promotion
 
-**Status:** Scoped via a `/grill-with-docs` session on 2026-07-22. PRs 1-2
-shipped 2026-07-23 — see "What shipped (PR 1)"/"What shipped (PR 2)"
-below. PRs 3-4 not started.
+**Status:** Scoped via a `/grill-with-docs` session on 2026-07-22. PRs 1-3
+shipped 2026-07-23 — see "What shipped (PR 1)"/"(PR 2)"/"(PR 3)" below.
+PR 4 not started.
 
 ## Why now
 
@@ -253,9 +253,10 @@ Delivered as sequential PRs, matching prior milestones' cadence:
   `ClaudeRunner`/`CodexRunner` always-on-tool-alongside-a-stop-condition-tool
   question below, so all three runners can `List`/`Get` from any stage. See
   "What shipped (PR 2)" below.
-* **PR 3 — `KnowledgeDraftForm` frontend.** Mirrors `ReviewDraftForm`'s
-  pattern; wires `propose_knowledge` into the Review-stage UI a human
-  actually sees and acts on.
+* **PR 3 — `KnowledgeDraftForm` frontend. ✅ Shipped (2026-07-23).** Mirrors
+  `ReviewDraftForm`'s pattern; wires `propose_knowledge` into the
+  Review-stage UI a human actually sees and acts on. See "What shipped
+  (PR 3)" below.
 * **PR 4 — Content migration.** Port the pathology catalog into a real
   `data/knowledge/` concept doc; live-verify an executor finding and citing
   it via the new query tool, end to end.
@@ -394,6 +395,70 @@ a real `codex` CLI client with no fake indirection) and stays covered only
 by code review + the type system, a pre-existing gap this PR didn't
 introduce. `go build ./...`, `go vet ./...`, and `go test ./...` all pass
 across the whole module.
+
+## What shipped (PR 3, 2026-07-23)
+
+New `frontend/src/KnowledgeDraftForm.tsx`, mirroring `ReviewDraftForm`'s
+shape (a handful of fields plus a body textarea) but adapted to OKF's open
+frontmatter bag: `concept_id`/`type` as their own inputs, `title`/
+`description`/`tags` (comma-separated) mapped to/from `frontmatter` as the
+three most common fields, and every other frontmatter key (`resource`,
+`timestamp`, producer-defined fields) preserved byte-for-byte rather than
+requiring a raw-JSON textarea for the common case.
+
+**`StageConversationPanel<D, S>` gained a second, independent Draft-tool
+track.** Before this PR it assumed exactly one Draft tool per stage — a
+single `pendingDraft`, one `renderDraft`, one `onFinalize` — which the
+backend had already outgrown as of PR 1/2 (Review offers both
+`propose_review` and `propose_knowledge` in the same conversation). A new
+optional `secondaryDraft` config (`toolName`, `emptyDraft`, `renderDraft`,
+`onAccept`, `onReject`) adds a second, fully independent
+pending-draft/finalizing/error state, routed by matching
+`event.tool_call.name` against `secondaryDraft.toolName` — both in the live
+SSE stream handler and in the mount-effect's history-rehydration scan
+(walked once, tracking the most recent tool call of each kind
+independently, since they can interleave throughout the conversation).
+Requirements/Planning pass no `secondaryDraft` and are completely
+unaffected — confirmed by the full existing test suite passing unchanged.
+Unlike the main draft's Finalize/Request-changes/Discard trio, the
+secondary track is a plain two-way Accept/Reject (matching
+`propose_knowledge`'s own two-way decision) with no "request changes"
+affordance — the human can just reply normally in chat to ask for a
+redraft, the same as before Drafts existed at all.
+
+`ReviewPanel.tsx` wires `secondaryDraft` to `KnowledgeDraftForm` and two new
+`finalizeKnowledge(..., 'accepted' | 'rejected')` calls
+(`frontend/src/api.ts`, hitting `handleFinalizeKnowledge` from PR 1). Both
+tracks render simultaneously when both are pending — a review verdict and a
+knowledge proposal are decided independently, confirmed by a dedicated
+test.
+
+**Known limitation, accepted deliberately rather than built around:** a
+page reload re-derives the pending secondary draft from "the most recent
+`propose_knowledge` tool call in conversation history," the same way the
+main draft already does — but unlike the main draft (whose Finalize
+advances the task's stage, so the whole panel stops rendering once truly
+done), accepting/rejecting a knowledge draft leaves no mark on the
+conversation history itself. A reload after an already-decided proposal
+re-shows it as pending. Not a correctness bug: `KnowledgeStore.Put` is a
+whole-file replace (re-accepting just re-writes the same content) and
+reject was always a no-op — but it is a UX rough edge. Worth a persisted
+"decided" marker if it proves annoying in practice; not built here,
+matching this milestone's general bias toward not inventing structure
+ahead of a demonstrated need.
+
+Proven via `KnowledgeDraftForm.test.tsx` (10 cases: rendering, per-field
+edits, frontmatter-key preservation) and new `ReviewPanel.test.tsx`
+coverage (the secondary draft surfacing independently of the review
+verdict, Accept calling `finalizeKnowledge`, and both tracks pending and
+decided independently at once) — 176 frontend tests pass in total, plus a
+clean `tsc -b`, `oxlint`, and `vite build`. Live-verified in the browser
+that the app and task/project navigation still render with no console
+errors after the change; the live `propose_knowledge` round trip itself
+was not exercised against a real model in this pass (no task was at
+`stage: review` in the seeded dev data) — covered instead by the
+React-Testing-Library suite above, which renders the real component tree
+and dispatches real DOM events rather than mocking the UI layer.
 
 ## Open questions for whoever executes this milestone
 

@@ -97,4 +97,85 @@ describe('ReviewPanel', () => {
     await waitFor(() => expect(api.finalizeReview).toHaveBeenCalledWith(projectId, taskId, { decision: 'approved', notes: 'lgtm' }))
     expect(onFinalized).toHaveBeenCalledWith(resultTask, resultReview)
   })
+
+  it('a propose_knowledge call surfaces independently of the review verdict, and Accept calls finalizeKnowledge', async () => {
+    const user = userEvent.setup()
+    stubConversation()
+    vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
+    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: '' })
+    vi.mocked(api.finalizeKnowledge).mockResolvedValue({ concept_id: 'coding-standards/logging', decision: 'accepted' })
+
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.startStageConversation).mockImplementation((_p, _t, _s, _m, _e, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<ReviewPanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Start Review' }))
+    act(() =>
+      deliver({
+        tool_call: {
+          name: 'propose_knowledge',
+          arguments: JSON.stringify({ concept_id: 'coding-standards/logging', type: 'Coding Standard', body: 'Use structured logging.' }),
+        },
+      }),
+    )
+
+    expect(await screen.findByText('Proposed knowledge concept')).toBeInTheDocument()
+    expect(screen.getByLabelText('Concept ID')).toHaveValue('coding-standards/logging')
+    // Finalize (the review verdict's own action) must not be present/confused
+    // with the knowledge draft's Accept/Reject — no propose_review call has
+    // happened yet, so there's nothing to finalize.
+    expect(screen.queryByRole('button', { name: 'Finalize' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }))
+
+    await waitFor(() =>
+      expect(api.finalizeKnowledge).toHaveBeenCalledWith(
+        projectId,
+        taskId,
+        { concept_id: 'coding-standards/logging', type: 'Coding Standard', frontmatter: {}, body: 'Use structured logging.' },
+        'accepted',
+      ),
+    )
+    // Accepted — the form clears back out.
+    await waitFor(() => expect(screen.queryByText('Proposed knowledge concept')).not.toBeInTheDocument())
+  })
+
+  it('a review verdict and a knowledge proposal can be pending at the same time, decided independently', async () => {
+    const user = userEvent.setup()
+    stubConversation()
+    vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
+    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: '' })
+    vi.mocked(api.finalizeKnowledge).mockResolvedValue({ concept_id: 'x', decision: 'rejected' })
+
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.startStageConversation).mockImplementation((_p, _t, _s, _m, _e, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<ReviewPanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Start Review' }))
+    act(() => deliver({ tool_call: { name: 'propose_review', arguments: JSON.stringify({ decision: 'needs_changes', notes: 'fix x' }) } }))
+    act(() =>
+      deliver({ tool_call: { name: 'propose_knowledge', arguments: JSON.stringify({ concept_id: 'x', type: 'Reference', body: 'y' }) } }),
+    )
+
+    // Both proposals are visible at once.
+    expect(await screen.findByRole('button', { name: 'Finalize' })).toBeInTheDocument()
+    expect(screen.getByText('Proposed knowledge concept')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Reject' }))
+    await waitFor(() =>
+      expect(api.finalizeKnowledge).toHaveBeenCalledWith(projectId, taskId, { concept_id: 'x', type: 'Reference', frontmatter: {}, body: 'y' }, 'rejected'),
+    )
+
+    // Rejecting the knowledge draft must not touch the still-pending review verdict.
+    expect(api.finalizeReview).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Finalize' })).toBeInTheDocument()
+  })
 })
