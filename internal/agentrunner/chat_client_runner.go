@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/knowledgetool"
 	"github.com/timmersuk/llm-workbench/internal/toolloop"
 )
 
@@ -33,19 +34,25 @@ const chatClientMaxResponseTokens = 8192
 // RunInput.History produces — see api.conversationHistoryToChatMessages) and
 // honoring the "no hidden state" invariant.
 type ChatClientRunner struct {
-	client chat.ChatClient
-	engine *toolloop.Engine
+	client         chat.ChatClient
+	engine         *toolloop.Engine
+	knowledgeStore knowledgetool.Store
 
 	mu       sync.Mutex
 	sessions map[string][]chat.Message // per-SessionKey history: user/assistant turns, no system message
 }
 
 // NewChatClientRunner returns an AgentRunner backed by client.
-func NewChatClientRunner(client chat.ChatClient) *ChatClientRunner {
+// knowledgeStore, if non-nil, offers the always-available knowledge query
+// tools (docs/milestones/milestone9.md) on every turn regardless of stage
+// or workspace — a nil knowledgeStore (e.g. in tests that don't care about
+// this) just means those two tools are never advertised.
+func NewChatClientRunner(client chat.ChatClient, knowledgeStore knowledgetool.Store) *ChatClientRunner {
 	return &ChatClientRunner{
-		client:   client,
-		engine:   toolloop.New(client),
-		sessions: make(map[string][]chat.Message),
+		client:         client,
+		engine:         toolloop.New(client),
+		knowledgeStore: knowledgeStore,
+		sessions:       make(map[string][]chat.Message),
 	}
 }
 
@@ -82,7 +89,7 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	cfg := toolloop.Config{
 		Model:     in.Model,
 		Workspace: in.Workspace,
-		Tools:     loopToolsFor(in.Workspace, in.EnableBashTool),
+		Tools:     r.loopTools(in.Workspace, in.EnableBashTool),
 		MaxTurns:  claudeRunnerMaxTurns,
 		MaxTokens: chatClientMaxResponseTokens,
 	}
@@ -136,24 +143,29 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	return RunOutput{Content: content, ToolCall: res.StopCall}, nil
 }
 
-// loopToolsFor returns the loop toolset for a usable workspace, else nil (a
-// plain completion with no tools). When enableBash is set — the Review stage's
-// automated-checks phase (Milestone 6) — it returns the read-only set plus the
-// confined bash tool; otherwise the strictly read-only set Requirements/
-// Planning and free chat use. A run with no valid workspace degrades to
-// text-only regardless.
-func loopToolsFor(workspace string, enableBash bool) []toolloop.Tool {
+// loopTools returns the loop toolset for one turn: the always-available
+// knowledge query tools (docs/milestones/milestone9.md — independent of
+// workspace, since data/knowledge/ is a workspace-wide bundle, not part of
+// any project's checked-out repository) plus, only when workspace actually
+// resolves to a usable directory, the read-only Read/Grep/Glob set (and the
+// confined bash tool too when enableBash is set — the Review stage's
+// automated-checks phase, Milestone 6). A run with no valid workspace still
+// offers the knowledge tools; it just degrades the file/bash tools to none,
+// same as before this method existed.
+func (r *ChatClientRunner) loopTools(workspace string, enableBash bool) []toolloop.Tool {
+	tools := toolloop.KnowledgeTools(r.knowledgeStore)
+
 	if workspace == "" {
-		return nil
+		return tools
 	}
 	info, err := os.Stat(workspace)
 	if err != nil || !info.IsDir() {
-		return nil
+		return tools
 	}
 	if enableBash {
-		return toolloop.ReviewTools()
+		return append(tools, toolloop.ReviewTools()...)
 	}
-	return toolloop.ReadOnlyTools()
+	return append(tools, toolloop.ReadOnlyTools()...)
 }
 
 // Execute implements AgentRunner. It drives internal/toolloop's engine with

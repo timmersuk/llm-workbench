@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/knowledge"
 )
 
 // fakeChatClient is a minimal chat.ChatClient stub for exercising
@@ -73,7 +74,7 @@ func (f *fakeChatClient) ListModels(context.Context) ([]string, error) {
 }
 
 func TestChatClientRunner_Run_RequiresSessionKey(t *testing.T) {
-	runner := NewChatClientRunner(&fakeChatClient{})
+	runner := NewChatClientRunner(&fakeChatClient{}, nil)
 	_, err := runner.Run(context.Background(), RunInput{UserMessage: "hi"}, func(chat.Delta) error { return nil })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SessionKey")
@@ -81,7 +82,7 @@ func TestChatClientRunner_Run_RequiresSessionKey(t *testing.T) {
 
 func TestChatClientRunner_Run_BuildsMessagesAndStreams(t *testing.T) {
 	client := &fakeChatClient{streamContent: "hi back"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	var gotDeltas []chat.Delta
 	out, err := runner.Run(context.Background(), RunInput{
@@ -114,7 +115,7 @@ func TestChatClientRunner_Run_BuildsMessagesAndStreams(t *testing.T) {
 func TestChatClientRunner_Run_EnableBashOffersReviewToolset(t *testing.T) {
 	dir := t.TempDir()
 	client := &fakeChatClient{streamContent: "reviewing"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	_, err := runner.Run(context.Background(), RunInput{
 		SessionKey:     "task-a:review",
@@ -142,7 +143,7 @@ func TestChatClientRunner_Run_EnableBashOffersReviewToolset(t *testing.T) {
 func TestChatClientRunner_Run_DefaultsToReadOnlyToolset(t *testing.T) {
 	dir := t.TempDir()
 	client := &fakeChatClient{streamContent: "planning"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	_, err := runner.Run(context.Background(), RunInput{
 		SessionKey:   "task-a:planning",
@@ -163,12 +164,90 @@ func TestChatClientRunner_Run_DefaultsToReadOnlyToolset(t *testing.T) {
 	assert.NotContains(t, names, "bash")
 }
 
+// TestChatClientRunner_Run_KnowledgeToolsAvailableWithoutWorkspace covers
+// docs/milestones/milestone9.md's "available at every task stage": a
+// project with no configured/resolvable repository still offers the
+// knowledge query tools, even though the file-based Read/Grep/Glob toolset
+// degrades to none.
+func TestChatClientRunner_Run_KnowledgeToolsAvailableWithoutWorkspace(t *testing.T) {
+	client := &fakeChatClient{streamContent: "answer"}
+	store := &fakeKnowledgeStore{summaries: []knowledge.ConceptSummary{{ConceptID: "a", Type: "Reference"}}}
+	runner := NewChatClientRunner(client, store)
+
+	_, err := runner.Run(context.Background(), RunInput{
+		SessionKey:  "task-a:requirements",
+		Workspace:   "",
+		UserMessage: "start",
+	}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.gotRequests, 1)
+	var names []string
+	for _, tl := range client.gotRequests[0].Tools {
+		names = append(names, tl.Function.Name)
+	}
+	assert.Contains(t, names, "list_knowledge_concepts")
+	assert.Contains(t, names, "get_knowledge_concept")
+	assert.NotContains(t, names, "read_file", "no usable workspace still means no file tools")
+}
+
+// TestChatClientRunner_Run_NilKnowledgeStoreOmitsKnowledgeTools locks in the
+// opposite: a runner constructed without a KnowledgeStore never advertises
+// tools it can't actually serve.
+func TestChatClientRunner_Run_NilKnowledgeStoreOmitsKnowledgeTools(t *testing.T) {
+	client := &fakeChatClient{streamContent: "answer"}
+	runner := NewChatClientRunner(client, nil)
+
+	_, err := runner.Run(context.Background(), RunInput{SessionKey: "task-a:requirements", UserMessage: "start"}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.gotRequests, 1)
+	for _, tl := range client.gotRequests[0].Tools {
+		assert.NotEqual(t, "list_knowledge_concepts", tl.Function.Name)
+		assert.NotEqual(t, "get_knowledge_concept", tl.Function.Name)
+	}
+}
+
+// TestChatClientRunner_Run_ExecutesKnowledgeToolCallForReal drives a full
+// tool-call round trip: the model calls list_knowledge_concepts, the loop
+// executes it for real against the injected store and feeds the result
+// back, and the model's next turn produces the final answer — the same
+// executed-not-stopped shape as read_file/grep_search/glob.
+func TestChatClientRunner_Run_ExecutesKnowledgeToolCallForReal(t *testing.T) {
+	store := &fakeKnowledgeStore{summaries: []knowledge.ConceptSummary{{ConceptID: "coding-standards/logging", Type: "Coding Standard"}}}
+	client := &fakeChatClient{streamTurns: []func(func(chat.Delta) error) error{
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{ToolCall: &chat.ToolCall{
+				ID: "c1", Type: "function",
+				Function: chat.ToolCallFunction{Name: "list_knowledge_concepts", Arguments: `{}`},
+			}})
+		},
+		func(onDelta func(chat.Delta) error) error {
+			return onDelta(chat.Delta{Content: "there is one concept: coding-standards/logging"})
+		},
+	}}
+	runner := NewChatClientRunner(client, store)
+
+	var toolResults []string
+	out, err := runner.Run(context.Background(), RunInput{
+		SessionKey:  "task-a:requirements",
+		UserMessage: "what do we know?",
+		OnToolResult: func(_ string, result string, _ bool) {
+			toolResults = append(toolResults, result)
+		},
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "there is one concept: coding-standards/logging", out.Content)
+	require.Len(t, toolResults, 1)
+	assert.Contains(t, toolResults[0], "coding-standards/logging")
+}
+
 func TestChatClientRunner_Run_ForwardsToolAndSurfacesToolCall(t *testing.T) {
 	toolCall := &chat.ToolCall{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{
 		Name: "propose_context", Arguments: `{"objective":"ship login"}`,
 	}}
 	client := &fakeChatClient{streamContent: "here's my proposal", streamToolCall: toolCall}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	tool := chat.Tool{Type: "function", Function: chat.ToolSchema{Name: "propose_context"}}
 	out, err := runner.Run(context.Background(), RunInput{
@@ -209,7 +288,7 @@ func TestChatClientRunner_Run_SurfacesIntermediateToolActivity(t *testing.T) {
 			return onDelta(chat.Delta{Content: "the file says hello"})
 		},
 	}}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	type activity struct {
 		phase, name, args, result string
@@ -258,7 +337,7 @@ func TestChatClientRunner_Run_NilToolActivityCallbacksAreSafe(t *testing.T) {
 			return onDelta(chat.Delta{Content: "done"})
 		},
 	}}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	out, err := runner.Run(context.Background(), RunInput{
 		SessionKey:  "task-a:review",
@@ -271,7 +350,7 @@ func TestChatClientRunner_Run_NilToolActivityCallbacksAreSafe(t *testing.T) {
 
 func TestChatClientRunner_Run_SeedsHistoryIntoRequest(t *testing.T) {
 	client := &fakeChatClient{streamContent: "hi back"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	history := []chat.Message{
 		{Role: "user", Content: "earlier turn"},
@@ -295,7 +374,7 @@ func TestChatClientRunner_Run_SeedsHistoryIntoRequest(t *testing.T) {
 
 func TestChatClientRunner_Run_DoesNotSeedWhenHistoryEmpty(t *testing.T) {
 	client := &fakeChatClient{streamContent: "hi back"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	_, err := runner.Run(context.Background(), RunInput{
 		SessionKey:  "sess-1",
@@ -311,7 +390,7 @@ func TestChatClientRunner_Run_DoesNotSeedWhenHistoryEmpty(t *testing.T) {
 // carry the first turn's user message and assistant answer.
 func TestChatClientRunner_Run_PersistsTurnsAcrossRuns(t *testing.T) {
 	client := &fakeChatClient{streamContent: "answer"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	for _, msg := range []string{"first", "second"} {
 		_, err := runner.Run(context.Background(), RunInput{SessionKey: "sess-1", UserMessage: msg}, func(chat.Delta) error { return nil })
@@ -329,7 +408,7 @@ func TestChatClientRunner_Run_PersistsTurnsAcrossRuns(t *testing.T) {
 // A closed session forgets its history: the next run starts fresh.
 func TestChatClientRunner_CloseSession_ClearsHeldHistory(t *testing.T) {
 	client := &fakeChatClient{streamContent: "answer"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	_, err := runner.Run(context.Background(), RunInput{SessionKey: "sess-1", UserMessage: "first"}, func(chat.Delta) error { return nil })
 	require.NoError(t, err)
@@ -346,13 +425,13 @@ func TestChatClientRunner_CloseSession_ClearsHeldHistory(t *testing.T) {
 
 func TestChatClientRunner_Run_PropagatesUnderlyingError(t *testing.T) {
 	wantErr := errors.New("upstream down")
-	runner := NewChatClientRunner(&fakeChatClient{streamErr: wantErr})
+	runner := NewChatClientRunner(&fakeChatClient{streamErr: wantErr}, nil)
 	_, err := runner.Run(context.Background(), RunInput{SessionKey: "sess-1", UserMessage: "hi"}, func(chat.Delta) error { return nil })
 	assert.ErrorIs(t, err, wantErr)
 }
 
 func TestChatClientRunner_Execute_RequiresWorkspace(t *testing.T) {
-	runner := NewChatClientRunner(&fakeChatClient{})
+	runner := NewChatClientRunner(&fakeChatClient{}, nil)
 	_, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workspace")
@@ -361,7 +440,7 @@ func TestChatClientRunner_Execute_RequiresWorkspace(t *testing.T) {
 func TestChatClientRunner_Execute_KicksOffWithWriteToolsAndReturnsContent(t *testing.T) {
 	dir := t.TempDir()
 	client := &fakeChatClient{streamContent: "all done"}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	out, err := runner.Execute(context.Background(), ExecuteInput{
 		SessionKey:   "task-a:execute",
@@ -405,7 +484,7 @@ func TestChatClientRunner_Execute_StreamsToolCallAndResultEvents(t *testing.T) {
 			return onDelta(chat.Delta{Content: "wrote the file"})
 		},
 	}}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	var events []ExecuteEvent
 	out, err := runner.Execute(context.Background(), ExecuteInput{
@@ -448,7 +527,7 @@ func TestChatClientRunner_Execute_FailsLoudlyOnExhaustion(t *testing.T) {
 		turns[i] = turn
 	}
 	client := &fakeChatClient{streamTurns: turns}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	out, err := runner.Execute(context.Background(), ExecuteInput{
 		SessionKey: "task-a:execute",
@@ -463,7 +542,7 @@ func TestChatClientRunner_Execute_FailsLoudlyOnExhaustion(t *testing.T) {
 func TestChatClientRunner_Execute_PropagatesUnderlyingError(t *testing.T) {
 	dir := t.TempDir()
 	wantErr := errors.New("upstream down")
-	runner := NewChatClientRunner(&fakeChatClient{streamErr: wantErr})
+	runner := NewChatClientRunner(&fakeChatClient{streamErr: wantErr}, nil)
 	_, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute", Workspace: dir}, nil)
 	assert.ErrorIs(t, err, wantErr)
 }
@@ -478,7 +557,7 @@ func TestChatClientRunner_Execute_ReportsTokensUsed(t *testing.T) {
 			return onDelta(chat.Delta{Usage: &chat.Usage{TotalTokens: 42}})
 		},
 	}}
-	runner := NewChatClientRunner(client)
+	runner := NewChatClientRunner(client, nil)
 
 	out, err := runner.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute", Workspace: dir}, nil)
 	require.NoError(t, err)
@@ -487,12 +566,12 @@ func TestChatClientRunner_Execute_ReportsTokensUsed(t *testing.T) {
 
 func TestChatClientRunner_CheckHealth_DelegatesToWrappedClient(t *testing.T) {
 	wantErr := errors.New("down")
-	runner := NewChatClientRunner(&fakeChatClient{checkHealthErr: wantErr})
+	runner := NewChatClientRunner(&fakeChatClient{checkHealthErr: wantErr}, nil)
 	assert.ErrorIs(t, runner.CheckHealth(context.Background()), wantErr)
 }
 
 func TestChatClientRunner_ListModels_DelegatesToWrappedClient(t *testing.T) {
-	runner := NewChatClientRunner(&fakeChatClient{listModelsResult: []string{"a", "b"}})
+	runner := NewChatClientRunner(&fakeChatClient{listModelsResult: []string{"a", "b"}}, nil)
 	models, err := runner.ListModels(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a", "b"}, models)

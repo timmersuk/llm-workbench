@@ -17,6 +17,7 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/drafttool"
 	"github.com/timmersuk/llm-workbench/internal/gitutil"
+	"github.com/timmersuk/llm-workbench/internal/knowledgetool"
 )
 
 // codexDraftServerName is the MCP server name CodexRunner registers
@@ -53,9 +54,10 @@ type CodexRunner struct {
 	mu       sync.Mutex
 	inFlight map[string]bool
 
-	timeout      time.Duration
-	reposRoot    string
-	draftMCPPath string
+	timeout       time.Duration
+	reposRoot     string
+	draftMCPPath  string
+	knowledgeRoot string
 
 	registerOnce sync.Once
 	registerErr  error
@@ -66,13 +68,19 @@ type CodexRunner struct {
 // (same role as NewClaudeRunner's). draftMCPPath is the absolute path to
 // the compiled cmd/draftmcp binary; CodexRunner registers it as an MCP
 // server the first time Run or Execute is actually called (see
-// ensureRegistered), not at construction time.
-func NewCodexRunner(timeout time.Duration, reposRoot string, draftMCPPath string) *CodexRunner {
+// ensureRegistered), not at construction time. knowledgeRoot, if non-empty,
+// is passed to that same draftmcp process as its --knowledge-root flag
+// (docs/milestones/milestone9.md), so codex threads get the same real
+// list_knowledge_concepts/get_knowledge_concept tools ClaudeRunner and
+// ChatClientRunner do — an empty knowledgeRoot just omits the flag, the
+// same as running draftmcp directly with no --knowledge-root.
+func NewCodexRunner(timeout time.Duration, reposRoot string, draftMCPPath string, knowledgeRoot string) *CodexRunner {
 	return &CodexRunner{
-		inFlight:     make(map[string]bool),
-		timeout:      timeout,
-		reposRoot:    reposRoot,
-		draftMCPPath: draftMCPPath,
+		inFlight:      make(map[string]bool),
+		timeout:       timeout,
+		reposRoot:     reposRoot,
+		draftMCPPath:  draftMCPPath,
+		knowledgeRoot: knowledgeRoot,
 	}
 }
 
@@ -306,15 +314,33 @@ func (r *CodexRunner) registerDraftServer(ctx context.Context) error {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
+	serverConfig := map[string]any{"command": r.draftMCPPath}
+	if r.knowledgeRoot != "" {
+		serverConfig["args"] = []string{"--knowledge-root", r.knowledgeRoot}
+	}
 	edits := []types.ConfigEntry{
 		{
 			KeyPath: "mcp_servers." + codexDraftServerName,
-			Value:   map[string]any{"command": r.draftMCPPath},
+			Value:   serverConfig,
 		},
 	}
+	// Every tool this same draftmcp process might serve — both the Draft
+	// proposal tools and (when knowledgeRoot is configured) the knowledge
+	// query tools — gets the same persisted "always allow" approval, so a
+	// codex thread never blocks on an interactive approval prompt for
+	// either kind, the first time it calls any of them.
+	approvedNames := make([]string, 0, len(drafttool.All())+len(knowledgetool.All()))
 	for _, def := range drafttool.All() {
+		approvedNames = append(approvedNames, def.Name)
+	}
+	if r.knowledgeRoot != "" {
+		for _, def := range knowledgetool.All() {
+			approvedNames = append(approvedNames, def.Name)
+		}
+	}
+	for _, name := range approvedNames {
 		edits = append(edits, types.ConfigEntry{
-			KeyPath: fmt.Sprintf("mcp_servers.%s.tools.%s.approval_mode", codexDraftServerName, def.Name),
+			KeyPath: fmt.Sprintf("mcp_servers.%s.tools.%s.approval_mode", codexDraftServerName, name),
 			Value:   "approve",
 		})
 	}

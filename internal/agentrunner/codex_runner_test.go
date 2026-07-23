@@ -13,7 +13,7 @@ import (
 )
 
 func TestCodexRunner_TryLockRejectsConcurrentSameKey(t *testing.T) {
-	r := NewCodexRunner(time.Minute, "", "")
+	r := NewCodexRunner(time.Minute, "", "", "")
 
 	assert.True(t, r.tryLock("task-a:planning"))
 	assert.False(t, r.tryLock("task-a:planning"), "a second lock for the same key must be rejected")
@@ -28,37 +28,37 @@ func TestCodexRunner_CheckHealth(t *testing.T) {
 	defer func() { lookPath = origLookPath }()
 
 	t.Run("missing reposRoot", func(t *testing.T) {
-		r := NewCodexRunner(time.Minute, "", "/bin/draftmcp")
+		r := NewCodexRunner(time.Minute, "", "/bin/draftmcp", "")
 		assert.Error(t, r.CheckHealth(t.Context()))
 	})
 
 	t.Run("missing draftMCPPath", func(t *testing.T) {
-		r := NewCodexRunner(time.Minute, "/repos", "")
+		r := NewCodexRunner(time.Minute, "/repos", "", "")
 		assert.Error(t, r.CheckHealth(t.Context()))
 	})
 
 	t.Run("codex not on PATH", func(t *testing.T) {
 		lookPath = func(string) (string, error) { return "", assert.AnError }
-		r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp")
+		r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp", "")
 		assert.Error(t, r.CheckHealth(t.Context()))
 	})
 
 	t.Run("healthy", func(t *testing.T) {
 		lookPath = func(string) (string, error) { return "/usr/bin/codex", nil }
-		r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp")
+		r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp", "")
 		assert.NoError(t, r.CheckHealth(t.Context()))
 	})
 }
 
 func TestCodexRunner_ListModels_ReturnsNil(t *testing.T) {
-	r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp")
+	r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp", "")
 	models, err := r.ListModels(t.Context())
 	assert.NoError(t, err)
 	assert.Nil(t, models)
 }
 
 func TestCodexRunner_CloseSession_NoopSafeForUnknownKey(t *testing.T) {
-	r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp")
+	r := NewCodexRunner(time.Minute, "/repos", "/bin/draftmcp", "")
 	r.CloseSession("never-existed")
 }
 
