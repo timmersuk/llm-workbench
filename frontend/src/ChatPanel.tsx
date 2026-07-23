@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { closeChatSession, isAbortError, listAgentExecutors, listModels, streamChatCompletion } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { ChatHistoryEntry, ChatStreamEvent } from './types'
+import { useLiveTurnStatus } from './useLiveTurnStatus'
 
 interface DisplayMessage {
   role: string
@@ -36,6 +37,12 @@ export function ChatPanel() {
   // never needs to trigger a re-render itself (setSending's finally
   // already does that).
   const abortControllerRef = useRef<AbortController | null>(null)
+  // streamedChars/finalTokens feed the live token-estimate indicator
+  // (docs/adr/0018) — see StageConversationPanel's identical fields for the
+  // full rationale.
+  const [streamedChars, setStreamedChars] = useState(0)
+  const [finalTokens, setFinalTokens] = useState<number | undefined>(undefined)
+  const liveTurnStatus = useLiveTurnStatus(sending, streamedChars, finalTokens)
 
   useEffect(() => {
     listModels()
@@ -92,11 +99,16 @@ export function ChatPanel() {
       updateLastMessage((msg) => ({ ...msg, error: event.error! }))
       return
     }
+    if (event.usage) {
+      setFinalTokens(event.usage.total_tokens)
+    }
     if (event.reasoning_content) {
       updateLastMessage((msg) => ({ ...msg, reasoningContent: msg.reasoningContent + event.reasoning_content }))
+      setStreamedChars((n) => n + event.reasoning_content!.length)
     }
     if (event.content) {
       updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
+      setStreamedChars((n) => n + event.content!.length)
     }
   }
 
@@ -121,6 +133,8 @@ export function ChatPanel() {
       { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    setStreamedChars(0)
+    setFinalTokens(undefined)
     const controller = new AbortController()
     abortControllerRef.current = controller
 
@@ -181,6 +195,8 @@ export function ChatPanel() {
       { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    setStreamedChars(0)
+    setFinalTokens(undefined)
     const controller = new AbortController()
     abortControllerRef.current = controller
 
@@ -373,6 +389,18 @@ export function ChatPanel() {
           </button>
         )}
       </div>
+      {sending && (
+        <p className="turn-status" aria-live="polite">
+          <span className="turn-status-spinner" aria-hidden="true" />
+          {liveTurnStatus.elapsedSeconds}s
+          {liveTurnStatus.tokens > 0 && (
+            <>
+              {' '}&middot; {liveTurnStatus.isEstimate ? '~' : ''}
+              {liveTurnStatus.tokens} tokens
+            </>
+          )}
+        </p>
+      )}
     </div>
   )
 }

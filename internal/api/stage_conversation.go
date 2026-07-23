@@ -277,12 +277,13 @@ func beginStageStream(w http.ResponseWriter) (func(chatStreamEvent), bool) {
 // stageAssistantMessage assembles the assistant turn to persist once a stream
 // has ended: its accumulated content, the stream error stamped onto .Error
 // (already surfaced to the human as an SSE event, recorded here so the durable
-// transcript keeps it too), and any Draft tool call the model proposed
-// (CONTEXT.md), flattened into the persisted ConversationToolCall shape. All
-// three streaming handlers build this identically; they differ only in how
-// they then pair or replace it in the record.
-func stageAssistantMessage(content string, proposed *chat.ToolCall, streamErr error) task.ConversationMessage {
-	msg := task.ConversationMessage{Role: "assistant", Content: content}
+// transcript keeps it too), any Draft tool call the model proposed
+// (CONTEXT.md), flattened into the persisted ConversationToolCall shape, and
+// the turn's Tool Activity (docs/adr/0018), already capped by runStageTurn.
+// All three streaming handlers build this identically; they differ only in
+// how they then pair or replace it in the record.
+func stageAssistantMessage(content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, streamErr error) task.ConversationMessage {
+	msg := task.ConversationMessage{Role: "assistant", Content: content, ToolActivity: activity}
 	if streamErr != nil {
 		msg.Error = streamErr.Error()
 	}
@@ -336,6 +337,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 
 		var assistantContent string
 		var proposed *chat.ToolCall
+		var activity []task.ConversationToolActivity
 		var streamErr error
 
 		// resolveStageRun resolves the workspace and (for Review) appends the
@@ -349,7 +351,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		} else if history, convErr := target.store.GetConversation(taskId, stage); convErr != nil {
 			streamErr = fmt.Errorf("loading conversation history: %w", convErr)
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     taskId + ":" + stage,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -367,7 +369,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
 
 		if _, err := target.store.AppendConversationMessages(taskId, stage,
 			task.ConversationMessage{Role: "user", Content: req.Content},
@@ -431,13 +433,14 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 
 		var assistantContent string
 		var proposed *chat.ToolCall
+		var activity []task.ConversationToolActivity
 		var streamErr error
 
 		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.task, stage)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     taskId + ":" + stage,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -451,7 +454,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
 
 		if _, err := target.store.AppendConversationMessages(taskId, stage, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting stage conversation kickoff message")
@@ -593,13 +596,14 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 
 		var assistantContent string
 		var proposed *chat.ToolCall
+		var activity []task.ConversationToolActivity
 		var streamErr error
 
 		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.task, stage)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     sessionKey,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -614,7 +618,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
 
 		now := time.Now().UTC()
 		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}
@@ -630,26 +634,40 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 
 // runStageTurn runs one agent turn and streams its deltas via writeEvent
 // (the chatStreamEvent shape both stage-conversation endpoints share),
-// returning the assistant's accumulated content and any proposed Draft tool
-// call. Shared by handlePostStageMessage and handleStartStageConversation —
-// they differ in what UserMessage/History they supply and what gets
-// persisted afterward, not in how a turn is actually run and streamed.
-func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, err error) {
+// returning the assistant's accumulated content, any proposed Draft tool
+// call, and the turn's Tool Activity for the caller to persist
+// (docs/adr/0018). Shared by handlePostStageMessage and
+// handleStartStageConversation — they differ in what UserMessage/History
+// they supply and what gets persisted afterward, not in how a turn is
+// actually run and streamed.
+func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, err error) {
 	// Surface the agent's intermediate tool activity (the executed
 	// read_file/grep_search/glob/bash calls and their results) live, so a
-	// client can render "ran go test ./... -> ok" as it happens. These are
-	// the loop's EXECUTED tools — kept distinct from the single final Draft
-	// (validated against in.Tools below), which is never routed here. General
-	// across all three stages: Requirements/Planning only ever make read-only
-	// calls, Review adds bash.
+	// client can render "ran go test ./... -> ok" as it happens, AND
+	// accumulate the same calls into activity for the caller to persist
+	// (capped via task.TruncateForPersistence, independent of whatever the
+	// live SSE event above carries). These are the loop's EXECUTED tools —
+	// kept distinct from the single final Draft (validated against in.Tools
+	// below), which is never routed here. General across all three stages:
+	// Requirements/Planning only ever make read-only calls, Review adds bash.
 	in.OnToolCall = func(name, argsJSON string) {
 		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "call", Name: name, Arguments: argsJSON}})
+		activity = append(activity, task.ConversationToolActivity{Name: name, Arguments: task.TruncateForPersistence(argsJSON)})
 	}
 	in.OnToolResult = func(name, result string, isError bool) {
 		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "result", Name: name, Result: result, IsError: isError}})
+		// Fill in the most recent call still missing its result — calls and
+		// results arrive strictly paired and in order (both the toolloop
+		// engine and the claude/codex CLI integrations execute/report one
+		// call's result before the next call happens), so the last entry is
+		// always the one this result belongs to.
+		if n := len(activity); n > 0 {
+			activity[n-1].Result = task.TruncateForPersistence(result)
+			activity[n-1].IsError = isError
+		}
 	}
 	out, runErr := runner.Run(ctx, in, func(d chat.Delta) error {
-		writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent})
+		writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent, Usage: usageEvent(d.Usage)})
 		return nil
 	})
 	toolCall := out.ToolCall
@@ -672,7 +690,7 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 			Arguments: toolCall.Function.Arguments,
 		}})
 	}
-	return out.Content, toolCall, runErr
+	return out.Content, toolCall, activity, runErr
 }
 
 // offersToolNamed reports whether tools contains one named name.

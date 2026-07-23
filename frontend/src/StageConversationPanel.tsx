@@ -11,13 +11,20 @@ import {
   startStageConversation,
 } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
-import type { ChatStreamEvent, ConversationMessage } from './types'
+import type { ChatStreamEvent, ConversationMessage, ConversationToolActivity } from './types'
+import { useLiveTurnStatus } from './useLiveTurnStatus'
 
 interface DisplayMessage {
   role: string
   content: string
   reasoningContent: string
   toolCallName: string | null
+  // toolActivity is the turn's intermediate tool calls/results
+  // (CONTEXT.md's "Tool Activity"), paired call-with-its-result the same
+  // shape whether loaded from persisted history or built live from
+  // streamed tool_activity events (docs/adr/0018) — only the wrapping
+  // rendering differs between "live" and "at rest" (see the render below).
+  toolActivity: ConversationToolActivity[]
   error: string | null
   thinkingCollapsed: boolean
 }
@@ -52,6 +59,7 @@ function toDisplayMessage(m: ConversationMessage): DisplayMessage {
     content: m.content,
     reasoningContent: '',
     toolCallName: m.tool_call?.name ?? null,
+    toolActivity: m.tool_activity ?? [],
     error: m.error ?? null,
     thinkingCollapsed: true,
   }
@@ -184,6 +192,14 @@ export function StageConversationPanel<D, S = never>({
   // never needs to trigger a re-render itself (setSending's finally
   // already does that).
   const abortControllerRef = useRef<AbortController | null>(null)
+  // streamedChars/finalTokens feed the live token-estimate indicator
+  // (docs/adr/0018): streamedChars accumulates as content/reasoning_content
+  // deltas arrive, finalTokens is set once (if ever) a stream's real usage
+  // total arrives — both reset to their empty state at the start of every
+  // new turn (sendMessage/startConversation/truncateAndResend).
+  const [streamedChars, setStreamedChars] = useState(0)
+  const [finalTokens, setFinalTokens] = useState<number | undefined>(undefined)
+  const liveTurnStatus = useLiveTurnStatus(sending, streamedChars, finalTokens)
 
   useEffect(() => {
     let cancelled = false
@@ -374,11 +390,36 @@ export function StageConversationPanel<D, S = never>({
       }
       return
     }
+    if (event.tool_activity) {
+      const ta = event.tool_activity
+      if (ta.phase === 'call') {
+        updateLastMessage((msg) => ({ ...msg, toolActivity: [...msg.toolActivity, { name: ta.name, arguments: ta.arguments }] }))
+      } else {
+        // Fills in the most recent call still missing its result — calls
+        // and results stream strictly paired and in order (runStageTurn,
+        // internal/api/stage_conversation.go), so the last entry is always
+        // the one this result belongs to.
+        updateLastMessage((msg) => {
+          if (msg.toolActivity.length === 0) {
+            return msg
+          }
+          const updated = [...msg.toolActivity]
+          updated[updated.length - 1] = { ...updated[updated.length - 1], result: ta.result, is_error: ta.is_error }
+          return { ...msg, toolActivity: updated }
+        })
+      }
+      return
+    }
+    if (event.usage) {
+      setFinalTokens(event.usage.total_tokens)
+    }
     if (event.reasoning_content) {
       updateLastMessage((msg) => ({ ...msg, reasoningContent: msg.reasoningContent + event.reasoning_content }))
+      setStreamedChars((n) => n + event.reasoning_content!.length)
     }
     if (event.content) {
       updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
+      setStreamedChars((n) => n + event.content!.length)
     }
   }
 
@@ -389,10 +430,12 @@ export function StageConversationPanel<D, S = never>({
 
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text, reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
+      { role: 'user', content: text, reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: true },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    setStreamedChars(0)
+    setFinalTokens(undefined)
     const controller = new AbortController()
     abortControllerRef.current = controller
 
@@ -426,9 +469,11 @@ export function StageConversationPanel<D, S = never>({
   async function startConversation(model: string, executorKey: string) {
     setMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
     ])
     setSending(true)
+    setStreamedChars(0)
+    setFinalTokens(undefined)
     const controller = new AbortController()
     abortControllerRef.current = controller
 
@@ -483,11 +528,13 @@ export function StageConversationPanel<D, S = never>({
     }
     setMessages((prev) => [
       ...prev.slice(0, index),
-      { role: 'user', content, reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, error: null, thinkingCollapsed: false },
+      { role: 'user', content, reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: true },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
     ])
     setPendingDraft(null)
     setSending(true)
+    setStreamedChars(0)
+    setFinalTokens(undefined)
     const controller = new AbortController()
     abortControllerRef.current = controller
 
@@ -683,6 +730,44 @@ export function StageConversationPanel<D, S = never>({
                 <div className="thinking-content">{message.reasoningContent}</div>
               </details>
             )}
+            {message.toolActivity.length > 0 && (
+              sending && index === messages.length - 1 ? (
+                // Live: each call/result appears as its own chip the
+                // instant it happens, so new elements visibly accumulate
+                // during the gap rather than one line silently sitting
+                // still (docs/adr/0018; mirrors ExecutePanel's pattern).
+                <>
+                  {message.toolActivity.map((activity, i) => (
+                    <details key={i} className="thinking-panel">
+                      <summary>
+                        <span className="tool-call-chip">{activity.name}</span>
+                        {activity.result === undefined && <span className="tool-activity-pending"> running…</span>}
+                      </summary>
+                      <div className={activity.is_error ? 'thinking-content error' : 'thinking-content'}>
+                        {activity.result ?? activity.arguments}
+                      </div>
+                    </details>
+                  ))}
+                </>
+              ) : (
+                // At rest (turn closed, or reopened via Revise): the same
+                // list collapses into one summary chip (CONTEXT.md's "Tool
+                // Activity").
+                <details className="thinking-panel">
+                  <summary>
+                    Used {message.toolActivity.length} tool{message.toolActivity.length === 1 ? '' : 's'}
+                  </summary>
+                  {message.toolActivity.map((activity, i) => (
+                    <div key={i} className="thinking-content">
+                      <span className="tool-call-chip">{activity.name}</span>
+                      {activity.result !== undefined && (
+                        <div className={activity.is_error ? 'error' : undefined}>{activity.result}</div>
+                      )}
+                    </div>
+                  ))}
+                </details>
+              )
+            )}
             <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
             {message.toolCallName && <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>}
             {message.error && <p className="error">{message.error}</p>}
@@ -738,7 +823,20 @@ export function StageConversationPanel<D, S = never>({
           </button>
         )}
       </div>
-      <p className="chat-input-hint">Enter to send &middot; Alt+Enter for a new line</p>
+      {sending ? (
+        <p className="turn-status" aria-live="polite">
+          <span className="turn-status-spinner" aria-hidden="true" />
+          {liveTurnStatus.elapsedSeconds}s
+          {liveTurnStatus.tokens > 0 && (
+            <>
+              {' '}&middot; {liveTurnStatus.isEstimate ? '~' : ''}
+              {liveTurnStatus.tokens} tokens
+            </>
+          )}
+        </p>
+      ) : (
+        <p className="chat-input-hint">Enter to send &middot; Alt+Enter for a new line</p>
+      )}
       </>
       )}
 

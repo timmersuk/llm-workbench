@@ -1,11 +1,28 @@
 package task
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTruncateForPersistence_PassesThroughShortStrings(t *testing.T) {
+	assert.Equal(t, "short result", TruncateForPersistence("short result"))
+}
+
+// TestTruncateForPersistence_CapsAtSmallerThanModelFacingLimit locks in
+// docs/adr/0018's decision: the persisted cap (2KB) is deliberately smaller
+// than internal/toolloop/tool.go's 16KB model-facing maxToolResultBytes,
+// since this is for a human glancing at "what did it do," not a model's
+// context window.
+func TestTruncateForPersistence_CapsAtSmallerThanModelFacingLimit(t *testing.T) {
+	oversized := strings.Repeat("x", 3*1024)
+	got := TruncateForPersistence(oversized)
+	assert.Less(t, len(got), 3*1024)
+	assert.Contains(t, got, "[truncated:")
+}
 
 func TestFileStore_GetConversation_EmptyWhenNoFileYet(t *testing.T) {
 	root := t.TempDir()

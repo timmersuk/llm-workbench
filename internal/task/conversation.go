@@ -29,6 +29,43 @@ type ConversationToolCall struct {
 	Arguments string `yaml:"arguments" json:"arguments"` // raw JSON string of the proposed Draft's fields
 }
 
+// ConversationToolActivity records one intermediate tool call and its
+// result an agent made while producing a Conversation turn (CONTEXT.md's
+// "Tool Activity") — distinct from ConversationToolCall, which is the
+// single proposal-ending Draft call a turn may end with, never itself
+// activity. Arguments/Result are truncated at maxPersistedToolActivityBytes
+// (docs/adr/0018) — smaller than the live/model-facing cap
+// (internal/toolloop/tool.go's maxToolResultBytes), since this is for a
+// human glancing at "what did it do" in a reopened conversation, not for
+// feeding a model's context window.
+type ConversationToolActivity struct {
+	Name      string `yaml:"name" json:"name"`
+	Arguments string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+	Result    string `yaml:"result,omitempty" json:"result,omitempty"`
+	IsError   bool   `yaml:"is_error,omitempty" json:"is_error,omitempty"`
+}
+
+// maxPersistedToolActivityBytes caps each persisted
+// ConversationToolActivity.Arguments/Result string. Deliberately smaller
+// than the 16KB a tool result is capped at before a model ever sees it
+// (internal/toolloop/tool.go's maxToolResultBytes, sized for a small local
+// model's context window) — 16KB times many calls times many turns is
+// exactly the unbounded conversation-{stage}.yaml rewrite cost this ADR
+// avoids; 2KB is plenty for a human recognizing what a past turn did.
+const maxPersistedToolActivityBytes = 2 * 1024
+
+// TruncateForPersistence caps s at maxPersistedToolActivityBytes, using the
+// same "[truncated: ...]" marker convention internal/toolloop/tool.go's
+// truncateResult uses for its own (larger, model-facing) cap. Exported so
+// internal/api/stage_conversation.go can apply it when building a turn's
+// ConversationToolActivity list.
+func TruncateForPersistence(s string) string {
+	if len(s) > maxPersistedToolActivityBytes {
+		return s[:maxPersistedToolActivityBytes] + "\n[truncated: exceeded the persisted size limit]"
+	}
+	return s
+}
+
 // ConversationMessage is one message in a stage's persisted, append-only
 // history.
 type ConversationMessage struct {
@@ -36,6 +73,12 @@ type ConversationMessage struct {
 	Content    string                `yaml:"content" json:"content"`
 	ToolCall   *ConversationToolCall `yaml:"tool_call,omitempty" json:"tool_call,omitempty"`
 	ToolCallID string                `yaml:"tool_call_id,omitempty" json:"tool_call_id,omitempty"`
+	// ToolActivity is the ordered list of intermediate tool calls/results
+	// (CONTEXT.md's "Tool Activity") the agent made while producing this
+	// turn, bundled onto the assistant message that closes it out rather
+	// than as separate Conversation entries (docs/adr/0018's rejected
+	// alternatives). Never set on a "user" message.
+	ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty" json:"tool_activity,omitempty"`
 	// Error records why this turn failed, if it did — an assistant message
 	// with empty Content and no Error means the agent genuinely said
 	// nothing; empty Content with Error set means the turn errored out
