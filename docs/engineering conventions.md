@@ -359,6 +359,27 @@ doesn't have to be re-derived or re-litigated later.
   `App`), flat `src/` (no `components/` subfolder yet). Each "panel"
   component is self-contained: fetch + loading/error/empty states + render,
   no shared data-fetching hook abstraction yet.
+* **URL/history sync**: no routing library (e.g. react-router) — the
+  tab/page set is small enough not to justify one, per the "prefer open
+  standards / minimal dependencies" invariant. `frontend/src/url.ts` is a
+  pure `parsePath(pathname): Route` / `routeToPath(route): string` pair
+  (`Route = { tab: 'projects' | 'chat'; projectId?; taskId? }`), unit-tested
+  with no browser dependency. `App.tsx` is the sole owner of navigation
+  history: it holds `route` state, parses `location.pathname` on mount,
+  listens for `popstate`, and is the only place that calls
+  `history.pushState`/`replaceState`. Selection state that used to be
+  internal `useState<Project|null>`/`useState<Task|null>` in
+  `ProjectsPanel`/`ProjectDetailPanel` is instead a controlled
+  `selectedProjectId?`/`selectedTaskId?: string` prop driven by `App`; each
+  panel resolves the incoming id against its already-loaded list first (no
+  network call on a normal click), falling back to a `getProject`/
+  `getProjectTask` call for the deep-link/reload case, and exposes distinct
+  `onSelect*`/`onBackTo*`/`onInvalid*` callbacks up rather than one
+  overloaded callback — `App` uses `pushState` for every user-driven
+  navigation (`onSelect*`, `onBackTo*`) and `replaceState` only for the
+  silent-fallback correction (`onInvalid*`, and the initial-load correction
+  of a non-canonical path like `/` down to `/projects`), so a corrected URL
+  never creates a bogus back-button stop.
 * **Tooling**: linting is `oxlint` (not ESLint). `build` runs
   `tsc -b && vite build` (type-check, then bundle).
 * **Testing**: Vitest + `@testing-library/react`, jsdom environment

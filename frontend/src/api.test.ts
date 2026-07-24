@@ -6,6 +6,7 @@ import {
   finalizePlan,
   finalizeRequirements,
   getHealthStatus,
+  getProject,
   getProjectTask,
   getStageConversation,
   getTaskContext,
@@ -79,6 +80,24 @@ describe('getJSON-backed requests', () => {
     const fetchMock = stubFetch(jsonResponse({ id: 'a b' }))
     await getProjectTask('demo project', 'task one')
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project/tasks/task%20one')
+  })
+
+  it('getProject hits the right path and returns the parsed body', async () => {
+    const body = { id: 'demo' }
+    const fetchMock = stubFetch(jsonResponse(body))
+    await expect(getProject('demo')).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo')
+  })
+
+  it('getProject encodeURIComponent-escapes the id', async () => {
+    const fetchMock = stubFetch(jsonResponse({ id: 'a b' }))
+    await getProject('demo project')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project')
+  })
+
+  it('getProject throws the exact "<path> returned <status>" message on non-2xx', async () => {
+    stubFetch(jsonResponse({}, 404))
+    await expect(getProject('missing')).rejects.toThrow('/api/v1/projects/missing returned 404')
   })
 
   it('listProjectTasks hits the right path and returns the parsed body', async () => {
