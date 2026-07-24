@@ -157,6 +157,19 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
     }
   }
 
+  // A successful execution that still left its worktree dirty after a
+  // dedicated cleanup turn (internal/api/execution.go's
+  // buildWorkspaceCleanupPrompt) isn't auto-committed or auto-deleted —
+  // dirty state after success might be scratch the agent deliberately left
+  // out, unlike the failure path's presumed-interrupted work. Folded into
+  // the same advisory banner as the workspace notices above, since it's the
+  // same "only say something when there's something to say" posture.
+  if (latestExecution?.status === 'success' && latestExecution.output.workspace_dirty) {
+    workspaceNotices.push(
+      `Last execution (${latestExecution.execution_id}) succeeded but left uncommitted changes in its workspace — worth a look before merging.`,
+    )
+  }
+
   return (
     <div className="task-detail">
       <button type="button" className="back-link" onClick={onBack}>

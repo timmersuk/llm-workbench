@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TaskDetailPanel } from './TaskDetailPanel'
 import * as api from './api'
-import type { Task, TaskStage } from './types'
+import type { Execution, Task, TaskStage } from './types'
 
 vi.mock('./api')
 vi.mock('./GrillMePanel', () => ({
@@ -58,6 +58,26 @@ function makeTask(stage: TaskStage, overrides: Partial<Task> = {}): Task {
     assumptions: [],
     success_criteria: [],
     references: { knowledge: [], repo: [] },
+    ...overrides,
+  }
+}
+
+function makeExecution(overrides: Partial<Execution> = {}): Execution {
+  return {
+    execution_id: 'exec-002',
+    task_id: 'task-a',
+    executor: { type: 'claude-code', version: '' },
+    input: { plan_ref: 'plan.yaml', context_refs: [], review_feedback: '', continued_from_execution_id: '' },
+    output: {
+      artifacts: [],
+      git_branch: 'task-exec/task-a/exec-002',
+      commits: ['abc123'],
+      forked_from_branch: '',
+      workspace_dirty: false,
+    },
+    metrics: { duration_seconds: 1, tokens_used: 0, cost_estimate: 0 },
+    status: 'success',
+    created_at: '2026-01-01T00:00:00Z',
     ...overrides,
   }
 }
@@ -349,6 +369,54 @@ describe('TaskDetailPanel — workspace status banner', () => {
     const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
+    expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
+  })
+})
+
+describe('TaskDetailPanel — execution outcome notices', () => {
+  it('shows a plain-language notice when the last execution hit its turn limit', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.listExecutions).mockResolvedValue({
+      executions: [makeExecution({ status: 'failure', failure: { type: 'execution', message: 'Reached maximum number of turns (100)' } })],
+    })
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+
+    expect(await screen.findByText(/stopped after hitting its turn limit/)).toBeInTheDocument()
+  })
+
+  it('shows the raw failure message for a non-turn-limit failure', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.listExecutions).mockResolvedValue({
+      executions: [makeExecution({ status: 'failure', failure: { type: 'resource', message: 'context deadline exceeded' } })],
+    })
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+
+    expect(await screen.findByText(/context deadline exceeded/)).toBeInTheDocument()
+  })
+
+  it('folds a successful-but-dirty execution into the workspace advisory banner', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.listExecutions).mockResolvedValue({
+      executions: [makeExecution({ status: 'success', output: { ...makeExecution().output, workspace_dirty: true } })],
+    })
+
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+
+    expect(await screen.findByText(/succeeded but left uncommitted changes/)).toBeInTheDocument()
+    expect(container.querySelector('.workspace-status-banner')).toBeInTheDocument()
+    expect(container.querySelector('.execution-failure-banner')).not.toBeInTheDocument()
+  })
+
+  it('shows no notice at all for a clean successful execution', async () => {
+    stubNoContextOrPlan()
+    vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution({ status: 'success' })] })
+
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+
+    await screen.findByTestId('execute-panel')
+    expect(container.querySelector('.execution-failure-banner')).not.toBeInTheDocument()
     expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
   })
 })

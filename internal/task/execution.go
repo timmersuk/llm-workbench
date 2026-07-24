@@ -53,6 +53,15 @@ type ExecutionInput struct {
 	// execution is built from a fresh review lookup at execute-time
 	// (docs/adr/0012), not read back from this field.
 	ReviewFeedback string `yaml:"review_feedback" json:"review_feedback"`
+	// ContinuedFromExecutionID is the prior execution's id when a human
+	// explicitly chose to continue this attempt from a failed/partial
+	// execution's branch (resolveFailureContinuation), empty otherwise.
+	// Distinct from ReviewFeedback's needs_changes continuation, which is
+	// inferred from reviews/ rather than recorded as an explicit choice
+	// here — this field exists so that choice is itself an inspectable
+	// fact, not something re-derived from ForkedFromBranch's branch-naming
+	// convention (architectural invariants.md, "no hidden state").
+	ContinuedFromExecutionID string `yaml:"continued_from_execution_id" json:"continued_from_execution_id"`
 }
 
 // ExecutionOutput records what an Execution produced.
@@ -70,6 +79,18 @@ type ExecutionOutput struct {
 	// the diff (unlike the commit list) is deliberately always cumulative
 	// against BaseBranch/main.
 	ForkedFromBranch string `yaml:"forked_from_branch" json:"forked_from_branch"`
+	// WorkspaceDirty is true when a successful execution still left
+	// uncommitted changes in its worktree after being given a dedicated
+	// follow-up turn to commit or clean them up (handleStartExecution's
+	// workspace-cleanup step) — the harness deliberately doesn't silently
+	// commit or delete anything itself here (unlike the failure path's
+	// mechanical safety commit): dirty state after success might be
+	// scratch/junk the agent intentionally left out, so this is recorded
+	// for a human to check rather than guessed at (architectural
+	// invariants.md, "no hidden state"). Always false for a failed/partial
+	// execution — that path's dirty state is instead swept into a commit,
+	// never left dirty and merely flagged.
+	WorkspaceDirty bool `yaml:"workspace_dirty" json:"workspace_dirty"`
 }
 
 // ExecutionMetrics records measurements about an Execution's run.

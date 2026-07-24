@@ -268,6 +268,7 @@ export interface ExecutionInput {
   plan_ref: string
   context_refs: string[]
   review_feedback: string
+  continued_from_execution_id: string
 }
 
 export interface ExecutionOutput {
@@ -275,6 +276,7 @@ export interface ExecutionOutput {
   git_branch: string
   commits: string[]
   forked_from_branch: string
+  workspace_dirty: boolean
 }
 
 export interface ExecutionMetrics {
@@ -306,6 +308,13 @@ export interface Execution {
 // is: a task with no attempts yet has no executions/ directory at all.
 export interface ExecutionsListResult {
   executions: Execution[] | null
+}
+
+// ContinuableExecutionResult mirrors handleGetContinuableExecution's
+// response (internal/api/execution.go) — execution_id is empty when
+// there's nothing eligible to continue from right now (resolveFailureContinuation).
+export interface ContinuableExecutionResult {
+  execution_id: string
 }
 
 // ExecuteStreamEvent mirrors internal/api/execution.go's

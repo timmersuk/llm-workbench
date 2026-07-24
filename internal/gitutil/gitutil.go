@@ -111,6 +111,22 @@ func DirtyWorkingTree(ctx context.Context, dir string) DirtyStatus {
 	return DirtyStatus{Known: true, Dirty: strings.TrimSpace(out) != ""}
 }
 
+// CommitAll stages every change in dir (`git add -A`, tracked and untracked
+// alike) and commits it with message. Used as a mechanical "safety commit"
+// when an Execute run ends without success, so whatever the agent wrote to
+// disk but never committed itself isn't silently lost the moment a later
+// attempt forks a fresh worktree from this branch's tip — not something a
+// caller invokes as part of ordinary, successful commit flow.
+func CommitAll(ctx context.Context, dir, message string) error {
+	if _, err := RunGit(ctx, dir, "add", "-A"); err != nil {
+		return fmt.Errorf("staging changes in %s: %w", dir, err)
+	}
+	if _, err := RunGit(ctx, dir, "commit", "-m", message); err != nil {
+		return fmt.Errorf("committing changes in %s: %w", dir, err)
+	}
+	return nil
+}
+
 // EnsureGitExclude idempotently adds any of patterns not already present to
 // dir's local, uncommitted .git/info/exclude — the .gitignore equivalent
 // that never becomes part of the repository's own tracked content. Callers

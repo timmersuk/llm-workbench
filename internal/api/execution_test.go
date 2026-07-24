@@ -135,6 +135,7 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
 	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
 	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
@@ -195,6 +196,7 @@ func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
 	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
@@ -481,4 +483,400 @@ func TestHandleListExecutions_OK(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	require.Len(t, got["executions"], 1)
 	assert.Equal(t, "exec-001", got["executions"][0].ExecutionID)
+}
+
+// TestResolveFailureContinuation locks in resolveFailureContinuation's
+// eligibility rules: only the most recent execution is ever considered, it
+// must not have succeeded, it must actually have commits (nothing worth
+// continuing from otherwise), and a non-empty reviewForkFrom (a
+// needs_changes retry already auto-continuing, docs/adr/0012) always wins,
+// hiding this path entirely rather than competing with it.
+func TestResolveFailureContinuation(t *testing.T) {
+	t.Run("no executions yet", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+
+		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		require.NoError(t, err)
+		assert.Empty(t, executionID)
+		assert.Empty(t, forkFrom)
+		assert.Empty(t, msg)
+	})
+
+	t.Run("most recent execution succeeded", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+			{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{Commits: []string{"abc"}}},
+		}, nil)
+
+		executionID, _, _, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		require.NoError(t, err)
+		assert.Empty(t, executionID)
+	})
+
+	t.Run("most recent execution failed but has no commits", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+			{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure, Failure: &task.ExecutionFailure{Message: "context deadline exceeded"}},
+		}, nil)
+
+		executionID, _, _, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		require.NoError(t, err)
+		assert.Empty(t, executionID, "an instant failure before any work happened has nothing worth continuing from")
+	})
+
+	t.Run("most recent execution failed with commits is eligible", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+			{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{
+				GitBranch: "task-exec/TASK-0001/exec-001", Commits: []string{"abc"},
+			}, Failure: &task.ExecutionFailure{Message: "Reached maximum number of turns (100)"}},
+		}, nil)
+
+		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		require.NoError(t, err)
+		assert.Equal(t, "exec-001", executionID)
+		assert.Equal(t, "task-exec/TASK-0001/exec-001", forkFrom)
+		assert.Equal(t, "Reached maximum number of turns (100)", msg)
+	})
+
+	t.Run("a non-empty reviewForkFrom hides this path entirely", func(t *testing.T) {
+		tasks := new(mockTaskStore)
+		// Deliberately no ListExecutions expectation: reviewForkFrom being
+		// set must short-circuit before ever calling it.
+		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "TASK-0001", "task-exec/TASK-0001/exec-001")
+		require.NoError(t, err)
+		assert.Empty(t, executionID)
+		assert.Empty(t, forkFrom)
+		assert.Empty(t, msg)
+		tasks.AssertNotCalled(t, "ListExecutions", mock.Anything)
+	})
+}
+
+// TestHandleStartExecution_ContinueFromFailureForksFromPriorBranch is the
+// end-to-end proof that a human-chosen continuation behaves like ADR-0012's
+// needs_changes retry: the new worktree is forked from the prior failed
+// execution's real branch tip, the choice is recorded on
+// Input.ContinuedFromExecutionID, and the prompt carries the prior failure
+// message plus explicit resume guidance.
+func TestHandleStartExecution_ContinueFromFailureForksFromPriorBranch(t *testing.T) {
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+	repoDir := filepath.Join(reposRoot, "demo-repo")
+
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "git %v: %s", args, out)
+		return string(out)
+	}
+	baseBranch := strings.TrimSpace(run("rev-parse", "--abbrev-ref", "HEAD"))
+
+	priorBranch := "task-exec/TASK-0001/exec-001"
+	run("checkout", "-b", priorBranch)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "wip.txt"), []byte("prior attempt\n"), 0o644))
+	run("add", ".")
+	run("commit", "-q", "-m", "prior attempt")
+	run("checkout", baseBranch)
+
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{
+			GitBranch: priorBranch, Commits: []string{"deadbeef"},
+		}, Failure: &task.ExecutionFailure{Type: task.FailureTypeExecution, Message: "Reached maximum number of turns (100)"}},
+	}, nil)
+	tasks.On("NextExecutionID", "TASK-0001").Return("exec-002", nil)
+
+	var recorded task.Execution
+	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+		recorded = e
+		return true
+	})).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
+
+	runner := new(mockAgentRunner)
+	var gotIn agentrunner.ExecuteInput
+	runner.On("Execute", mock.Anything, mock.MatchedBy(func(in agentrunner.ExecuteInput) bool {
+		gotIn = in
+		return true
+	}), mock.Anything).Return(nil, agentrunner.ExecuteOutput{Content: "done"}, nil)
+
+	req := newExecutionRequest(t, executionStartRequest{ContinueFromExecutionID: "exec-001"})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	assert.Equal(t, "exec-001", recorded.Input.ContinuedFromExecutionID)
+	assert.Equal(t, priorBranch, recorded.Output.ForkedFromBranch)
+	assert.Contains(t, gotIn.SystemPrompt, "Continuing a prior failed attempt")
+	assert.Contains(t, gotIn.SystemPrompt, "Reached maximum number of turns (100)")
+
+	assert.FileExists(t, filepath.Join(reposRoot, ".worktrees", "demo-repo", "exec-002", "wip.txt"))
+}
+
+// TestHandleStartExecution_ContinueFromExecutionID_MismatchRejected proves
+// the human's choice is re-validated server-side rather than trusted
+// outright — if the requested execution id no longer matches what
+// resolveFailureContinuation currently considers eligible (state moved on
+// since the hint was fetched), the request is rejected rather than silently
+// falling back to a fresh run or continuing from the wrong branch.
+func TestHandleStartExecution_ContinueFromExecutionID_MismatchRejected(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil) // nothing eligible anymore
+
+	runner := new(mockAgentRunner)
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+
+	req := newExecutionRequest(t, executionStartRequest{ContinueFromExecutionID: "exec-001"})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	runner.AssertNotCalled(t, "Execute", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestHandleStartExecution_SafetyCommitsUncommittedWorkOnFailure proves the
+// data-loss fix: when Execute ends without success and leaves the worktree
+// dirty, the harness commits that outstanding work itself before
+// CollectExecutionOutput runs — otherwise it would be invisible to git
+// log/diff and silently left behind the moment a later attempt forks a
+// fresh worktree from this branch's tip.
+func TestHandleStartExecution_SafetyCommitsUncommittedWorkOnFailure(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+
+	var recorded task.Execution
+	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+		recorded = e
+		return true
+	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure}, nil)
+
+	runner := new(mockAgentRunner)
+	runner.On("Execute", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(agentrunner.ExecuteInput)
+			require.NoError(t, os.WriteFile(filepath.Join(in.Workspace, "unfinished.txt"), []byte("mid-edit\n"), 0o644))
+		}).
+		Return(nil, agentrunner.ExecuteOutput{}, errors.New("claude code execution failed: Reached maximum number of turns (100)"))
+
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, task.ExecutionStatusFailure, recorded.Status)
+	require.Len(t, recorded.Output.Commits, 1, "the safety commit must be recorded as this attempt's own contribution")
+	assert.Contains(t, recorded.Output.Artifacts, "unfinished.txt", "the uncommitted file must show up once safety-committed")
+}
+
+// TestHandleGetContinuableExecution_Eligible/NotEligible/HiddenByNeedsChanges
+// lock in that the GET endpoint is a thin wrapper over
+// resolveReviewContinuation+resolveFailureContinuation — the same rule
+// handleStartExecution enforces, not a separately-maintained one.
+func TestHandleGetContinuableExecution_Eligible(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		{ExecutionID: "exec-002", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{
+			GitBranch: "task-exec/TASK-0001/exec-002", Commits: []string{"abc"},
+		}},
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/executions/continuable", nil)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(nil), TaskStores: fixedTaskStoreFactory(tasks)}).handleGetContinuableExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got continuableExecutionResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "exec-002", got.ExecutionID)
+}
+
+func TestHandleGetContinuableExecution_NotEligible(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/executions/continuable", nil)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(nil), TaskStores: fixedTaskStoreFactory(tasks)}).handleGetContinuableExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got continuableExecutionResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Empty(t, got.ExecutionID)
+}
+
+func TestHandleGetContinuableExecution_HiddenByNeedsChanges(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+		{ExecutionID: "exec-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
+	}, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/executions/continuable", nil)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(nil), TaskStores: fixedTaskStoreFactory(tasks)}).handleGetContinuableExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got continuableExecutionResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Empty(t, got.ExecutionID, "a needs_changes retry already owns forkFrom, so this must stay empty")
+}
+
+// isCleanupPrompt distinguishes the workspace-cleanup follow-up turn's
+// system prompt (buildWorkspaceCleanupPrompt) from the main execution's
+// (buildExecutionPrompt) in these mock Execute expectations, since a single
+// success-with-dirty-workspace run issues both, in order.
+func isCleanupPrompt(in agentrunner.ExecuteInput) bool {
+	return strings.Contains(in.SystemPrompt, "uncommitted changes")
+}
+
+// TestHandleStartExecution_CleanupTurnResolvesDirtyWorkspace proves the
+// success-path counterpart to the failure-path safety commit: a successful
+// run that leaves scratch files uncommitted gets a dedicated follow-up turn
+// naming exactly what's dirty, and when that turn itself commits the
+// remainder, the execution records clean (WorkspaceDirty false) with the
+// cleanup's own commit picked up by CollectExecutionOutput.
+func TestHandleStartExecution_CleanupTurnResolvesDirtyWorkspace(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+
+	var recorded task.Execution
+	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+		recorded = e
+		return true
+	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
+
+	runner := new(mockAgentRunner)
+	runner.On("Execute", mock.Anything, mock.MatchedBy(func(in agentrunner.ExecuteInput) bool { return !isCleanupPrompt(in) }), mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(agentrunner.ExecuteInput)
+			require.NoError(t, os.WriteFile(filepath.Join(in.Workspace, "temp.txt"), []byte("scratch\n"), 0o644))
+		}).
+		Return(nil, agentrunner.ExecuteOutput{Content: "done", DurationSeconds: 1}, nil)
+	runner.On("Execute", mock.Anything, mock.MatchedBy(isCleanupPrompt), mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(agentrunner.ExecuteInput)
+			runGit := func(gitArgs ...string) {
+				cmd := exec.Command("git", gitArgs...)
+				cmd.Dir = in.Workspace
+				out, err := cmd.CombinedOutput()
+				require.NoErrorf(t, err, "git %v: %s", gitArgs, out)
+			}
+			runGit("add", "-A")
+			runGit("commit", "-q", "-m", "cleanup")
+		}).
+		Return(nil, agentrunner.ExecuteOutput{Content: "cleaned up", DurationSeconds: 0.5}, nil)
+
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	runner.AssertNumberOfCalls(t, "Execute", 2)
+	assert.False(t, recorded.Output.WorkspaceDirty)
+	assert.Len(t, recorded.Output.Commits, 1, "the cleanup turn's own commit must be picked up")
+	assert.Equal(t, 1.5, recorded.Metrics.DurationSeconds, "both turns' durations are folded into one recorded attempt")
+}
+
+// TestHandleStartExecution_CleanupTurnLeavesWorkspaceDirty proves the other
+// half: when the agent's cleanup turn doesn't actually resolve the dirty
+// state (ignored the instruction, disagreed, or ran out of turns), the
+// harness doesn't silently commit or delete anything itself — it just
+// records WorkspaceDirty so a human notices, and the execution still
+// reports success (the original implementation work did succeed).
+func TestHandleStartExecution_CleanupTurnLeavesWorkspaceDirty(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+
+	var recorded task.Execution
+	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+		recorded = e
+		return true
+	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
+
+	runner := new(mockAgentRunner)
+	runner.On("Execute", mock.Anything, mock.MatchedBy(func(in agentrunner.ExecuteInput) bool { return !isCleanupPrompt(in) }), mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(agentrunner.ExecuteInput)
+			require.NoError(t, os.WriteFile(filepath.Join(in.Workspace, "temp.txt"), []byte("scratch\n"), 0o644))
+		}).
+		Return(nil, agentrunner.ExecuteOutput{Content: "done"}, nil)
+	// The cleanup turn runs but does nothing to the workspace — simulates
+	// the agent leaving it dirty anyway.
+	runner.On("Execute", mock.Anything, mock.MatchedBy(isCleanupPrompt), mock.Anything).
+		Return(nil, agentrunner.ExecuteOutput{Content: "left it"}, nil)
+
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, task.ExecutionStatusSuccess, recorded.Status, "the original implementation work still succeeded")
+	assert.True(t, recorded.Output.WorkspaceDirty)
+	assert.Empty(t, recorded.Output.Commits, "nothing was committed on the agent's behalf")
+}
+
+// TestHandleStartExecution_CleanWorkspaceSkipsCleanupTurn proves the
+// cleanup turn is reactive, not standing overhead: a successful run that
+// already leaves a clean tree gets exactly one Execute call, not two.
+func TestHandleStartExecution_CleanWorkspaceSkipsCleanupTurn(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+	tasks.On("RecordExecution", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
+
+	runner := new(mockAgentRunner)
+	runner.On("Execute", mock.Anything, mock.Anything, mock.Anything).Return(nil, agentrunner.ExecuteOutput{Content: "done"}, nil)
+
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	runner.AssertNumberOfCalls(t, "Execute", 1)
 }
