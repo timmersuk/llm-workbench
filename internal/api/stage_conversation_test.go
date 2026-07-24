@@ -22,6 +22,19 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
+// TestKickoffUserMessageFor_ReviewDiffersFromInterviewStages locks in that
+// Review gets wording matching its own system prompt's "work through phases"
+// framing rather than the Requirements/Planning "ask your first question"
+// interview wording — the two were a single shared constant misapplied to
+// Review until this test was added (see reviewSystemPrompt above).
+func TestKickoffUserMessageFor_ReviewDiffersFromInterviewStages(t *testing.T) {
+	reviewMsg := kickoffUserMessageFor(task.StageReview)
+	assert.NotEqual(t, kickoffUserMessageFor(task.StageRequirements), reviewMsg)
+	assert.Equal(t, kickoffUserMessageFor(task.StageRequirements), kickoffUserMessageFor(task.StagePlanning))
+	assert.NotContains(t, reviewMsg, "interview")
+	assert.NotContains(t, reviewMsg, "ask your first question")
+}
+
 func TestHandleGetStageConversation_InvalidStage(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
@@ -321,8 +334,8 @@ func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 
 // TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant
 // locks in the core behavior: an empty conversation gets one agent turn
-// seeded with kickoffUserMessage (not the empty stageStartRequest content —
-// there is none), and only the resulting assistant message is persisted,
+// seeded with kickoffUserMessageFor(stage) (not the empty stageStartRequest
+// content — there is none), and only the resulting assistant message is persisted,
 // with no synthetic "user" turn alongside it.
 func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t *testing.T) {
 	tasks := new(mockTaskStore)
@@ -358,7 +371,7 @@ func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t 
 
 	require.Equal(t, http.StatusOK, w.Code)
 
-	assert.Equal(t, kickoffUserMessage, gotIn.UserMessage)
+	assert.Equal(t, kickoffUserMessageFor(task.StageRequirements), gotIn.UserMessage)
 	assert.Equal(t, proposeContextToolName, gotIn.Tools[0].Function.Name)
 	assert.Contains(t, gotIn.SystemPrompt, "ship login")
 

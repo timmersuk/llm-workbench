@@ -322,8 +322,8 @@ export async function postStageMessage(
 // startStageConversation begins a brand-new, empty stage Conversation on
 // the agent's own initiative — there is no human reply yet to post via
 // postStageMessage, so this runs one turn seeded server-side
-// (internal/api/stage_conversation.go's kickoffUserMessage, never sent or
-// shown here) and streams the resulting opening question the same way
+// (internal/api/stage_conversation.go's kickoffUserMessageFor, never sent or
+// shown here) and streams the resulting opening turn the same way
 // postStageMessage streams a reply. The server rejects this with a 409 once
 // the conversation already has messages (see streamSSE — a non-ok response
 // with no body throws before any events fire), so callers should only
