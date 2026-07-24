@@ -47,3 +47,8 @@ internal/web/dist/*
 !internal/web/dist/.gitkeep
 .playwright/*
 .playwright-cli/*
+
+# Stray nested clone/worktree debris created directly under the repo root
+# by a misconfigured AGENT_REPOS_ROOT during local dev (should point at a
+# sibling directory, e.g. D:\projects, not land inside the repo itself).
+/projects/
