@@ -87,12 +87,25 @@ If this review surfaces a durable, reusable learning — a coding standard worth
 `
 )
 
-// kickoffUserMessage drives a stage conversation's very first turn
+// kickoffUserMessageFor drives a stage conversation's very first turn
 // (handleStartStageConversation) — chat completion APIs need a user-role
 // message to produce a reply at all, but there is no real human reply yet
 // on a brand-new conversation. This is never shown to the human or
-// persisted; only the assistant's resulting first question is.
-const kickoffUserMessage = "Begin the interview now: use the task/project/knowledge context above (and the repository, if you have tools) to ask your first question."
+// persisted; only the assistant's resulting first turn is. Worded per stage
+// rather than as one shared constant: Requirements/Planning are genuinely
+// interviewing toward a new artifact ("ask your first question"), but
+// Review works through a prior execution's diff in phases (reviewSystemPrompt
+// above) — reusing the interview wording there told the agent to "ask its
+// first question" when its own system prompt says to run checks first,
+// a real mismatch an executor had to notice and route around at runtime.
+func kickoffUserMessageFor(stage string) string {
+	switch stage {
+	case task.StageReview:
+		return "Begin the review now: use the task/project/knowledge context above (and the repository, since you have tools) to work through the three phases and report your findings."
+	default:
+		return "Begin the interview now: use the task/project/knowledge context above (and the repository, if you have tools) to ask your first question."
+	}
+}
 
 // chatToolFor adapts a drafttool.Definition into the chat.Tool shape
 // RunInput.Tools expects.
@@ -384,7 +397,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 // handleStartStageConversation begins a stage's Conversation on the
 // agent's own initiative: a brand-new task lands the human on an empty
 // GrillMe/Planning Mode panel with nothing to reply to, so this runs one
-// agent turn seeded with kickoffUserMessage (never shown or persisted)
+// agent turn seeded with kickoffUserMessageFor(stage) (never shown or persisted)
 // instead of waiting for a human message that doesn't exist yet, and
 // persists only the resulting assistant turn — there is no human message to
 // pair it with. Rejects with 409 if the conversation already has messages,
@@ -444,7 +457,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 				SessionKey:     taskId + ":" + stage,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
-				UserMessage:    kickoffUserMessage,
+				UserMessage:    kickoffUserMessageFor(stage),
 				Model:          req.Model,
 				Tools:          tools,
 				EnableBashTool: run.EnableBash,

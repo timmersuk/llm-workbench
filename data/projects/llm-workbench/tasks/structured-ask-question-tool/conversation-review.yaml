@@ -1,0 +1,376 @@
+stage: review
+messages:
+    - role: assistant
+      content: |-
+        I notice the final instruction ("begin the interview now") doesn't match the actual task here — I'm reviewing a completed execution (exec-003) of the `ask_question` tool work, not conducting a fresh interview. I'll proceed with the review as the system prompt describes: automated checks, test-meaningfulness, then verification steps.
+
+        Let me start by getting oriented in the worktree.Good, single commit on the branch. Let me look at the full diff (the truncated parts) and then run the test suites.Now let's run the test suites — Go and frontend.That failure is a pre-existing build artifact issue (missing `frontend/dist` embed target), unrelated to this diff — let me confirm, then check `internal/api` and `internal/drafttool` more specifically since those are the changed packages.Confirmed: `frontend/dist` doesn't exist in this checkout, so `internal/web`/`cmd/server` failures are a pre-existing environment issue, not caused by this diff. `internal/api` (the changed Go package) passes fully. Note: `internal/drafttool` has no test files at all — the new `ask_question` schema itself isn't unit-tested in Go. Now the frontend suite.All 186 frontend tests pass, including the 10 new `ask_question` tests. Now let's check TypeScript compilation / lint and look for the remaining truncated part of the diff (StageConversationPanel type wiring, api.ts, etc.) to complete the standards+spec pass.Clean. Now let's look at `docs/engineering conventions.md` to check compliance, plus check for the task workflow (planning stage) mention in the constraints — the task said "this ships as this Task's own implementation plan" — let's see if there's a plan.yaml artifact expected, and check git status for other files.Now let's verify how `GrillMePanel.tsx` / `PlanningModePanel.tsx` actually consume `StageConversationPanel` (to confirm the feature is wired through both consumers, not just tested against a shared component in isolation).Good — both `GrillMePanel` and `PlanningModePanel` are thin wrappers over the shared `StageConversationPanel`, so the change is wired to both stages generically. That matches the task's scope (Requirements-stage as primary consumer, but Planning shares the same discipline text and got the same tool per `stageTool`).
+
+        Now let me check the recommendation-matching logic more carefully — the task's assumption says "recommended option is always one of the listed options," and the frontend degrades if it isn't. Let's look at the actual rendering code and the `title` attribute detail.Good, the precedent claim checks out. Now let me summarize findings before checking in with the human.
+
+        ## Phase 1: Automated checks
+
+        **Tests:**
+        - `go test ./...` — all packages pass except `cmd/server` / `internal/web`, which fail on `//go:embed all:dist` because `frontend/dist` doesn't exist in this checkout. That's a pre-existing environment artifact (no frontend build has been run), unrelated to this diff — confirmed by checking the directory doesn't exist and the failure is purely at package-load time, not from any code this diff touches.
+        - `internal/api` (the changed Go package) — all 70+ tests pass, including the updated `TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersists` (now asserts 2 tools registered: `propose_plan` + `ask_question`).
+        - Frontend: `npx vitest run` — **186/186 pass** across 19 files, including 10 new `ask_question` tests (8 in `GrillMePanel.test.tsx`, 2 in `PlanningModePanel.test.tsx`).
+        - `tsc -b` and `oxlint` — both clean, no errors.
+
+        **Standards + spec pass:**
+        - Matches `docs/engineering conventions.md`: schema follows the existing `json.RawMessage` pattern used by every other `drafttool` schema; no new dependency introduced (pure JSON Schema + React); CSS is flat kebab-case in `index.css`; `types.ts` deliberately *not* touched — `AskQuestionArgs` is a local, ephemeral tool-argument type, not a persisted Go struct, and the diff's own comment explains why that's consistent with the "types.ts mirrors persisted structs" convention rather than a violation of it.
+        - Both `GrillMePanel` and `PlanningModePanel` get the feature "for free" since they're thin wrappers over the shared `StageConversationPanel` — matches the task's scope (Requirements primary, Planning shares the same interview discipline).
+        - Constraint "recommendation is always one of the listed options" — the JSON Schema **cannot actually enforce this** (no cross-field reference keyword in standard JSON Schema), and the code visibly accounts for that: it's enforced only by the tool's description text plus a documented graceful-degradation path in the frontend (tested: "degrades silently... none highlighted"). This is a reasonable, honest handling of a real JSON Schema limitation — not a bug — but worth being aware of as a soft constraint, not a hard one.
+        - `Review` stage deliberately does **not** get `ask_question` (no interview discipline there to compose with) — correctly scoped per the diff's own comment.
+
+        One minor observation, not a blocker: when `recommended_option` doesn't match any listed option, the `recommendation_reason` paragraph still renders below the (now all-unhighlighted) options, floating without any option it visibly belongs to. Small UX rough edge in an already-degenerate case (malformed model output), not spec-violating.
+
+        ## Phase 2: Test-meaningfulness
+
+        I checked each new test for whether it actually exercises the claimed behavior rather than passing vacuously:
+
+        - The `queryByText('Proposed draft')` assertions initially looked suspicious to me (missing the "a" from the chip text "Proposed a draft (...)"), but I traced it — `'Proposed draft'` is a **different, real UI string**: the `<h4>` heading of the `pendingDraft` review panel (line 969), rendered only when a draft proposal is pending. So that assertion is legitimately checking "ask_question didn't get misparsed into setting `pendingDraft`" — it's meaningful, not a copy-paste artifact.
+        - Click → `postStageMessage` tests assert `toHaveBeenLastCalledWith(..., 'Yes', ...)` — genuinely exercises the plain-text round-trip claim, would fail if the click handler sent something else (an object, an id, etc.).
+        - The two rehydration tests (last-message-only vs. stale) are a real positive/negative pair — meaningfully distinguishes "resurface" from "don't."
+        - The "degrades silently" test only checks *absence* of the recommended class on either option, not that nothing else breaks — reasonably scoped.
+
+        I didn't find a test that can't fail. The suite looks meaningful.
+
+        ## Phase 3: Verification steps
+
+        **Agent-executable — schema validation**: I confirmed structurally (no ajv available in this environment, so I hand-verified the JSON Schema semantics):
+        - `options`: array, `minItems: 1` ✓.
+        - `recommended_option`: present in `required` ✓.
+        - No question-text field anywhere in the schema (`options`/`recommended_option`/`recommendation_reason` only) ✓.
+        - Caveat: "must reference a listed option" is **not** schema-enforced (JSON Schema can't express that), only convention + frontend fallback — flagged above, not a failure of the step's literal ask if we read "required" as satisfied and "must reference" as a documented soft constraint.
+
+        **Human-judgment step** — I can't drive a real Claude/local-LLM GrillMe interview and eyeball chip rendering myself in a way that substitutes for your own look. Could you run through it (e.g. start a Requirements-stage GrillMe session and get it to ask a question with options) and confirm: clickable chips render, the recommendation is visually highlighted, free text stays available and isn't auto-submitted, and both a click and a typed reply produce an indistinguishable plain chat message? Let me know what you see (or if you'd rather I try to trigger it another way, e.g. via curl against the stage-conversation API to inspect the SSE tool_call event shape, though that won't confirm the *rendering* itself).
+      tool_activity:
+        - name: Bash
+          arguments: '{"command":"git -C . rev-parse --show-toplevel \u0026\u0026 git -C . branch --show-current \u0026\u0026 git -C . log --oneline -5","description":"Confirm worktree location and branch"}'
+        - name: Bash
+          arguments: '{"command":"git -C . diff --stat main...HEAD | tail -30","description":"Show full diff stat vs main"}'
+          result: |4-
+              frontend/src/GrillMePanel.test.tsx      | 169 ++++++++++++++++++++++++++++++++
+              frontend/src/PlanningModePanel.test.tsx |  86 +++++++++++++++-
+              frontend/src/StageConversationPanel.tsx | 128 +++++++++++++++++++++++-
+              frontend/src/index.css                  |  52 ++++++++++
+              internal/api/stage_conversation.go      |  29 ++++--
+              internal/api/stage_conversation_test.go |   2 +-
+              internal/drafttool/drafttool.go         |  59 +++++++++--
+              7 files changed, 505 insertions(+), 20 deletions(-)
+        - name: Bash
+          arguments: '{"command":"git -C . diff main...HEAD -- internal/drafttool/drafttool.go","description":"Show diff for drafttool.go"}'
+          result: "diff --git a/internal/drafttool/drafttool.go b/internal/drafttool/drafttool.go\nindex 0fb19ca..3a8e003 100644\n--- a/internal/drafttool/drafttool.go\n+++ b/internal/drafttool/drafttool.go\n@@ -1,12 +1,17 @@\n // Package drafttool holds the Draft-proposing tool definitions\n-// (propose_context, propose_plan) shared between internal/api's stage\n-// conversations (which register them per-conversation against\n-// ClaudeRunner/ChatClientRunner) and cmd/draftmcp (which exposes them as a\n-// static MCP server for CodexRunner, since codex-agent-sdk-go has no\n-// in-process \"SDK MCP server\" equivalent — a real external MCP server is\n-// the only way to offer a custom tool to a codex thread). Defining the\n-// name/description/schema once here means both call sites see the same\n-// tool shape by construction, not by convention.\n+// (propose_context, propose_plan) plus the ask_question interview\n+// affordance, shared between internal/api's stage conversations (which\n+// register them per-conversation against ClaudeRunner/ChatClientRunner) and\n+// cmd/draftmcp (which exposes them as a static MCP server for CodexRunner,\n+// since codex-agent-sdk-go has no in-process \"SDK MCP server\" equivalent —\n+// a real external MCP server is the only way to offer a custom tool to a\n+// codex thread). Defining the name/description/schema once here means both\n+// call sites see the same tool shape by construction, not by convention.\n+// ask_question isn't itself a Draft proposal — it never produces something\n+// Finalize writes to disk — but it's defined with the same Definition shape\n+// and travels the same registration/approval plumbing (stageTool in\n+// internal/api/stage_conversation.go, drafttool.All() below), so it gets\n+// its own Definition var here rather than a separate package.\n package drafttool\n \n import \"encoding/json\"\n@@ -16,6 +21,7 @@ const (\n \tProposePlanName      = \"propose_plan\"\n \tProposeReviewName    = \"propose_review\"\n \tProposeKnowledgeName = \"propose_knowledge\"\n+\tAskQuestionName      = \"ask_question\"\n )\n \n // Defin\n[truncated: exceeded the persisted size limit]"
+        - name: Bash
+          arguments: '{"command":"git -C . diff main...HEAD -- internal/api/stage_conversation.go internal/api/stage_conversation_test.go","description":"Show diff for stage_conversation.go and test"}'
+          result: "diff --git a/internal/api/stage_conversation.go b/internal/api/stage_conversation.go\nindex 047a3e0..4336c03 100644\n--- a/internal/api/stage_conversation.go\n+++ b/internal/api/stage_conversation.go\n@@ -31,6 +31,7 @@ const (\n \tproposePlanToolName      = drafttool.ProposePlanName\n \tproposeReviewToolName    = drafttool.ProposeReviewName\n \tproposeKnowledgeToolName = drafttool.ProposeKnowledgeName\n+\taskQuestionToolName      = drafttool.AskQuestionName\n )\n \n // grillMeSystemPrompt and planningModeSystemPrompt encode the \"grilling\"\n@@ -38,14 +39,23 @@ const (\n // stages share: one question at a time, a recommended answer with every\n // question, questions resolved in dependency order, and no proposal until\n // the human has confirmed shared understanding. They differ only in what\n-// they're interviewing toward and which tool they end with.\n+// they're interviewing toward and which tool they end with. The\n+// recommended-answer rule is expressed as a call to ask_question\n+// (internal/drafttool) rather than prose written into the reply: the\n+// question text itself still belongs in the assistant's normal message\n+// content, but the selectable options/recommendation travel as the tool\n+// call's structured arguments, which the frontend renders as clickable\n+// choices (StageConversationPanel.tsx) instead of text the human has to\n+// read and retype. This composes with the one-question-per-turn discipline\n+// below rather than replacing it — only the transport of the recommended\n+// answer changed, not the pacing or judgment rules around it.\n const (\n \tgrillMeSystemPrompt = `You are GrillMe, interviewing the user to sharpen a task's requirements.\n \n Rules for this interview:\n - If you have tools available (Read/Grep/Glob), explore the project's repository first and answer your own questions from the code wherever you can. Only ask the human what the code cannot tell you.\n - Ask exactly one question per turn. Never batch multiple questions into one message.\n-- Every question comes with your recommended answer and a short\n[truncated: exceeded the persisted size limit]"
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003 \u0026\u0026 go build ./... 2\u003e\u00261 | head -50","description":"Build Go code"}'
+          result: 'internal\web\assets.go:7:12: pattern all:dist: no matching files found'
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend \u0026\u0026 ls package.json \u0026\u0026 cat package.json | grep -A3 ''\"scripts\"''","description":"Check frontend package scripts"}'
+          result: |-
+            package.json
+              "scripts": {
+                "dev": "vite",
+                "build": "tsc -b && vite build",
+                "lint": "oxlint",
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003 \u0026\u0026 go test ./... 2\u003e\u00261 | tail -60","description":"Run Go test suite"}'
+          result: |-
+            # github.com/timmersuk/llm-workbench/cmd/server
+            internal\web\assets.go:7:12: pattern all:dist: no matching files found
+            FAIL	github.com/timmersuk/llm-workbench/cmd/server [setup failed]
+            # github.com/timmersuk/llm-workbench/internal/web
+            internal\web\assets.go:7:12: pattern all:dist: no matching files found
+            FAIL	github.com/timmersuk/llm-workbench/internal/web [setup failed]
+            ok  	github.com/timmersuk/llm-workbench/cmd/draftmcp	(cached)
+            ok  	github.com/timmersuk/llm-workbench/cmd/modelprobe	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/agentrunner	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/api	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/chat	(cached)
+            ?   	github.com/timmersuk/llm-workbench/internal/drafttool	[no test files]
+            ok  	github.com/timmersuk/llm-workbench/internal/gitutil	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/knowledge	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/knowledgetool	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/project	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/task	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/toolloop	(cached)
+            ok  	github.com/timmersuk/llm-workbench/internal/utils	(cached)
+            FAIL
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003 \u0026\u0026 ls frontend/dist 2\u003e\u00261; echo \"---\"; go test ./internal/api/... -run AskQuestion -v 2\u003e\u00261 | tail -60; echo \"---\"; go test ./internal/api/... -v 2\u003e\u00261 | grep -E \"^(--- (FAIL|PASS)|FAIL|ok)\" | tail -80","description":"Check dist dir and run api tests"}'
+          result: |-
+            ls: cannot access 'frontend/dist': No such file or directory
+            ---
+            testing: warning: no tests to run
+            PASS
+            ok  	github.com/timmersuk/llm-workbench/internal/api	1.169s [no tests to run]
+            ---
+            --- PASS: TestHandleFinalizeReview_WrongStage (0.00s)
+            --- PASS: TestHandleFinalizeReview_InvalidBody (0.00s)
+            --- PASS: TestHandleFinalizeReview_ClosesAgentSessionsOnSuccess (0.00s)
+            --- PASS: TestHandleFinalizeReview_DoesNotCloseSessionsWhenFinalizeFails (0.00s)
+            --- PASS: TestHandleListReviews_OK (0.00s)
+            --- PASS: TestHandleReviewDiff_OK (0.56s)
+            --- PASS: TestHandleReviewDiff_NoExecutionIsNotFound (0.42s)
+            --- PASS: TestHandleReviseRequirements_OK (0.00s)
+            --- PASS: TestHandleReviseRequirements_WrongStage (0.00s)
+            --- PASS: TestHandleRevisePlan_OK (0.00s)
+            --- PASS: TestHandleRevisePlan_WrongStage (0.00s)
+            --- PASS: TestRouter_Healthcheck (0.00s)
+            --- PASS: TestRouter_Healthcheck_WhenLLMProbeFails (0.00s)
+            --- PASS: TestRouter_Healthcheck_ReportsPerSubsystemStatusForAgentRunners (0.00s)
+            --- PASS: TestRouter_Healthcheck_WhenOneAgentRunnerFailsAnotherStaysIndependentlyOK (0.00s)
+            --- PASS: TestRouter_Version (0.00s)
+            --- PASS: TestRouter_FrontendServesRealFile (0.07s)
+            --- PASS: TestRouter_FrontendFallsBackToIndexForUnknownPath (0.00s)
+            --- PASS: TestRouter_ProjectTasksEndToEnd (0.00s)
+            --- PASS: TestRouter_ProjectTasks_ProjectNotFoundBeforeTaskStoreTouched (0.00s)
+            --- PASS: TestRouter_CreateAndUpdateProjectEndToEnd (0.00s)
+            --- PASS: TestRouter_GrillMeAndPlanningModeRoutesRegistered (0.00s)
+            --- PASS: TestHandleGetStageConversation_InvalidStage (0.00s)
+            --- PASS: TestHandleGetStageConversation_OK (0.00s)
+            --- PASS: TestHandleGetStageConversation_StageMismatch (0.00s)
+            --- PASS: TestHandlePostStageMessage_SystemPromptOmitsAdvisoryNotesOnCleanCheckout (0.50s)
+            --- PASS: TestHandlePostStageMessage_SystemPromptIncludesDirtyNote (0.50s)
+            --- PASS: TestHandlePostStageMessage_SystemPromptIncludesBehindOriginNote (0.69s)
+            --- PASS: TestResolveStageRun_ReviewStageIncludesAdvisoryNoteFromSharedCheckout (0.67s)
+            --- PASS: TestHandleStartStageConversation_InvalidSt
+            [truncated: exceeded the persisted size limit]
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend \u0026\u0026 (ls node_modules \u003e/dev/null 2\u003e\u00261 \u0026\u0026 echo \"node_modules present\") || echo \"need install\"","description":"Check if frontend deps installed"}'
+          result: node_modules present
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend \u0026\u0026 npx vitest run 2\u003e\u00261 | tail -100","description":"Run frontend vitest suite","timeout":180000}'
+          result: |4-
+              RUN  v4.1.9 D:/projects/.worktrees/llm-workbench/exec-003/frontend
+
+
+              Test Files  19 passed (19)
+                   Tests  186 passed (186)
+                Start at  12:20:02
+                Duration  15.92s (transform 2.17s, setup 11.69s, import 11.61s, tests 25.93s, environment 43.09s)
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend \u0026\u0026 npx tsc -b 2\u003e\u00261 | tail -50","description":"Typecheck frontend"}'
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend \u0026\u0026 npx oxlint 2\u003e\u00261 | tail -50","description":"Lint frontend"}'
+          result: (Bash completed with no output)
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003 \u0026\u0026 git status --short; echo \"---files changed vs main---\"; git diff --name-only main...HEAD","description":"Check working tree status and full file list changed"}'
+          result: |-
+            ---files changed vs main---
+            frontend/src/GrillMePanel.test.tsx
+            frontend/src/PlanningModePanel.test.tsx
+            frontend/src/StageConversationPanel.tsx
+            frontend/src/index.css
+            internal/api/stage_conversation.go
+            internal/api/stage_conversation_test.go
+            internal/drafttool/drafttool.go
+        - name: Glob
+          arguments: '{"pattern":"docs/engineering*conventions*.md"}'
+          result: docs\engineering conventions.md
+        - name: Read
+          arguments: '{"file_path":"D:\\projects\\.worktrees\\llm-workbench\\exec-003\\docs\\engineering conventions.md"}'
+          result: |-
+            1	# Engineering Conventions
+            2	
+            3	Small, consequential implementation choices for the workbench's own codebase
+            4	(Go backend + Vite/React frontend). These are conventions for building the
+            5	tool, not the domain model it manages (see `architectural invariants.md` for
+            6	that). Add to this file whenever a new cross-cutting choice is made, so it
+            7	doesn't have to be re-derived or re-litigated later.
+            8	
+            9	## Logging
+            10	
+            11	* Backend logging uses `logrus` (`github.com/sirupsen/logrus`), configured
+            12	  globally in `cmd/server/main.go` via `LOG_LEVEL` and a JSON/text formatter
+            13	  switch.
+            14	* Always use structured logging: attach context via `WithField(key, value)`
+            15	  (one field) or `WithFields(logrus.Fields{...})` (multiple fields, plus
+            16	  `WithError(err)` for an error value), then call `Debug`/`Info`/`Warn`/
+            17	  `Error`/`Panic` with a short, fixed message string. Never use the
+            18	  `printf`-style variants (`Debugf`/`Infof`/`Warnf`/`Errorf`/`Printf`/
+            19	  `Panicf`) — interpolated values belong in fields, not the message, so
+            20	  they're queryable in the JSON log output. See `cmd/server/main.go`'s
+            21	  startup log, `internal/project/store.go`/`internal/task/store.go`'s
+            22	  `List()` skip-warnings, and `internal/api/stage_conversation.go`'s
+            23	  error/warn logs for the pattern to match.
+            24	* Exception: `logrus.Fatalf` is fine as-is. It's only used on unrecoverable
+            25	  startup failures (`utils.MustGetEnv*` in `internal/utils/env.go` and
+            26	  `cmd/server/main.go`'s frontend-mount/listen failures) where the process
+            27	  exits immediately after, so there's no downstream log aggregation benefit
+            28	  to structuring it.
+            29	
+            30	## Configuration
+            31	
+            32	* Env vars are read once, at the top of `main()`, before any component is
+            33	  constructed (`cmd/server/main.go`). Names are `SCREAMING_SNAKE_CASE` with
+            34	  no prefix namespacing (`HTTP_ADDR`, `WORKSPACE_ROOT`, `LOG_LEVEL`,
+            35	  `LLM_BASE_URL`, ...).
+            36	* Optional vars use `utils.GetEnvDefault[T](key, default)`
+            37	  (`internal/utils/env.go`) — generic over `string`/`boo
+            [truncated: exceeded the persisted size limit]
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend/src \u0026\u0026 grep -n \"StageConversationPanel\\|ask_question\\|askQuestion\" GrillMePanel.tsx PlanningModePanel.tsx | head -30","description":"Check GrillMePanel/PlanningModePanel usage of StageConversationPanel"}'
+          result: |-
+            GrillMePanel.tsx:3:import { StageConversationPanel } from './StageConversationPanel'
+            GrillMePanel.tsx:42:// StageConversationPanel scoped to stage "requirements", proposing/editing
+            GrillMePanel.tsx:47:    <StageConversationPanel<RequirementsDraft>
+            PlanningModePanel.tsx:3:import { StageConversationPanel } from './StageConversationPanel'
+            PlanningModePanel.tsx:21:// "Planning Mode"): StageConversationPanel scoped to stage "planning",
+            PlanningModePanel.tsx:25:    <StageConversationPanel<TaskPlan>
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend/src \u0026\u0026 grep -n \"toolCallName\\|DisplayMessage\" StageConversationPanel.tsx | head -30","description":"Check DisplayMessage/toolCallName usage"}'
+          result: |-
+            17:interface DisplayMessage {
+            21:  toolCallName: string | null
+            93:function toDisplayMessage(m: ConversationMessage): DisplayMessage {
+            98:    toolCallName: m.tool_call?.name ?? null,
+            195:  const [messages, setMessages] = useState<DisplayMessage[]>([])
+            260:        setMessages(loaded.map(toDisplayMessage))
+            391:  function updateLastMessage(update: (msg: DisplayMessage) => DisplayMessage) {
+            405:  function updateMessageAt(index: number, update: (msg: DisplayMessage) => DisplayMessage) {
+            436:      updateLastMessage((msg) => ({ ...msg, toolCallName: event.tool_call!.name }))
+            507:      { role: 'user', content: text, reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: true },
+            508:      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
+            551:      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
+            610:      { role: 'user', content, reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: true },
+            611:      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
+            863:            {message.toolCallName && message.toolCallName !== askQuestionToolName && (
+            864:              <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>
+            866:            {message.toolCallName === askQuestionToolName && <span className="tool-call-chip">Asked a question</span>}
+        - name: Read
+          arguments: '{"file_path":"D:\\projects\\.worktrees\\llm-workbench\\exec-003\\frontend\\src\\StageConversationPanel.tsx","limit":40,"offset":888}'
+          result: |-
+            888	      </div>
+            889	
+            890	      {!notStarted && (
+            891	      <>
+            892	      {pendingQuestion && pendingQuestion.options.length > 0 && (
+            893	        // Structured alternative to reading the recommended answer out of
+            894	        // prose and retyping it: each option is a real button that sends
+            895	        // its own label through handleAnswerQuestion, so clicking one is
+            896	        // indistinguishable in the transcript from having typed it. The
+            897	        // free-text textarea below stays live the whole time — a
+            898	        // recommendation is a default to accept or redirect, never the
+            899	        // only way to answer.
+            900	        <div className="ask-question-options" role="group" aria-label="Suggested answers">
+            901	          {pendingQuestion.options.map((option) => {
+            902	            const isRecommended = option === pendingQuestion.recommended_option
+            903	            return (
+            904	              <button
+            905	                key={option}
+            906	                type="button"
+            907	                className={isRecommended ? 'ask-question-option ask-question-option-recommended' : 'ask-question-option'}
+            908	                onClick={() => handleAnswerQuestion(option)}
+            909	                disabled={sending}
+            910	                title={isRecommended ? pendingQuestion.recommendation_reason : undefined}
+            911	              >
+            912	                {option}
+            913	                {isRecommended && <span className="ask-question-recommended-badge">Recommended</span>}
+            914	              </button>
+            915	            )
+            916	          })}
+            917	          {pendingQuestion.recommendation_reason && (
+            918	            <p className="ask-question-reason">{pendingQuestion.recommendation_reason}</p>
+            919	          )}
+            920	        </div>
+            921	      )}
+            922	      <div className="chat-input">
+            923	        <textarea
+            924	          value={draft}
+            925	          onChange={(e) => setDraft(e.target.value)}
+            926	          onKeyDown={handleDraftKeyDown}
+            927	          placeholder={editingIndex !== null ? 'Editing message...' : 'Reply...'}
+        - name: Grep
+          arguments: '{"-n":true,"output_mode":"content","path":"D:\\projects\\.worktrees\\llm-workbench\\exec-003\\frontend\\src","pattern":"Proposed a draft|Proposed draft"}'
+          result: |-
+            GrillMePanel.test.tsx:169:    expect(await screen.findByText('Proposed draft')).toBeInTheDocument()
+            GrillMePanel.test.tsx:499:    expect(screen.getByText('Proposed a draft (propose_context)')).toBeInTheDocument()
+            GrillMePanel.test.tsx:500:    expect(screen.getByText('Proposed draft')).toBeInTheDocument()
+            GrillMePanel.test.tsx:513:    expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
+            GrillMePanel.test.tsx:539:    expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
+            GrillMePanel.test.tsx:562:    expect(screen.getByText('Proposed draft')).toBeInTheDocument()
+            GrillMePanel.test.tsx:585:    expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
+            GrillMePanel.test.tsx:603:    expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
+            GrillMePanel.test.tsx:604:    expect(screen.getByText('Proposed a draft (propose_context)')).toBeInTheDocument()
+            GrillMePanel.test.tsx:640:    // The generic "Proposed a draft (...)" chip must not appear for
+            GrillMePanel.test.tsx:642:    expect(screen.queryByText(/Proposed a draft/)).not.toBeInTheDocument()
+            GrillMePanel.test.tsx:773:    expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
+            StageConversationPanel.tsx:864:              <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>
+            StageConversationPanel.tsx:969:          <h4>Proposed draft</h4>
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend/src \u0026\u0026 grep -n \"Proposed draft\" -B15 StageConversationPanel.tsx | head -30","description":"Check context around ''Proposed draft'' heading"}'
+          result: |-
+            954-          {liveTurnStatus.tokens > 0 && (
+            955-            <>
+            956-              {' '}&middot; {liveTurnStatus.isEstimate ? '~' : ''}
+            957-              {liveTurnStatus.tokens} tokens
+            958-            </>
+            959-          )}
+            960-        </p>
+            961-      ) : (
+            962-        <p className="chat-input-hint">Enter to send &middot; Alt+Enter for a new line</p>
+            963-      )}
+            964-      </>
+            965-      )}
+            966-
+            967-      {pendingDraft && (
+            968-        <div className="draft-review">
+            969:          <h4>Proposed draft</h4>
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003 \u0026\u0026 grep -n \"askQuestionSchema\" -A20 internal/drafttool/drafttool.go","description":"Show full ask_question schema"}'
+          result: |-
+            91:var askQuestionSchema = json.RawMessage(`{
+            92-  "type": "object",
+            93-  "properties": {
+            94-    "options": {
+            95-      "type": "array",
+            96-      "items": {"type": "string"},
+            97-      "minItems": 1,
+            98-      "description": "The distinct answers offered for this turn's question. The question text itself belongs in your normal reply content, not here — this only carries the selectable choices."
+            99-    },
+            100-    "recommended_option": {"type": "string", "description": "Your recommended answer — must match one of options verbatim."},
+            101-    "recommendation_reason": {"type": "string", "description": "A short reason for the recommendation, shown alongside it."}
+            102-  },
+            103-  "required": ["options", "recommended_option", "recommendation_reason"]
+            104-}`)
+            105-
+            106-var proposeKnowledgeSchema = json.RawMessage(`{
+            107-  "type": "object",
+            108-  "properties": {
+            109-    "concept_id": {"type": "string", "description": "The OKF concept id (its path under data/knowledge/ with the .md suffix removed), e.g. coding-standards/logging. Reuse an existing id to propose an edit; use a new one to propose a brand-new concept."},
+            110-    "type": {"type": "string", "description": "The concept's OKF type, e.g. Coding Standard, Architecture Decision, Design Note, Domain Note, Operational Practice, Reference."},
+            111-    "frontmatter": {"type": "object", "description": "Any additional frontmatter fields beyond type — e.g. title, description, tags, resource."},
+            --
+            172:	Schema:      askQuestionSchema,
+            173-}
+            174-
+            175-// All returns every known Draft tool definition, in a stable order — used
+            176-// by cmd/draftmcp to build its static tools/list response.
+            177-func All() []Definition {
+            178-	return []Definition{ProposeContext, ProposePlan, ProposeReview, ProposeKnowledge, AskQuestion}
+            179-}
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend \u0026\u0026 node -e \"try { require.resolve(''ajv''); console.log(''ajv present'') } catch(e) { console.log(''no ajv'') }\"","description":"Check for ajv availability"}'
+          result: no ajv
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003 \u0026\u0026 grep -i \"schema\" go.mod go.sum 2\u003e/dev/null | head -10; python3 -c \"import jsonschema; print(''ok'')\" 2\u003e\u00261 || python -c \"import jsonschema; print(''ok'')\" 2\u003e\u00261","description":"Check for jsonschema availability"}'
+          result: "Exit code 1\nPython was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.\r\nTraceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n    import jsonschema; print('ok')\r\n    ^^^^^^^^^^^^^^^^^\r\nModuleNotFoundError: No module named 'jsonschema'"
+          is_error: true
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003 \u0026\u0026 node -e \"\nconst schema = {\n  type: ''object'',\n  properties: {\n    options: { type: ''array'', items: { type: ''string'' }, minItems: 1 },\n    recommended_option: { type: ''string'' },\n    recommendation_reason: { type: ''string'' }\n  },\n  required: [''options'', ''recommended_option'', ''recommendation_reason'']\n};\nconsole.log(''valid JSON, parses OK'');\nconsole.log(''properties keys:'', Object.keys(schema.properties));\nconsole.log(''has question/text field?'', Object.keys(schema.properties).some(k =\u003e /question|text/i.test(k)));\nconsole.log(''required:'', schema.required);\nconsole.log(''options.minItems:'', schema.properties.options.minItems);\n\"\n","description":"Manually confirm schema structure claims"}'
+          result: |-
+            valid JSON, parses OK
+            properties keys: [ 'options', 'recommended_option', 'recommendation_reason' ]
+            has question/text field? false
+            required: [ 'options', 'recommended_option', 'recommendation_reason' ]
+            options.minItems: 1
+        - name: Bash
+          arguments: '{"command":"cd D:/projects/.worktrees/llm-workbench/exec-003/frontend/src \u0026\u0026 grep -n \"proposeKnowledgeToolName\" ReviewPanel.tsx | head -5","description":"Confirm precedent pattern referenced in comments"}'
+          result: |-
+            19:// proposeKnowledgeToolName mirrors drafttool.ProposeKnowledgeName
+            23:const proposeKnowledgeToolName = 'propose_knowledge'
+            117:          toolName: proposeKnowledgeToolName,
+      created_at: 2026-07-24T11:22:22.7508303Z

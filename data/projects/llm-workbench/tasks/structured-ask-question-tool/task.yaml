@@ -2,9 +2,9 @@ id: structured-ask-question-tool
 title: Add a structured ask_question tool for interview-style turns
 project: llm-workbench
 status: draft
-stage: implementation
+stage: review
 created_at: 2026-07-23T00:00:00Z
-updated_at: 2026-07-23T21:34:23.7950142Z
+updated_at: 2026-07-24T11:17:54.7168875Z
 objective: 'Replace the current prompt-only interview discipline (one question per turn, a recommended answer written into the prompt text, no structured UI affordance) with a structured `ask_question` tool: options plus a recommendation as a first-class object, rendered as clickable choices in the frontend rather than free-text the user has to read and retype.'
 constraints:
     - Should compose with the existing one-question-per-turn interview discipline rather than replace its intent, only its transport (structured tool call vs. prompt text).

@@ -1,0 +1,34 @@
+execution_id: exec-001
+task_id: nav-url-page-state
+executor:
+    type: claude-code
+    version: ""
+input:
+    plan_ref: plan.yaml
+    context_refs: []
+    review_feedback: ""
+    continued_from_execution_id: ""
+output:
+    artifacts:
+        - docs/engineering conventions.md
+        - frontend/src/App.test.tsx
+        - frontend/src/App.tsx
+        - frontend/src/ProjectDetailPanel.test.tsx
+        - frontend/src/ProjectDetailPanel.tsx
+        - frontend/src/ProjectsPanel.test.tsx
+        - frontend/src/ProjectsPanel.tsx
+        - frontend/src/api.test.ts
+        - frontend/src/api.ts
+        - frontend/src/url.test.ts
+        - frontend/src/url.ts
+    git_branch: task-exec/nav-url-page-state/exec-001
+    commits:
+        - 8703d9fea62568a1ba74da3772450c70209f2571
+    forked_from_branch: ""
+    workspace_dirty: false
+metrics:
+    duration_seconds: 674.096
+    tokens_used: 7796818
+    cost_estimate: 3.898863299999999
+status: success
+created_at: 2026-07-24T14:10:49.4016625Z
