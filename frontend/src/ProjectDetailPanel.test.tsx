@@ -46,16 +46,41 @@ function makeTask(overrides: Partial<Task>): Task {
   }
 }
 
+function noop() {
+  // intentionally empty — unused callback in tests that don't exercise it
+}
+
+interface Overrides {
+  onBack?: () => void
+  selectedTaskId?: string
+  onSelectTask?: (id: string) => void
+  onBackToProject?: () => void
+  onInvalidTask?: () => void
+}
+
+function renderPanel(overrides: Overrides = {}) {
+  return render(
+    <ProjectDetailPanel
+      project={project}
+      onBack={overrides.onBack ?? noop}
+      selectedTaskId={overrides.selectedTaskId}
+      onSelectTask={overrides.onSelectTask ?? noop}
+      onBackToProject={overrides.onBackToProject ?? noop}
+      onInvalidTask={overrides.onInvalidTask ?? noop}
+    />,
+  )
+}
+
 describe('ProjectDetailPanel — task list states', () => {
   it('shows an error when listProjectTasks rejects', async () => {
     vi.mocked(api.listProjectTasks).mockRejectedValue(new Error('network down'))
-    render(<ProjectDetailPanel project={project} onBack={vi.fn()} />)
+    renderPanel()
     expect(await screen.findByText('Failed to load tasks: network down')).toBeInTheDocument()
   })
 
   it('shows an empty state with no tasks', async () => {
     vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
-    render(<ProjectDetailPanel project={project} onBack={vi.fn()} />)
+    renderPanel()
     expect(await screen.findByText('No tasks yet.')).toBeInTheDocument()
   })
 
@@ -64,7 +89,7 @@ describe('ProjectDetailPanel — task list states', () => {
       tasks: [makeTask({ id: 'task-a', title: 'Task A' })],
       errors: [{ id: 'task-b', error: 'parsing failed' }],
     })
-    render(<ProjectDetailPanel project={project} onBack={vi.fn()} />)
+    renderPanel()
 
     expect(await screen.findByText('Task A')).toBeInTheDocument()
     expect(screen.getByText(/1 task failed to load: task-b/)).toBeInTheDocument()
@@ -78,7 +103,7 @@ describe('ProjectDetailPanel — list/kanban toggle', () => {
       tasks: [makeTask({ id: 'task-a', title: 'Task A', stage: 'requirements' })],
       errors: [],
     })
-    render(<ProjectDetailPanel project={project} onBack={vi.fn()} />)
+    renderPanel()
     await screen.findByText('Task A')
 
     expect(screen.getByRole('table')).toBeInTheDocument()
@@ -98,7 +123,7 @@ describe('ProjectDetailPanel — task creation and selection', () => {
     vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
     vi.mocked(api.createProjectTask).mockResolvedValue(makeTask({ id: 'new-task', title: 'New Task' }))
 
-    render(<ProjectDetailPanel project={project} onBack={vi.fn()} />)
+    renderPanel()
     await screen.findByText('No tasks yet.')
 
     await user.click(screen.getByRole('button', { name: 'New Task' }))
@@ -116,18 +141,70 @@ describe('ProjectDetailPanel — task creation and selection', () => {
     await waitFor(() => expect(api.listProjectTasks).toHaveBeenCalledTimes(2))
   })
 
-  it('Open selects a task and renders the stubbed TaskDetailPanel with the right props', async () => {
+  it('Open calls onSelectTask with the clicked task id (no fetch)', async () => {
     const user = userEvent.setup()
+    const onSelectTask = vi.fn()
     vi.mocked(api.listProjectTasks).mockResolvedValue({
       tasks: [makeTask({ id: 'task-a', title: 'Task A' })],
       errors: [],
     })
-    render(<ProjectDetailPanel project={project} onBack={vi.fn()} />)
+    renderPanel({ onSelectTask })
     await screen.findByText('Task A')
 
     await user.click(screen.getByRole('button', { name: 'Open' }))
 
+    expect(onSelectTask).toHaveBeenCalledWith('task-a')
+    expect(api.getProjectTask).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProjectDetailPanel — controlled selectedTaskId', () => {
+  it('renders TaskDetailPanel for a task already in the loaded list, with no getProjectTask call', async () => {
+    vi.mocked(api.listProjectTasks).mockResolvedValue({
+      tasks: [makeTask({ id: 'task-a', title: 'Task A' })],
+      errors: [],
+    })
+    renderPanel({ selectedTaskId: 'task-a' })
+
     expect(await screen.findByTestId('task-detail-panel')).toHaveTextContent('task-detail:demo:task-a')
+    expect(api.getProjectTask).not.toHaveBeenCalled()
+  })
+
+  it('falls back to getProjectTask for a deep-linked task id not in the loaded list', async () => {
+    vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
+    vi.mocked(api.getProjectTask).mockResolvedValue(makeTask({ id: 'deep-link', title: 'Deep Link Task' }))
+
+    renderPanel({ selectedTaskId: 'deep-link' })
+
+    expect(await screen.findByTestId('task-detail-panel')).toHaveTextContent('task-detail:demo:deep-link')
+    expect(api.getProjectTask).toHaveBeenCalledWith('demo', 'deep-link')
+  })
+
+  it('calls onInvalidTask when getProjectTask rejects for a deep-linked task id', async () => {
+    const onInvalidTask = vi.fn()
+    vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
+    vi.mocked(api.getProjectTask).mockRejectedValue(new Error('not found'))
+
+    renderPanel({ selectedTaskId: 'missing', onInvalidTask })
+
+    await waitFor(() => expect(onInvalidTask).toHaveBeenCalled())
+    expect(screen.queryByTestId('task-detail-panel')).not.toBeInTheDocument()
+  })
+
+  it('Back from TaskDetailPanel calls onBackToProject and reloads tasks', async () => {
+    const user = userEvent.setup()
+    const onBackToProject = vi.fn()
+    vi.mocked(api.listProjectTasks).mockResolvedValue({
+      tasks: [makeTask({ id: 'task-a', title: 'Task A' })],
+      errors: [],
+    })
+    renderPanel({ selectedTaskId: 'task-a', onBackToProject })
+    await screen.findByTestId('task-detail-panel')
+
+    await user.click(screen.getByRole('button', { name: 'Back to tasks' }))
+
+    expect(onBackToProject).toHaveBeenCalled()
+    await waitFor(() => expect(api.listProjectTasks).toHaveBeenCalledTimes(2))
   })
 })
 
@@ -137,7 +214,7 @@ describe('ProjectDetailPanel — edit project', () => {
     vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
     vi.mocked(api.updateProject).mockResolvedValue({ ...project, description: 'Updated description' })
 
-    render(<ProjectDetailPanel project={project} onBack={vi.fn()} />)
+    renderPanel()
     await screen.findByText('No tasks yet.')
 
     await user.click(screen.getByRole('button', { name: 'Edit project' }))

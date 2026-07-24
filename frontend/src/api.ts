@@ -63,6 +63,13 @@ export function listProjects(): Promise<ProjectListResult> {
   return getJSON<ProjectListResult>('/api/v1/projects')
 }
 
+// getProject fetches a single project by id — used to resolve a deep-linked
+// or reloaded /projects/:projectId URL whose id isn't (yet) present in an
+// already-loaded projects list.
+export function getProject(id: string): Promise<Project> {
+  return getJSON<Project>(`/api/v1/projects/${encodeURIComponent(id)}`)
+}
+
 export function createProject(req: CreateProjectRequest): Promise<Project> {
   return mutateJSON<Project>('POST', '/api/v1/projects', req)
 }
