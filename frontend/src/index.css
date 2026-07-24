@@ -412,17 +412,6 @@ td button {
   font-size: 14px;
 }
 
-.task-view-toggle {
-  display: flex;
-  gap: 4px;
-}
-
-.task-view-toggle button.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-}
-
 .kanban-board {
   display: flex;
   gap: 12px;

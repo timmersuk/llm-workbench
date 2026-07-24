@@ -18,9 +18,8 @@ interface TaskKanbanBoardProps {
 
 // A basic kanban view: one column per stage, lightweight navigational
 // cards only (no per-card actions) — clicking a card opens TaskDetailPanel,
-// where GrillMe/Planning Mode/Finalize/Revise actually live. Additive
-// alongside ProjectDetailPanel's existing flat task list, not a
-// replacement for it.
+// where GrillMe/Planning Mode/Finalize/Revise actually live. The only task
+// view on ProjectDetailPanel.
 export function TaskKanbanBoard({ tasks, onSelect }: TaskKanbanBoardProps) {
   return (
     <div className="kanban-board">

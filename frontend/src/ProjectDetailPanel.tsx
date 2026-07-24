@@ -17,8 +17,6 @@ interface ProjectDetailPanelProps {
   onInvalidTask: () => void
 }
 
-type TaskView = 'list' | 'kanban'
-
 export function ProjectDetailPanel({
   project,
   onBack,
@@ -34,7 +32,6 @@ export function ProjectDetailPanel({
   const [loadErrors, setLoadErrors] = useState<LoadError[]>([])
   const [tasksError, setTasksError] = useState<string | null>(null)
   const [creatingTask, setCreatingTask] = useState(false)
-  const [taskView, setTaskView] = useState<TaskView>('list')
   // tasksLoaded tracks whether the initial listProjectTasks call has
   // settled (either way) — distinct from the id-resolution below, which
   // stays a plain string|undefined with no tri-state of its own. Without
@@ -159,14 +156,6 @@ export function ProjectDetailPanel({
       <section>
         <div className="panel-actions">
           <h3>Tasks</h3>
-          <div className="task-view-toggle">
-            <button type="button" className={taskView === 'list' ? 'active' : ''} onClick={() => setTaskView('list')}>
-              List
-            </button>
-            <button type="button" className={taskView === 'kanban' ? 'active' : ''} onClick={() => setTaskView('kanban')}>
-              Kanban
-            </button>
-          </div>
           {!creatingTask && (
             <button type="button" onClick={() => setCreatingTask(true)}>
               New Task
@@ -181,37 +170,8 @@ export function ProjectDetailPanel({
 
         {!tasksError && tasks.length === 0 && <p>No tasks yet.</p>}
 
-        {!tasksError && tasks.length > 0 && taskView === 'kanban' && (
+        {!tasksError && tasks.length > 0 && (
           <TaskKanbanBoard tasks={tasks} onSelect={(task) => onSelectTask(task.id)} />
-        )}
-
-        {!tasksError && tasks.length > 0 && taskView === 'list' && (
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Title</th>
-                <th>Status</th>
-                <th>Stage</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {tasks.map((task) => (
-                <tr key={task.id}>
-                  <td>{task.id}</td>
-                  <td>{task.title}</td>
-                  <td>{task.status}</td>
-                  <td>{task.stage}</td>
-                  <td>
-                    <button type="button" onClick={() => onSelectTask(task.id)}>
-                      Open
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         )}
       </section>
     </div>
