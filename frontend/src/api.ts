@@ -3,6 +3,7 @@ import type {
   ChatCompletionRequestBody,
   ChatHistoryEntry,
   ChatStreamEvent,
+  ContinuableExecutionResult,
   Conversation,
   CreateProjectRequest,
   CreateTaskRequest,
@@ -395,18 +396,21 @@ export async function regenerateStageMessage(
 // caller should reload the task afterward, since a successful run
 // auto-advances task.stage to "review" server-side. executor is currently
 // only meaningfully "claude-code" — no picker is offered client-side (see
-// ExecutePanel).
+// ExecutePanel). continueFromExecutionId is the human's choice to continue
+// from a prior failed/partial execution's branch (getContinuableExecution's
+// hint, echoed back) — omitted (undefined) for a normal fresh-from-main run.
 export async function startExecution(
   projectId: string,
   taskId: string,
   executor: string,
   onEvent: (event: ExecuteStreamEvent) => void,
   signal?: AbortSignal,
+  continueFromExecutionId?: string,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ executor }),
+    body: JSON.stringify({ executor, continue_from_execution_id: continueFromExecutionId || undefined }),
     signal,
   })
   await streamSSE<ExecuteStreamEvent>(res, onEvent)
@@ -416,4 +420,11 @@ export async function startExecution(
 // oldest first (internal/api/execution.go's handleListExecutions).
 export function listExecutions(projectId: string, taskId: string): Promise<ExecutionsListResult> {
   return getJSON<ExecutionsListResult>(`${taskPath(projectId, taskId)}/executions`)
+}
+
+// getContinuableExecution returns the execution_id a human could choose to
+// continue from right now (empty string if none), per
+// handleGetContinuableExecution/resolveFailureContinuation.
+export function getContinuableExecution(projectId: string, taskId: string): Promise<ContinuableExecutionResult> {
+  return getJSON<ContinuableExecutionResult>(`${taskPath(projectId, taskId)}/executions/continuable`)
 }

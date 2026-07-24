@@ -129,6 +129,14 @@ input:
   context_refs: []
   review_feedback: ""  # prior review's notes, set only when this attempt
                         # was triggered by a needs_changes verdict
+  continued_from_execution_id: ""  # set only when a human explicitly chose
+                                    # to continue this attempt from a prior
+                                    # failed/partial execution's branch
+                                    # (resolveFailureContinuation) rather
+                                    # than forking fresh from main — distinct
+                                    # from review_feedback's needs_changes
+                                    # continuation, which is inferred from
+                                    # reviews/ instead of stated explicitly
 
 output:
   artifacts: []
@@ -141,6 +149,14 @@ output:
                            # a retry's `commits` to just its own contribution
                            # (its diff still always stays cumulative against
                            # the shared checkout's branch, deliberately).
+  workspace_dirty: false  # true only for a successful execution that still
+                           # left uncommitted changes after a dedicated
+                           # follow-up turn asking the agent to commit or
+                           # clean them up — recorded for a human to check,
+                           # never auto-committed or auto-deleted. Always
+                           # false for failure/partial, whose dirty state is
+                           # instead swept into a safety commit rather than
+                           # left dirty and flagged.
 
 metrics:
   duration_seconds: 0

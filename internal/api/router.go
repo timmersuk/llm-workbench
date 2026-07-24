@@ -157,6 +157,7 @@ func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeStor
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/plan/revise", s.handleRevisePlan())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", s.handleStartExecution())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", s.handleListExecutions())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions/continuable", s.handleGetContinuableExecution())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", s.handleListReviews())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", s.handleReviewDiff())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", s.handlePushPR())

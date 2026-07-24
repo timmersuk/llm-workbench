@@ -15,8 +15,14 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
     execution_id: 'exec-001',
     task_id: taskId,
     executor: { type: 'claude-code', version: '' },
-    input: { plan_ref: 'plan.yaml', context_refs: [], review_feedback: '' },
-    output: { artifacts: [], git_branch: 'task-exec/task-a/exec-001', commits: ['abc123'], forked_from_branch: '' },
+    input: { plan_ref: 'plan.yaml', context_refs: [], review_feedback: '', continued_from_execution_id: '' },
+    output: {
+      artifacts: [],
+      git_branch: 'task-exec/task-a/exec-001',
+      commits: ['abc123'],
+      forked_from_branch: '',
+      workspace_dirty: false,
+    },
     metrics: { duration_seconds: 1.5, tokens_used: 0, cost_estimate: 0 },
     status: 'success',
     created_at: '2026-01-01T00:00:00Z',
@@ -27,6 +33,7 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
 beforeEach(() => {
   vi.mocked(api.listExecutions).mockResolvedValue({ executions: [] })
   vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
+  vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: '' })
 })
 
 describe('ExecutePanel — past executions', () => {
@@ -130,6 +137,72 @@ describe('ExecutePanel — running an execution', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Run Execution' })).toBeInTheDocument())
     expect(screen.queryByText('context canceled')).not.toBeInTheDocument()
+  })
+})
+
+describe('ExecutePanel — continuing from a failed execution', () => {
+  it('shows no continue/fresh choice when nothing is eligible', async () => {
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+    await waitFor(() => expect(api.getContinuableExecution).toHaveBeenCalledWith(projectId, taskId))
+    expect(screen.queryByText(/didn't finish/)).not.toBeInTheDocument()
+  })
+
+  it('shows the choice defaulting to Continue when an execution is eligible', async () => {
+    vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: 'exec-002' })
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    const continueRadio = await screen.findByRole('radio', { name: /Continue from exec-002/ })
+    const freshRadio = screen.getByRole('radio', { name: 'Start fresh' })
+    expect(continueRadio).toBeChecked()
+    expect(freshRadio).not.toBeChecked()
+  })
+
+  it('passes the eligible execution id through startExecution when Continue is selected', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: 'exec-002' })
+    let gotContinueFrom: string | undefined
+    vi.mocked(api.startExecution).mockImplementation(async (_projectId, _taskId, _executor, _onEvent, _signal, continueFrom) => {
+      gotContinueFrom = continueFrom
+    })
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+    await screen.findByRole('radio', { name: /Continue from exec-002/ })
+    await user.click(screen.getByRole('button', { name: 'Run Execution' }))
+
+    await waitFor(() => expect(api.startExecution).toHaveBeenCalled())
+    expect(gotContinueFrom).toBe('exec-002')
+  })
+
+  it('passes no continuation when Start fresh is selected instead', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: 'exec-002' })
+    let gotContinueFrom: string | undefined
+    vi.mocked(api.startExecution).mockImplementation(async (_projectId, _taskId, _executor, _onEvent, _signal, continueFrom) => {
+      gotContinueFrom = continueFrom
+    })
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+    await user.click(await screen.findByRole('radio', { name: 'Start fresh' }))
+    await user.click(screen.getByRole('button', { name: 'Run Execution' }))
+
+    await waitFor(() => expect(api.startExecution).toHaveBeenCalled())
+    expect(gotContinueFrom).toBeUndefined()
+  })
+
+  it('re-fetches the continuable hint once the run completes', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.getContinuableExecution).mockResolvedValueOnce({ execution_id: '' })
+    vi.mocked(api.startExecution).mockImplementation(async (_projectId, _taskId, _executor, onEvent) => {
+      onEvent({ type: 'done', execution: makeExecution({ execution_id: 'exec-003', status: 'failure' }) })
+    })
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+    expect(await screen.findByRole('button', { name: 'Run Execution' })).not.toBeDisabled()
+
+    vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: 'exec-003' })
+    await user.click(screen.getByRole('button', { name: 'Run Execution' }))
+
+    expect(await screen.findByRole('radio', { name: /Continue from exec-003/ })).toBeInTheDocument()
   })
 })
 

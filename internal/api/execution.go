@@ -13,6 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/timmersuk/llm-workbench/internal/agentrunner"
+	"github.com/timmersuk/llm-workbench/internal/gitutil"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
@@ -29,6 +30,20 @@ const defaultExecutionExecutor = "claude-code"
 type executionStartRequest struct {
 	Model    string `json:"model"`
 	Executor string `json:"executor,omitempty"`
+	// ContinueFromExecutionID is the human's explicit choice to continue
+	// from a prior failed/partial execution's branch, echoing the
+	// execution_id handleGetContinuableExecution offered — re-validated
+	// server-side against resolveFailureContinuation rather than trusted
+	// outright, since the eligible attempt could have changed between the
+	// hint being fetched and this request arriving.
+	ContinueFromExecutionID string `json:"continue_from_execution_id,omitempty"`
+}
+
+// continuableExecutionResponse is handleGetContinuableExecution's response
+// body — ExecutionID is empty when there's nothing a human could choose to
+// continue from right now.
+type continuableExecutionResponse struct {
+	ExecutionID string `json:"execution_id"`
 }
 
 // executeStreamEvent is the SSE wire shape for a running execution — a
@@ -139,6 +154,29 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			return
 		}
 
+		failureExecutionID, failureForkFrom, failureMessage, err := resolveFailureContinuation(store, taskId, forkFrom)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		// The human's choice is re-validated against a fresh
+		// resolveFailureContinuation lookup, not trusted outright — the
+		// eligible attempt (or its eligibility at all) could have changed
+		// between handleGetContinuableExecution's hint and this request
+		// arriving (e.g. a needs_changes review landed in between).
+		continuedFromExecutionID := ""
+		priorFailureMessage := ""
+		if req.ContinueFromExecutionID != "" {
+			if failureExecutionID == "" || req.ContinueFromExecutionID != failureExecutionID {
+				http.Error(w, fmt.Sprintf("execution %q is no longer available to continue from", req.ContinueFromExecutionID), http.StatusConflict)
+				return
+			}
+			forkFrom = failureForkFrom
+			continuedFromExecutionID = failureExecutionID
+			priorFailureMessage = failureMessage
+		}
+
 		executionID, err := store.NextExecutionID(taskId)
 		if err != nil {
 			writeGetError(w, err)
@@ -184,7 +222,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			}
 		}
 
-		systemPrompt := buildExecutionPrompt(t, plan, reviewFeedback, prCommentsPath != "")
+		systemPrompt := buildExecutionPrompt(t, plan, reviewFeedback, priorFailureMessage, prCommentsPath != "")
 
 		start := time.Now()
 		out, execErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
@@ -208,6 +246,63 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			}
 		}
 
+		// A non-success end gets a mechanical safety commit for whatever the
+		// agent wrote to disk but never committed itself — otherwise that
+		// work is invisible to CollectExecutionOutput below (git log/diff
+		// against HEAD) and would be silently left behind the moment a later
+		// attempt forks a fresh worktree from this branch's tip
+		// (resolveFailureContinuation). Uses context.Background(), like
+		// CollectExecutionOutput below, since r.Context() may already be
+		// canceled — a Stop or timeout is exactly one of the cases this
+		// exists to protect. Best-effort: logged, not fatal, matching every
+		// other post-Execute inspection step here.
+		var workspaceDirty bool
+		if execErr != nil {
+			if dirty := gitutil.DirtyWorkingTree(context.Background(), ws.Path); dirty.Known && dirty.Dirty {
+				msg := fmt.Sprintf("Safety commit: preserve uncommitted work after execution failure (%s)", executionID)
+				if commitErr := gitutil.CommitAll(context.Background(), ws.Path, msg); commitErr != nil {
+					logrus.WithError(commitErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Warn("safety-committing uncommitted work after execution failure")
+				}
+			}
+		} else if dirty := gitutil.DirtyWorkingTree(r.Context(), ws.Path); dirty.Known && dirty.Dirty {
+			// A successful run left something uncommitted. Unlike the
+			// failure path above, this isn't presumed-interrupted work —
+			// it could just as easily be scratch/temp output the agent
+			// deliberately left out — so the harness doesn't silently
+			// commit or delete it. Instead, it gives the agent one
+			// dedicated follow-up turn, in the same workspace, naming
+			// exactly what's dirty and asking it to decide. Best-effort:
+			// a failure here doesn't change exec's success status, and if
+			// the tree is still dirty afterward, that's recorded on
+			// Output.WorkspaceDirty for a human to check rather than
+			// guessed at.
+			statusOut, statusErr := gitutil.RunGit(r.Context(), ws.Path, "status", "--porcelain")
+			if statusErr != nil {
+				logrus.WithError(statusErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Warn("reading workspace status before cleanup turn")
+				workspaceDirty = true
+			} else {
+				cleanupOut, cleanupErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
+					SessionKey:   taskId + ":execute-cleanup",
+					Workspace:    ws.Path,
+					SystemPrompt: buildWorkspaceCleanupPrompt(statusOut),
+					Model:        req.Model,
+				}, func(ev agentrunner.ExecuteEvent) error {
+					writeEvent(executeEventToWire(ev))
+					return nil
+				})
+				if cleanupErr != nil {
+					logrus.WithError(cleanupErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Warn("workspace cleanup turn failed")
+				}
+				out.DurationSeconds += cleanupOut.DurationSeconds
+				out.TokensUsed += cleanupOut.TokensUsed
+				out.CostEstimate += cleanupOut.CostEstimate
+
+				if stillDirty := gitutil.DirtyWorkingTree(context.Background(), ws.Path); !stillDirty.Known || stillDirty.Dirty {
+					workspaceDirty = true
+				}
+			}
+		}
+
 		// Best-effort: the execution itself already succeeded or failed
 		// independently of whether this inspection works, so a failure here
 		// is logged, not fatal to the response.
@@ -226,8 +321,8 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		exec := task.Execution{
 			ExecutionID: executionID,
 			Executor:    task.ExecutionExecutor{Type: executorKey},
-			Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback},
-			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits, ForkedFromBranch: forkFrom},
+			Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback, ContinuedFromExecutionID: continuedFromExecutionID},
+			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits, ForkedFromBranch: forkFrom, WorkspaceDirty: workspaceDirty},
 			Metrics: task.ExecutionMetrics{
 				DurationSeconds: durationSeconds,
 				TokensUsed:      out.TokensUsed,
@@ -290,6 +385,37 @@ func (s *Server) handleListExecutions() http.HandlerFunc {
 	}
 }
 
+// handleGetContinuableExecution exposes resolveFailureContinuation's
+// result so ExecutePanel can offer "continue from exec-00N" without
+// re-deriving the eligibility rule (non-success, has commits, and no
+// needs_changes retry already claiming forkFrom) in the frontend — the
+// backend stays the one place that rule lives, mirroring how
+// resolveReviewContinuation itself is never re-implemented client-side.
+// ExecutionID is empty in the response when there's nothing to offer.
+func (s *Server) handleGetContinuableExecution() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		if !ok {
+			return
+		}
+		taskId := r.PathValue("taskId")
+
+		reviewForkFrom, _, err := resolveReviewContinuation(store, taskId)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		executionID, _, _, err := resolveFailureContinuation(store, taskId, reviewForkFrom)
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, continuableExecutionResponse{ExecutionID: executionID})
+	}
+}
+
 // resolveReviewContinuation looks up the latest review recorded for taskId
 // and, only when its decision is needs_changes, resolves the branch to
 // continue from and the notes to carry into the new attempt's prompt — a
@@ -332,6 +458,46 @@ func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, review
 	return forkFrom, latest.Notes, nil
 }
 
+// resolveFailureContinuation finds the most recent execution a human could
+// explicitly choose to continue from after it failed or only partially
+// completed — the counterpart to resolveReviewContinuation for the case
+// where no review has ever driven a retry. Scoped strictly to when
+// reviewForkFrom is empty: whenever a needs_changes review is already
+// forking a retry automatically (docs/adr/0012), that path owns forkFrom
+// and this one stays silent rather than compete with it for the same
+// decision.
+//
+// Eligible means the most recent execution didn't succeed and it actually
+// produced commits — an instant failure before any work happened (e.g. a
+// timed-out first attempt) has nothing worth continuing from. Anything
+// else (no executions yet, most recent succeeded, or it has no commits)
+// returns an empty executionID, the signal both handleStartExecution's
+// validation and handleGetContinuableExecution's hint use for "nothing to
+// offer here."
+func resolveFailureContinuation(store TaskStore, taskId, reviewForkFrom string) (executionID, forkFrom, failureMessage string, err error) {
+	if reviewForkFrom != "" {
+		return "", "", "", nil
+	}
+
+	executions, err := store.ListExecutions(taskId)
+	if err != nil {
+		return "", "", "", fmt.Errorf("listing executions for %s: %w", taskId, err)
+	}
+	if len(executions) == 0 {
+		return "", "", "", nil
+	}
+
+	latest := executions[len(executions)-1]
+	if latest.Status == task.ExecutionStatusSuccess || len(latest.Output.Commits) == 0 {
+		return "", "", "", nil
+	}
+
+	if latest.Failure != nil {
+		failureMessage = latest.Failure.Message
+	}
+	return latest.ExecutionID, latest.Output.GitBranch, failureMessage, nil
+}
+
 // buildExecutionPrompt seeds an execution's system prompt with the task's
 // own fields and its finalized plan — the Implementation-stage analog of
 // buildStagePrompt (stage_conversation.go), but for an autonomous run
@@ -340,12 +506,16 @@ func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, review
 // reviewFeedback is non-empty only for a needs_changes retry
 // (resolveReviewContinuation) — the workspace itself already contains the
 // prior attempt's code (ResolveExecutionWorkspace's forkFrom), so this only
-// needs to explain why, not restate what changed. hasPRComments is set only
-// when handleStartExecution wrote prCommentsExecutionFilename to the
-// worktree (a needs_changes retry with a PR already open) — the model only
-// needs the file's name to read it, not the PR number itself
+// needs to explain why, not restate what changed. priorFailureMessage is
+// non-empty only for a human-chosen continuation from a failed/partial
+// execution (resolveFailureContinuation) — mutually exclusive with
+// reviewFeedback by construction, since the latter path is hidden whenever
+// the former is active. hasPRComments is set only when handleStartExecution
+// wrote prCommentsExecutionFilename to the worktree (a needs_changes retry
+// with a PR already open) — the model only needs the file's name to read
+// it, not the PR number itself
 // (docs/adr/0015-pr-feedback-delivered-as-a-file-not-a-live-tool.md).
-func buildExecutionPrompt(t task.Task, plan task.Plan, reviewFeedback string, hasPRComments bool) string {
+func buildExecutionPrompt(t task.Task, plan task.Plan, reviewFeedback, priorFailureMessage string, hasPRComments bool) string {
 	var b strings.Builder
 
 	b.WriteString("You are executing an already-approved implementation plan for this task, autonomously and to completion. You are already on an isolated git branch inside the target repository — implement the plan, run relevant tests, and commit your work as you go. Do not ask questions; make reasonable decisions and proceed.\n\n")
@@ -370,9 +540,25 @@ func buildExecutionPrompt(t task.Task, plan task.Plan, reviewFeedback string, ha
 		fmt.Fprintf(&b, "\n## Continuing prior work\nYour workspace already contains your previous attempt at this plan — a reviewer looked at it and requested changes rather than approving it. Read what's already there before making changes, and address this feedback directly:\n%s\n", reviewFeedback)
 	}
 
+	if priorFailureMessage != "" {
+		fmt.Fprintf(&b, "\n## Continuing a prior failed attempt\nYour workspace already contains commits from a previous attempt at this plan that did not finish successfully: %s\nInspect `git log` and the current file/test state before making any changes — don't redo work that's already committed; focus on finishing what's left.\n", priorFailureMessage)
+	}
+
 	if hasPRComments {
 		fmt.Fprintf(&b, "\nThe PR opened for this task's prior attempt has real reviewer feedback on GitHub (comments, review verdicts, and inline code comments), saved to %s at the root of your workspace — read it with your file-reading tool for the reviewer's own words, in addition to the summary above.\n", prCommentsExecutionFilename)
 	}
 
 	return b.String()
+}
+
+// buildWorkspaceCleanupPrompt seeds the follow-up turn a successful
+// execution gets when it finishes with a dirty worktree
+// (handleStartExecution) — deliberately reactive, sent only when `git
+// status --porcelain` actually reports something, rather than a standing
+// instruction folded into buildExecutionPrompt: most successful runs
+// already leave a clean tree, and don't need it. statusOutput is that raw
+// porcelain output, given to the agent verbatim so it knows exactly what's
+// there rather than being told generically to "check for dirty files."
+func buildWorkspaceCleanupPrompt(statusOutput string) string {
+	return fmt.Sprintf("Your implementation work for this task is complete. Before finishing, your workspace still has uncommitted changes:\n\n%s\nFor each: if it's part of the work (source, tests, docs, config), commit it. If it's scratch or temporary output that shouldn't be part of this change (build artifacts, logs, caches, temp files), delete it. Don't leave anything uncommitted or unexplained. Do not ask questions; make reasonable decisions and proceed.\n", statusOutput)
 }

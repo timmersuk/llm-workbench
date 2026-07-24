@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { isAbortError, listAgentExecutors, listExecutions, startExecution } from './api'
+import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, startExecution } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { ToolActivityEntry } from './ToolActivity'
 import { ToolActivitySequence } from './ToolActivity'
@@ -44,6 +44,15 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   const [runError, setRunError] = useState<string | null>(null)
   const [executor, setExecutor] = useState('')
   const [executorOptions, setExecutorOptions] = useState<string[]>([])
+  // continuableExecutionId is the execution_id handleGetContinuableExecution
+  // offers (empty when there's nothing eligible) — resolveFailureContinuation
+  // already excludes this whenever a needs_changes retry is auto-continuing,
+  // so the two mechanisms never compete for the same choice. continueChoice
+  // defaults to 'continue' once something's offered, since preserving prior
+  // work is usually the more valuable outcome after a failure (e.g. a
+  // turn-cap exhaustion where the run was likely far along).
+  const [continuableExecutionId, setContinuableExecutionId] = useState('')
+  const [continueChoice, setContinueChoice] = useState<'continue' | 'fresh'>('continue')
   // abortControllerRef tracks the in-flight run's controller so Stop can
   // cancel it — same pattern as StageConversationPanel's.
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -58,6 +67,15 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         }
       })
       .catch(() => undefined) // no prior attempts, or the list failed to load — either way, nothing to show yet
+
+    getContinuableExecution(projectId, taskId)
+      .then((result) => {
+        if (!cancelled) {
+          setContinuableExecutionId(result.execution_id)
+          setContinueChoice('continue')
+        }
+      })
+      .catch(() => undefined) // nothing to offer, or the lookup failed — either way, no toggle shown
 
     // "local" is excluded — ChatClientRunner.Execute has no real
     // implementation yet (see chatclient-tool-loop), so offering it here
@@ -149,6 +167,16 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         if (event.execution) {
           setPastExecutions((prev) => [...prev, event.execution!])
           onExecuted(event.execution)
+          // This run's own outcome can change what's eligible to continue
+          // from next (e.g. it just became the new most-recent
+          // failure/partial) — re-fetch rather than guess at
+          // resolveFailureContinuation's rule client-side.
+          getContinuableExecution(projectId, taskId)
+            .then((result) => {
+              setContinuableExecutionId(result.execution_id)
+              setContinueChoice('continue')
+            })
+            .catch(() => undefined)
         }
     }
   }
@@ -164,7 +192,8 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
     abortControllerRef.current = controller
 
     try {
-      await startExecution(projectId, taskId, executor, handleStreamEvent, controller.signal)
+      const continueFrom = continuableExecutionId && continueChoice === 'continue' ? continuableExecutionId : undefined
+      await startExecution(projectId, taskId, executor, handleStreamEvent, controller.signal, continueFrom)
     } catch (err) {
       if (!isAbortError(err)) {
         setRunError(err instanceof Error ? err.message : String(err))
@@ -210,6 +239,32 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         </select>
       </div>
 
+      {continuableExecutionId && (
+        <fieldset className="continue-choice" disabled={running}>
+          <legend>Prior attempt {continuableExecutionId} didn&apos;t finish</legend>
+          <label>
+            <input
+              type="radio"
+              name="continue-choice"
+              value="continue"
+              checked={continueChoice === 'continue'}
+              onChange={() => setContinueChoice('continue')}
+            />
+            Continue from {continuableExecutionId}
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="continue-choice"
+              value="fresh"
+              checked={continueChoice === 'fresh'}
+              onChange={() => setContinueChoice('fresh')}
+            />
+            Start fresh
+          </label>
+        </fieldset>
+      )}
+
       {pastExecutions.length > 0 && (
         <ul className="execution-history">
           {pastExecutions.map((e) => (
@@ -218,6 +273,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
               {e.output.git_branch && <> &middot; {e.output.git_branch}</>}
               {(e.output.commits?.length ?? 0) > 0 && <> &middot; {e.output.commits.length} commit(s)</>}
               {e.failure && <> &middot; {e.failure.message}</>}
+              {e.output.workspace_dirty && <> &middot; workspace still has uncommitted changes</>}
             </li>
           ))}
         </ul>
