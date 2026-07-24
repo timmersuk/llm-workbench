@@ -413,15 +413,15 @@ td button {
 }
 
 .kanban-board {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(140px, 1fr));
   gap: 12px;
   overflow-x: auto;
   padding-bottom: 8px;
 }
 
 .kanban-column {
-  flex: 1 0 160px;
-  min-width: 160px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -438,7 +438,7 @@ td button {
 .kanban-card {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 4px;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -448,6 +448,10 @@ td button {
   cursor: pointer;
   text-align: left;
   font: inherit;
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .kanban-card-meta {
