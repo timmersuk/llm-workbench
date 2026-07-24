@@ -71,8 +71,22 @@ func initReviewRepo(t *testing.T, reposRoot string) agentrunner.ExecutionWorkspa
 
 // seedReviewableTask drives a task through the public store API to stage
 // review with a recorded exec-001 and a context.yaml carrying verification
-// steps — the state a real review conversation starts from.
+// steps — the state a real review conversation starts from. Its Output is
+// left zero-valued; callers that need buildReviewContext to see real
+// commits/changed files (it reads them from Output rather than shelling out
+// to git — see buildReviewContext's doc comment) should use
+// seedReviewableTaskWithOutput instead.
 func seedReviewableTask(t *testing.T, store *task.FileStore, id string) {
+	t.Helper()
+	seedReviewableTaskWithOutput(t, store, id, task.ExecutionOutput{})
+}
+
+// seedReviewableTaskWithOutput is seedReviewableTask, but lets the caller
+// supply exec-001's recorded Output (commits/artifacts/branch) — the fields a
+// real execution populates via agentrunner.CollectExecutionOutput when it
+// completes (internal/api/execution.go), which buildReviewContext now reads
+// directly instead of recomputing them.
+func seedReviewableTaskWithOutput(t *testing.T, store *task.FileStore, id string, output task.ExecutionOutput) {
 	t.Helper()
 	_, err := store.Create(task.Task{ID: id, Title: "A"})
 	require.NoError(t, err)
@@ -89,16 +103,18 @@ func seedReviewableTask(t *testing.T, store *task.FileStore, id string) {
 	require.NoError(t, err)
 	_, err = store.FinalizePlan(id, task.Plan{Approach: "do it", EstimatedComplexity: "low"}) // planning -> implementation
 	require.NoError(t, err)
-	_, err = store.RecordExecution(id, task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}) // implementation -> review
+	_, err = store.RecordExecution(id, task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: output}) // implementation -> review
 	require.NoError(t, err)
 }
 
-func TestBuildReviewContext_IncludesDiffAndVerificationSteps(t *testing.T) {
+func TestBuildReviewContext_IncludesChangedFilesAndVerificationSteps(t *testing.T) {
 	reposRoot := t.TempDir()
 	ws := initReviewRepo(t, reposRoot)
+	commits, artifacts, err := agentrunner.CollectExecutionOutput(context.Background(), ws, "")
+	require.NoError(t, err)
 
 	store := task.NewFileStore(t.TempDir())
-	seedReviewableTask(t, store, "task-a")
+	seedReviewableTaskWithOutput(t, store, "task-a", task.ExecutionOutput{Commits: commits, Artifacts: artifacts})
 
 	addendum, workspace, err := (&Server{ReposRoot: reposRoot}).buildReviewContext(
 		context.Background(),
@@ -108,8 +124,9 @@ func TestBuildReviewContext_IncludesDiffAndVerificationSteps(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ws.Path, workspace)
 	assert.Contains(t, addendum, "exec-001")
-	assert.Contains(t, addendum, "```diff")
-	assert.Contains(t, addendum, "feature.go") // the real diff is inlined
+	assert.Contains(t, addendum, "feature.go") // the changed-files list names it
+	assert.Contains(t, addendum, "git diff main...HEAD", "must tell the agent how to fetch the real diff itself")
+	assert.NotContains(t, addendum, "```diff", "the diff text itself must not be inlined (see buildReviewContext's doc comment)")
 	assert.Contains(t, addendum, "[agent_executable] run go test")
 	assert.Contains(t, addendum, "[human_judgment] copy reads well")
 }

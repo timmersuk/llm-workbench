@@ -65,16 +65,19 @@ Rules for this interview:
 	// reviewSystemPrompt drives the Review-stage conversation (CONTEXT.md's
 	// **Review** entry, docs/milestones/done/milestone6.md "The review mechanism").
 	// Unlike GrillMe/Planning Mode, which interview toward a new artifact, this
-	// reviews a *prior* one — the execution's diff, supplied in the prompt
-	// addendum below — working through three phases the human can interrupt at
-	// any point. Your workspace is the execution's isolated git worktree, and
-	// bash is available (confined to it) so you actually run the project's
-	// tests rather than guessing whether they pass. A failing check is never an
-	// automatic verdict: surface findings and let the human decide via Finalize.
-	reviewSystemPrompt = `You are reviewing a completed execution of this task, conversing with the human who will make the final call. You are in the execution's isolated git worktree; you have read-only tools (read_file/grep_search/glob) and a confined bash tool that runs the project's own commands from that worktree.
+	// reviews a *prior* one — the execution's commits/changed-files summary is
+	// supplied in the prompt addendum below, but the diff itself is not: the
+	// agent is told to fetch it with its own confined bash tool (see
+	// buildReviewContext's doc comment for why) — working through three phases
+	// the human can interrupt at any point. Your workspace is the execution's
+	// isolated git worktree, and bash is available (confined to it) so you
+	// actually run the project's tests rather than guessing whether they pass.
+	// A failing check is never an automatic verdict: surface findings and let
+	// the human decide via Finalize.
+	reviewSystemPrompt = `You are reviewing a completed execution of this task, conversing with the human who will make the final call. You are in the execution's isolated git worktree; you have read-only tools (read_file/grep_search/glob) and a confined bash tool that runs the project's own commands from that worktree. The prompt below tells you the exact git diff command to run for the change under review — start there.
 
 Work through three phases, narrating what you find as you go and pausing for the human whenever they want to weigh in:
-1. Automated checks: run the project's test suite with bash, and do a Standards + Spec pass over the diff (does the change match the codebase's conventions, and does it actually do what the task asked?). Report what passed and what didn't.
+1. Automated checks: run the diff command noted below to see the change, run the project's test suite with bash, and do a Standards + Spec pass over the diff (does the change match the codebase's conventions, and does it actually do what the task asked?). Report what passed and what didn't.
 2. Test-meaningfulness: look at what the tests in the diff actually assert, not just whether they pass — flag a test that can't fail, or one that doesn't exercise the code path it claims to cover.
 3. Per-verification-step confirmation: walk the task's verification steps below one by one. Attempt each agent_executable step yourself (run the command, hit the endpoint, drive the check) and report what you observed; for each human_judgment step, ask the human to perform it and record their confirmation.
 
@@ -799,13 +802,6 @@ func (s *Server) buildStagePrompt(t task.Task, proj project.Project, stage strin
 	return b.String()
 }
 
-// maxReviewPatchBytes caps how much of the execution diff is inlined into the
-// review prompt, so a large change doesn't blow a small-context local model's
-// window (the same binding constraint the toolloop output caps address). The
-// agent still has read_file/grep_search over the whole worktree for anything
-// the truncated patch drops.
-const maxReviewPatchBytes = 24 * 1024
-
 // stageRun bundles the resolved workspace, the (possibly stage-augmented)
 // system prompt, and whether the confined bash tool should be offered, for one
 // stage conversation turn — the three stage-conversation handlers share it so
@@ -959,10 +955,25 @@ func (s *Server) buildRejectedReviewContext(ctx context.Context, store TaskStore
 }
 
 // buildReviewContext resolves the worktree of the task's most recent execution
-// and builds the review prompt addendum: the execution's commits, its actual
-// diff (CollectExecutionPatch), and the task's structured verification steps
-// for the agent to walk. Returns the addendum and the worktree path bash/the
-// read-only tools are confined to.
+// and builds the review prompt addendum: the execution's commits, its changed
+// file list, and the task's structured verification steps for the agent to
+// walk. Returns the addendum and the worktree path bash/the read-only tools
+// are confined to.
+//
+// Unlike an earlier version of this function, the actual diff text is
+// deliberately NOT inlined here — Review always has a confined bash tool over
+// ws.Path (resolveStageRun's EnableBash), so the agent can run `git diff`
+// itself, and the addendum tells it the exact command. Embedding the diff
+// (previously capped at 24KB via maxReviewPatchBytes) was the single largest
+// contributor to the review system prompt's size, and the claude CLI receives
+// that whole prompt as one --system-prompt argument — on Windows, the total
+// command line (this addendum plus everything else in resolveStageRun's
+// prompt, plus systemPromptWithHistory's replayed conversation) shares a
+// single ~32,767 character CreateProcess limit, so an inlined diff both hit
+// an arbitrary truncation cliff on real changes and made that limit easier to
+// blow. Commits/artifacts come from latest.Output (recorded by
+// agentrunner.CollectExecutionOutput when the execution completed,
+// internal/api/execution.go) rather than a fresh git call here.
 func (s *Server) buildReviewContext(ctx context.Context, proj project.Project, store TaskStore, taskID, defaultBranch string) (addendum, workspace string, err error) {
 	executions, err := store.ListExecutions(taskID)
 	if err != nil {
@@ -980,24 +991,20 @@ func (s *Server) buildReviewContext(ctx context.Context, proj project.Project, s
 		return "", "", fmt.Errorf("resolving review workspace: %w", err)
 	}
 
-	commits, patch, err := agentrunner.CollectExecutionPatch(ctx, ws, latest.Output.ForkedFromBranch)
-	if err != nil {
-		return "", "", fmt.Errorf("collecting execution diff: %w", err)
-	}
-	if len(patch) > maxReviewPatchBytes {
-		patch = patch[:maxReviewPatchBytes] + "\n[truncated: diff exceeded the inline limit — use read_file/grep_search over the worktree for the rest]"
-	}
-
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n## Execution under review: %s\n", latest.ExecutionID)
 	fmt.Fprintf(&b, "Branch %s, based on %s.\n", ws.Branch, ws.BaseBranch)
-	if len(commits) > 0 {
-		fmt.Fprintf(&b, "Commits (oldest first): %s\n", strings.Join(commits, ", "))
+	if len(latest.Output.Commits) > 0 {
+		fmt.Fprintf(&b, "Commits (oldest first): %s\n", strings.Join(latest.Output.Commits, ", "))
 	}
+	if len(latest.Output.Artifacts) > 0 {
+		fmt.Fprintf(&b, "Changed files:\n- %s\n", strings.Join(latest.Output.Artifacts, "\n- "))
+	}
+	fmt.Fprintf(&b, "\nRun `git diff %s...HEAD` with your bash tool in this worktree to see the full diff before starting the checks below.\n", ws.BaseBranch)
 
 	// The structured verification steps are the checklist phase 3 walks. A
 	// missing/unreadable context.yaml just omits them rather than failing the
-	// whole review — the diff is the primary artifact.
+	// whole review.
 	if c, ctxErr := store.GetContext(taskID); ctxErr != nil {
 		logrus.WithError(ctxErr).WithField("task", taskID).Warn("review: skipping verification steps (context unavailable)")
 	} else if len(c.Verification) > 0 {
@@ -1006,10 +1013,6 @@ func (s *Server) buildReviewContext(ctx context.Context, proj project.Project, s
 			fmt.Fprintf(&b, "- [%s] %s\n", v.Kind, v.Description)
 		}
 	}
-
-	b.WriteString("\n### Diff under review\n```diff\n")
-	b.WriteString(patch)
-	b.WriteString("\n```\n")
 
 	return b.String(), ws.Path, nil
 }
