@@ -55,6 +55,43 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+// askQuestionToolName mirrors drafttool.AskQuestionName
+// (internal/drafttool/drafttool.go) — no shared codegen between the Go and
+// TypeScript sides, so this string is kept in sync by convention, the same
+// way ReviewPanel.tsx's proposeKnowledgeToolName is. Offered alongside the
+// stage's own Draft-proposing tool on Requirements/Planning (stageTool,
+// internal/api/stage_conversation.go): a structured alternative to writing
+// a question's options/recommendation into prose, rendered below as
+// clickable choices next to the normal reply textarea.
+const askQuestionToolName = 'ask_question'
+
+// AskQuestionArgs is ask_question's tool-call argument shape (the wire
+// shape drafttool.go's askQuestionSchema describes) — not a mirror of any
+// persisted Go struct, since a call to this tool is never written to disk:
+// the human's answer (typed or clicked) is just the next plain chat
+// message, so this only exists to drive the option buttons below for the
+// one turn that proposed it.
+interface AskQuestionArgs {
+  options: string[]
+  recommended_option?: string
+  recommendation_reason?: string
+}
+
+// parseAskQuestionArgs tolerates a schema violation the model produced
+// anyway (most importantly a missing/non-array `options`) by falling back
+// to an empty list rather than throwing — so the question just renders with
+// no buttons instead of crashing the panel. A JSON.parse failure still
+// throws, same as every other tool-call arguments parse in this file, left
+// for the caller's try/catch.
+function parseAskQuestionArgs(argumentsJSON: string): AskQuestionArgs {
+  const parsed = JSON.parse(argumentsJSON) as Partial<AskQuestionArgs>
+  return {
+    options: Array.isArray(parsed.options) ? parsed.options.map(String) : [],
+    recommended_option: typeof parsed.recommended_option === 'string' ? parsed.recommended_option : undefined,
+    recommendation_reason: typeof parsed.recommendation_reason === 'string' ? parsed.recommendation_reason : undefined,
+  }
+}
+
 function toDisplayMessage(m: ConversationMessage): DisplayMessage {
   return {
     role: m.role,
@@ -175,6 +212,13 @@ export function StageConversationPanel<D, S = never>({
   const [executor, setExecutor] = useState('')
   const [executorOptions, setExecutorOptions] = useState([localChatOption])
   const [pendingDraft, setPendingDraft] = useState<D | null>(null)
+  // pendingQuestion holds the most recent ask_question call still awaiting
+  // an answer — rendered as option buttons beside the reply textarea below.
+  // Unlike pendingDraft/pendingSecondaryDraft, it's cleared the instant any
+  // reply goes out (sendMessage), typed or clicked, since a question is
+  // "answered" by the human's very next message either way — there is
+  // nothing to Finalize or Discard.
+  const [pendingQuestion, setPendingQuestion] = useState<AskQuestionArgs | null>(null)
   const [finalizing, setFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   // pendingSecondaryDraft/secondaryFinalizing/secondaryError mirror the
@@ -233,7 +277,12 @@ export function StageConversationPanel<D, S = never>({
         let latestSecondaryCall: { arguments: string } | undefined
         for (let i = loaded.length - 1; i >= 0; i--) {
           const toolCall = loaded[i].tool_call
-          if (!toolCall) {
+          if (!toolCall || toolCall.name === askQuestionToolName) {
+            // ask_question is handled separately below (only resurfaced
+            // when it's the very last message) — skipped here so it's
+            // never mistaken for a RequirementsDraft/TaskPlan proposal by
+            // the "any non-secondary tool call is the main draft" fallback
+            // below.
             continue
           }
           if (secondaryDraft && toolCall.name === secondaryDraft.toolName) {
@@ -259,6 +308,19 @@ export function StageConversationPanel<D, S = never>({
             setPendingSecondaryDraft(mergeDraftDefaults(secondaryDraft.emptyDraft, JSON.parse(latestSecondaryCall.arguments)))
           } catch {
             // Same as above.
+          }
+        }
+        // ask_question rehydrates only off the very last loaded message,
+        // unlike the Draft proposals above — a question from several turns
+        // back was already answered by whatever the human said next, so
+        // resurfacing it here would offer stale, already-moot options.
+        const lastToolCall = loaded[loaded.length - 1]?.tool_call
+        if (lastToolCall?.name === askQuestionToolName) {
+          try {
+            setPendingQuestion(parseAskQuestionArgs(lastToolCall.arguments))
+          } catch {
+            // Malformed arguments JSON — no buttons to rehydrate, the
+            // human can just keep chatting.
           }
         }
       } catch (err) {
@@ -375,6 +437,18 @@ export function StageConversationPanel<D, S = never>({
     }
     if (event.tool_call) {
       updateLastMessage((msg) => ({ ...msg, toolCallName: event.tool_call!.name }))
+      if (event.tool_call.name === askQuestionToolName) {
+        // Checked before the main/secondary draft bucketing below, so
+        // ask_question is never misparsed as a RequirementsDraft/TaskPlan —
+        // same reasoning as the rehydration walk's skip above.
+        try {
+          setPendingQuestion(parseAskQuestionArgs(event.tool_call.arguments))
+        } catch {
+          // Malformed arguments JSON is surfaced via the chip only; the
+          // human can keep chatting and ask the model to try again.
+        }
+        return
+      }
       if (secondaryDraft && event.tool_call.name === secondaryDraft.toolName) {
         try {
           setPendingSecondaryDraft(mergeDraftDefaults(secondaryDraft.emptyDraft, JSON.parse(event.tool_call.arguments)))
@@ -439,6 +513,11 @@ export function StageConversationPanel<D, S = never>({
     setSending(true)
     setStreamedChars(0)
     setFinalTokens(undefined)
+    // Sending any reply — typed or via an ask_question option click, which
+    // just calls this same function with the clicked label as text —
+    // answers whatever question was pending, so it's cleared here rather
+    // than only on the click path.
+    setPendingQuestion(null)
     const controller = new AbortController()
     abortControllerRef.current = controller
 
@@ -535,6 +614,7 @@ export function StageConversationPanel<D, S = never>({
       { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
     ])
     setPendingDraft(null)
+    setPendingQuestion(null)
     setSending(true)
     setStreamedChars(0)
     setFinalTokens(undefined)
@@ -593,6 +673,17 @@ export function StageConversationPanel<D, S = never>({
     } catch (err) {
       updateMessageAt(index, (msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
     }
+  }
+
+  // handleAnswerQuestion sends a clicked ask_question option through the
+  // exact same sendMessage path a typed reply uses — the transcript shows
+  // a plain user message with the option's text, indistinguishable from
+  // the human having typed it (sendMessage itself clears pendingQuestion).
+  function handleAnswerQuestion(option: string) {
+    if (sending) {
+      return
+    }
+    void sendMessage(option)
   }
 
   // Enter sends the reply, matching most chat UIs; Alt+Enter inserts a
@@ -743,7 +834,10 @@ export function StageConversationPanel<D, S = never>({
               live={sending && index === messages.length - 1}
             />
             <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
-            {message.toolCallName && <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>}
+            {message.toolCallName && message.toolCallName !== askQuestionToolName && (
+              <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>
+            )}
+            {message.toolCallName === askQuestionToolName && <span className="tool-call-chip">Asked a question</span>}
             {message.error && <p className="error">{message.error}</p>}
             <div className="message-actions">
               <button type="button" className="action-btn" onClick={() => handleCopyMessage(message.content)}>
@@ -769,6 +863,36 @@ export function StageConversationPanel<D, S = never>({
 
       {!notStarted && (
       <>
+      {pendingQuestion && pendingQuestion.options.length > 0 && (
+        // Structured alternative to reading the recommended answer out of
+        // prose and retyping it: each option is a real button that sends
+        // its own label through handleAnswerQuestion, so clicking one is
+        // indistinguishable in the transcript from having typed it. The
+        // free-text textarea below stays live the whole time — a
+        // recommendation is a default to accept or redirect, never the
+        // only way to answer.
+        <div className="ask-question-options" role="group" aria-label="Suggested answers">
+          {pendingQuestion.options.map((option) => {
+            const isRecommended = option === pendingQuestion.recommended_option
+            return (
+              <button
+                key={option}
+                type="button"
+                className={isRecommended ? 'ask-question-option ask-question-option-recommended' : 'ask-question-option'}
+                onClick={() => handleAnswerQuestion(option)}
+                disabled={sending}
+                title={isRecommended ? pendingQuestion.recommendation_reason : undefined}
+              >
+                {option}
+                {isRecommended && <span className="ask-question-recommended-badge">Recommended</span>}
+              </button>
+            )
+          })}
+          {pendingQuestion.recommendation_reason && (
+            <p className="ask-question-reason">{pendingQuestion.recommendation_reason}</p>
+          )}
+        </div>
+      )}
       <div className="chat-input">
         <textarea
           value={draft}
