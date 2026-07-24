@@ -45,6 +45,45 @@ type ConversationToolActivity struct {
 	IsError   bool   `yaml:"is_error,omitempty" json:"is_error,omitempty"`
 }
 
+// MarshalYAML forces Arguments/Result to the double-quoted scalar style,
+// overriding yaml.v3's own style choice for this type. Raw tool output
+// (git diff --stat, test runner summaries, ls -l, ...) commonly has lines
+// that themselves start with a leading space, which forces yaml.v3's
+// block-literal encoder to add an explicit indentation indicator (e.g.
+// "|4-") to disambiguate structural indent from the content's own leading
+// space — and a yaml.v3 encoder bug (still v3.0.1, no fix available)
+// writes the body one space short of what that indicator requires,
+// producing a self-inconsistent file that fails to parse back ("did not
+// find expected key"), corrupting the whole Conversation on the next read.
+// Double-quoted style has no such indentation ambiguity — newlines are
+// escaped explicitly — so it round-trips safely regardless of the
+// content's own leading whitespace. Name is left in yaml.v3's default
+// style since it's always a short, plain tool identifier.
+func (a ConversationToolActivity) MarshalYAML() (interface{}, error) {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	appendField := func(key, value string, forceDoubleQuoted, omitEmpty bool) {
+		if omitEmpty && value == "" {
+			return
+		}
+		valueNode := &yaml.Node{Kind: yaml.ScalarNode, Value: value}
+		if forceDoubleQuoted {
+			valueNode.Style = yaml.DoubleQuotedStyle
+		}
+		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, valueNode)
+	}
+	appendField("name", a.Name, false, false)
+	appendField("arguments", a.Arguments, true, true)
+	appendField("result", a.Result, true, true)
+	if a.IsError {
+		isErrorNode := &yaml.Node{}
+		if err := isErrorNode.Encode(a.IsError); err != nil {
+			return nil, err
+		}
+		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "is_error"}, isErrorNode)
+	}
+	return node, nil
+}
+
 // maxPersistedToolActivityBytes caps each persisted
 // ConversationToolActivity.Arguments/Result string. Deliberately smaller
 // than the 16KB a tool result is capped at before a model ever sees it

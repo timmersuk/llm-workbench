@@ -165,6 +165,42 @@ func TestFileStore_AppendConversationMessages_TrimsContentToAvoidYAMLRoundTripBu
 	assert.Equal(t, "Here are some questions:\n1. What?", reloaded.Messages[0].Content)
 }
 
+// TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips
+// locks in ConversationToolActivity.MarshalYAML's fix for a second, distinct
+// yaml.v3 round-trip bug from the one above: raw tool output whose lines
+// themselves start with a leading space (git diff --stat, test runner
+// summaries, ls -l, ...) forces yaml.v3's block-literal encoder to add an
+// explicit indentation indicator (e.g. "|4-"), and yaml.v3 (still v3.0.1,
+// no fix available) writes the body one space short of what that indicator
+// requires — producing a file that fails to parse back with "did not find
+// expected key". Forcing Arguments/Result to double-quoted style sidesteps
+// the ambiguity entirely.
+func TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create(Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	diffStatOutput := " frontend/src/GrillMePanel.test.tsx      | 169 ++++++++++++++++++++++++++++++++\n" +
+		" frontend/src/PlanningModePanel.test.tsx |  86 +++++++++++++++-\n" +
+		" 7 files changed, 505 insertions(+), 20 deletions(-)"
+
+	_, err = store.AppendConversationMessages("task-a", StageReview, ConversationMessage{
+		Role:    "assistant",
+		Content: "ran the checks",
+		ToolActivity: []ConversationToolActivity{
+			{Name: "Bash", Arguments: `{"command":"git diff --stat"}`, Result: diffStatOutput},
+		},
+	})
+	require.NoError(t, err)
+
+	reloaded, err := store.GetConversation("task-a", StageReview)
+	require.NoError(t, err, "the persisted file must itself be readable back")
+	require.Len(t, reloaded.Messages, 1)
+	require.Len(t, reloaded.Messages[0].ToolActivity, 1)
+	assert.Equal(t, diffStatOutput, reloaded.Messages[0].ToolActivity[0].Result)
+}
+
 func TestFileStore_AppendConversationMessages_RejectsInvalidStage(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
