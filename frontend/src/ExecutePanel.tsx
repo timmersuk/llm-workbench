@@ -44,6 +44,12 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   const [runError, setRunError] = useState<string | null>(null)
   const [executor, setExecutor] = useState('')
   const [executorOptions, setExecutorOptions] = useState<string[]>([])
+  // executorsError is set when listAgentExecutors itself fails (server
+  // unreachable, 500, etc.) — distinct from a successful response reporting
+  // zero healthy executors, which is a legitimate state and leaves this
+  // null. Without this, "No executor available" read the same whether the
+  // server was unreachable or genuinely had nothing healthy.
+  const [executorsError, setExecutorsError] = useState<string | null>(null)
   // continuableExecutionId is the execution_id handleGetContinuableExecution
   // offers (empty when there's nothing eligible) — resolveFailureContinuation
   // already excludes this whenever a needs_changes retry is auto-continuing,
@@ -89,7 +95,11 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         setExecutorOptions(executors)
         setExecutor((current) => current || executors[0] || '')
       })
-      .catch(() => undefined) // no executors healthy — Run Execution stays disabled below
+      .catch((err) => {
+        if (!cancelled) {
+          setExecutorsError(err instanceof Error ? err.message : String(err))
+        }
+      }) // Run Execution stays disabled below; the error is surfaced near the picker
 
     return () => {
       cancelled = true
@@ -238,6 +248,8 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
           ))}
         </select>
       </div>
+
+      {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
 
       {continuableExecutionId && (
         <fieldset className="continue-choice" disabled={running}>

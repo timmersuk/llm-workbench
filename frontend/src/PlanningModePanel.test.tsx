@@ -30,7 +30,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 describe('PlanningModePanel', () => {
   it('mounts and renders the model select and empty transcript, waiting for an explicit Start Planning', async () => {
     vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
-    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
     vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'planning', messages: [] })
 
     render(<PlanningModePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)

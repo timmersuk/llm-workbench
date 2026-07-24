@@ -38,7 +38,9 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 
 beforeEach(() => {
   vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a', 'model-b'] })
-  vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
+  // 'local' healthy, nothing else — the common-case baseline. Tests that
+  // specifically exercise "nothing healthy, including local" override this.
+  vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
   vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'requirements', messages: [] })
   // An empty conversation (the default above) auto-starts the interview —
   // resolve immediately by default so tests not specifically about the
@@ -88,12 +90,26 @@ describe('GrillMePanel — initial load', () => {
     expect(screen.getByRole('option', { name: 'model-b' })).toBeInTheDocument()
   })
 
-  it('only offers Local LLM chat as the executor when no agent executors are enabled server-side', async () => {
+  it('only offers Local LLM chat as the executor when no agent executors are enabled server-side, and local is healthy', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
+
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
     await waitFor(() => expect(api.listAgentExecutors).toHaveBeenCalled())
     expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Claude Code' })).not.toBeInTheDocument()
+  })
+
+  it('offers no executor at all, and hides the Model row, when nothing is healthy — not even local', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await waitFor(() => expect(api.listAgentExecutors).toHaveBeenCalled())
+    expect(screen.getByRole('option', { name: 'No executor available' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Local LLM chat' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Executor')).toBeDisabled()
+    expect(screen.queryByLabelText('Model')).not.toBeInTheDocument()
   })
 
   it('offers Claude Code as an executor once the server reports it enabled', async () => {
@@ -111,7 +127,7 @@ describe('GrillMePanel — initial load', () => {
 
     await screen.findByRole('option', { name: 'Claude Code' })
     expect(screen.queryByRole('option', { name: 'local' })).not.toBeInTheDocument()
-    // "Local LLM chat" (the "" bypass sentinel) is still the always-on entry.
+    // "local" being healthy still surfaces as "Local LLM chat" (the "" value) instead.
     expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
   })
 
@@ -132,13 +148,14 @@ describe('GrillMePanel — initial load', () => {
     await waitFor(() => expect(screen.getByLabelText('Executor')).toHaveValue('claude-code'))
   })
 
-  it('leaves Local LLM chat selected when Claude Code is not reported healthy', async () => {
-    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
+  it('leaves Local LLM chat selected when Claude Code is not reported healthy, but local is', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
 
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
     await waitFor(() => expect(api.listAgentExecutors).toHaveBeenCalled())
     expect(screen.getByLabelText('Executor')).toHaveValue('')
+    expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
   })
 
   it('labels the panel as GrillMe with an explanatory intro, distinct from the chat history', async () => {

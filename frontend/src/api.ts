@@ -38,8 +38,25 @@ export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError'
 }
 
+// GET_TIMEOUT_MS bounds every getJSON call — these are all quick lookups
+// (project/task metadata, model and executor lists), so a server that's
+// merely slow to answer isn't the expected case. Without this, a hung
+// backend (unreachable, deadlocked, paused in a debugger) never rejects the
+// fetch promise at all, so a caller's .catch() never fires either — a
+// picker like listAgentExecutors would sit at its empty-state default
+// forever with no sign anything's wrong, rather than surfacing an error.
+const GET_TIMEOUT_MS = 15000
+
 async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  let res: Response
+  try {
+    res = await fetch(path, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new Error(`${path} timed out after ${GET_TIMEOUT_MS / 1000}s — is the server running?`)
+    }
+    throw err
+  }
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`)
   }

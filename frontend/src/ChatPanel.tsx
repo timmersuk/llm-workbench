@@ -27,6 +27,10 @@ export function ChatPanel() {
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [executor, setExecutor] = useState('')
   const [executorOptions, setExecutorOptions] = useState<Array<{ value: string; label: string }>>([])
+  // executorsError mirrors modelsError above, for listAgentExecutors — set
+  // only when the request itself fails (server unreachable, 500, etc.), not
+  // when it succeeds with zero healthy executors.
+  const [executorsError, setExecutorsError] = useState<string | null>(null)
   const [sessionKey, setSessionKey] = useState(() => crypto.randomUUID())
   // editingIndex is the position of the user message currently being
   // edited (draft holds its in-progress edited text), or null when not
@@ -57,7 +61,7 @@ export function ChatPanel() {
         setExecutorOptions(options)
         setExecutor((current) => current || options[0]?.value || '')
       })
-      .catch(() => undefined)
+      .catch((err) => setExecutorsError(err instanceof Error ? err.message : String(err)))
   }, [])
 
   function updateLastMessage(update: (msg: DisplayMessage) => DisplayMessage) {
@@ -320,6 +324,7 @@ export function ChatPanel() {
           New chat
         </button>
       </div>
+      {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
       {modelsError && executor === 'local' && <p className="error">Could not load models: {modelsError}</p>}
       <div className="chat-history">
         {messages.map((message, index) => (

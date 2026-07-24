@@ -255,8 +255,13 @@ func (c *openAIClient) CheckHealth(ctx context.Context) error {
 }
 
 // ListModels requests the available models from {baseURL}/models and returns
-// their IDs.
+// their IDs. Bounded by c.timeout so an unreachable or hung provider fails
+// fast instead of blocking on the caller's context (which, for a healthcheck
+// or agent-executors HTTP handler, has no deadline of its own).
 func (c *openAIClient) ListModels(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("building models request: %w", err)

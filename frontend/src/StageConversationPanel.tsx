@@ -165,8 +165,12 @@ interface StageConversationPanelProps<D, S = never> {
   secondaryDraft?: SecondaryDraftConfig<S>
 }
 
-// localChatOption is always available — the local-LLM chat path
-// (internal/chat) needs no server opt-in, unlike agent executors below.
+// localChatOption represents the local-LLM chat path (server-side, "" maps
+// to the same health-checked "local" AgentRunner every other executor goes
+// through — resolveStageStreamTarget, internal/api/stage_conversation.go).
+// It is only ever added to executorOptions when listAgentExecutors reports
+// "local" itself as healthy — offering it unconditionally would let the
+// human pick an executor that's known not to be responding.
 const localChatOption = { value: '', label: 'Local LLM chat' }
 
 // executorLabels maps an agent executor key (internal/agentrunner) to its
@@ -208,9 +212,21 @@ export function StageConversationPanel<D, S = never>({
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [models, setModels] = useState<string[]>([])
+  const [modelsError, setModelsError] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState('')
   const [executor, setExecutor] = useState('')
-  const [executorOptions, setExecutorOptions] = useState([localChatOption])
+  // executorOptions starts empty rather than defaulting to [localChatOption]
+  // — until listAgentExecutors actually reports "local" healthy, offering it
+  // would be the same silent-default bug this and executorsError below both
+  // guard against.
+  const [executorOptions, setExecutorOptions] = useState<{ value: string; label: string }[]>([])
+  // executorsError is set when listAgentExecutors itself fails (server
+  // unreachable, 500, etc.) — distinct from "the request succeeded and
+  // reported zero healthy executors", which is a legitimate state that
+  // leaves this null. Without this, a fetch failure and "nothing healthy"
+  // looked identical: the picker silently fell back to Local LLM chat with
+  // no indication the server couldn't even be reached.
+  const [executorsError, setExecutorsError] = useState<string | null>(null)
   const [pendingDraft, setPendingDraft] = useState<D | null>(null)
   // pendingQuestion holds the most recent ask_question call still awaiting
   // an answer — rendered as option buttons beside the reply textarea below.
@@ -342,31 +358,47 @@ export function StageConversationPanel<D, S = never>({
           resolvedModel = result.models[0] ?? ''
           setSelectedModel((current) => current || resolvedModel)
         }
-      } catch {
-        // No models available — local-chat model selection just stays empty.
+      } catch (err) {
+        if (!cancelled) {
+          setModelsError(err instanceof Error ? err.message : String(err))
+        }
       }
 
       let resolvedExecutor = ''
       try {
         const result = await listAgentExecutors()
         if (!cancelled) {
-          // "local" is registered for the free-floating Chat tab, not for
-          // stage conversations — it has no notion of this stage's
-          // Draft-proposing tool, so selecting it here would silently never
-          // produce a Draft. Filtered out rather than offered as a dead end.
+          // "local" resolves server-side to the exact same health-checked
+          // AgentRunner as the "" (localChatOption) value — resolveStageStreamTarget
+          // maps "" to defaultChatExecutor ("local") before the lookup — so
+          // its presence here is the live signal for whether local chat is
+          // actually reachable right now. Split out (not just mapped
+          // alongside the rest) so it's represented by localChatOption's ""
+          // value instead of a second, redundant "local"-keyed entry.
+          const localHealthy = result.executors.includes('local')
           const executors = result.executors.filter((key) => key !== 'local')
-          setExecutorOptions([localChatOption, ...executors.map((key) => ({ value: key, label: executorLabels[key] ?? key }))])
+          setExecutorOptions([
+            ...(localHealthy ? [localChatOption] : []),
+            ...executors.map((key) => ({ value: key, label: executorLabels[key] ?? key })),
+          ])
           // claude-code can ground its questions in the actual repository
           // (Read/Grep/Glob), unlike the local chat path, so it's preferred
           // whenever it's healthy — the picker still lets the human switch
-          // back to local chat.
+          // to local chat when that's healthy too.
           if (executors.includes('claude-code')) {
             resolvedExecutor = 'claude-code'
             setExecutor((current) => current || 'claude-code')
           }
         }
-      } catch {
-        // No agent executors available — Local LLM chat stays the only option.
+      } catch (err) {
+        // The request itself failed (server unreachable, 500, etc.) — as
+        // opposed to succeeding with zero healthy executors, which isn't an
+        // error and just leaves executorOptions empty. Surfaced below so a
+        // fetch failure reads as exactly that, not a silent "no executors"
+        // default.
+        if (!cancelled) {
+          setExecutorsError(err instanceof Error ? err.message : String(err))
+        }
       }
 
       if (cancelled) {
@@ -782,7 +814,13 @@ export function StageConversationPanel<D, S = never>({
 
       <div className="chat-model-row">
         <label htmlFor={`stage-executor-${stage}`}>Executor</label>
-        <select id={`stage-executor-${stage}`} value={executor} onChange={(e) => setExecutor(e.target.value)}>
+        <select
+          id={`stage-executor-${stage}`}
+          value={executor}
+          onChange={(e) => setExecutor(e.target.value)}
+          disabled={executorOptions.length === 0}
+        >
+          {executorOptions.length === 0 && <option value="">No executor available</option>}
           {executorOptions.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
@@ -790,7 +828,7 @@ export function StageConversationPanel<D, S = never>({
           ))}
         </select>
 
-        {!executor && (
+        {!executor && executorOptions.some((opt) => opt.value === '') && (
           <>
             <label htmlFor={`stage-model-${stage}`}>Model</label>
             <select id={`stage-model-${stage}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
@@ -804,6 +842,11 @@ export function StageConversationPanel<D, S = never>({
           </>
         )}
       </div>
+
+      {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
+      {!executor && executorOptions.some((opt) => opt.value === '') && modelsError && (
+        <p className="error">Could not load models: {modelsError}</p>
+      )}
 
       {loadError && <p className="error">Could not load conversation: {loadError}</p>}
 

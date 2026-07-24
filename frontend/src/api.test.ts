@@ -68,7 +68,7 @@ describe('getJSON-backed requests', () => {
     const result = { projects: [{ id: 'demo' }], errors: [] }
     const fetchMock = stubFetch(jsonResponse(result))
     await expect(listProjects()).resolves.toEqual(result)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects', { signal: expect.any(AbortSignal) })
   })
 
   it('listProjects throws the exact "<path> returned <status>" message on non-2xx', async () => {
@@ -79,20 +79,20 @@ describe('getJSON-backed requests', () => {
   it('getProjectTask encodeURIComponent-escapes both path segments', async () => {
     const fetchMock = stubFetch(jsonResponse({ id: 'a b' }))
     await getProjectTask('demo project', 'task one')
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project/tasks/task%20one')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project/tasks/task%20one', { signal: expect.any(AbortSignal) })
   })
 
   it('getProject hits the right path and returns the parsed body', async () => {
     const body = { id: 'demo' }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(getProject('demo')).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo', { signal: expect.any(AbortSignal) })
   })
 
   it('getProject encodeURIComponent-escapes the id', async () => {
     const fetchMock = stubFetch(jsonResponse({ id: 'a b' }))
     await getProject('demo project')
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project', { signal: expect.any(AbortSignal) })
   })
 
   it('getProject throws the exact "<path> returned <status>" message on non-2xx', async () => {
@@ -104,42 +104,54 @@ describe('getJSON-backed requests', () => {
     const body = { tasks: [], errors: [] }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(listProjectTasks('demo')).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks', { signal: expect.any(AbortSignal) })
   })
 
   it('getTaskContext hits the right path and returns the parsed body', async () => {
     const body = { summary: 'x', background: '', files: [], detail: '', verification: [], open_questions: [] }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(getTaskContext('demo', 'task-a')).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks/task-a/context')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks/task-a/context', { signal: expect.any(AbortSignal) })
   })
 
   it('getTaskPlan hits the right path and returns the parsed body', async () => {
     const body = { approach: 'x', steps: [], risks: [], estimated_complexity: 'low', recommended_executor: '' }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(getTaskPlan('demo', 'task-a')).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks/task-a/plan')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks/task-a/plan', { signal: expect.any(AbortSignal) })
   })
 
   it('getStageConversation hits the right path and returns the parsed body', async () => {
     const body = { stage: 'requirements', messages: [] }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(getStageConversation('demo', 'task-a', 'requirements')).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks/task-a/stages/requirements/conversation')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks/task-a/stages/requirements/conversation', {
+      signal: expect.any(AbortSignal),
+    })
   })
 
   it('listModels hits the right path and returns the parsed body', async () => {
     const body = { models: ['model-a'] }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(listModels()).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/models')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/models', { signal: expect.any(AbortSignal) })
   })
 
   it('listAgentExecutors hits the right path and returns the parsed body', async () => {
     const body = { executors: ['claude-code'] }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(listAgentExecutors()).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors', { signal: expect.any(AbortSignal) })
+  })
+
+  it('listAgentExecutors surfaces a friendly message when the request times out', async () => {
+    const timeoutSignal = AbortSignal.abort(new DOMException('signal timed out', 'TimeoutError'))
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeoutSignal)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_path: string, init?: { signal?: AbortSignal }) => Promise.reject(init?.signal?.reason)),
+    )
+    await expect(listAgentExecutors()).rejects.toThrow('/api/v1/agent-executors timed out after 15s')
   })
 })
 
