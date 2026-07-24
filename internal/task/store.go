@@ -108,10 +108,10 @@ func (s *FileStore) Get(id string) (Task, error) {
 // valid, non-colliding id — ids are client-specified and not
 // disambiguated, so Create fails with ErrAlreadyExists if the id is already
 // taken within this store's (project-scoped) root. CreatedAt/UpdatedAt are
-// always server-set, ignoring any client-supplied values. Stage/Status are
-// likewise always server-set to "requirements"/"draft" — a task always
-// starts at the beginning of its lifecycle; only Finalize/Revise
-// (lifecycle.go) move Stage after creation.
+// always server-set, ignoring any client-supplied values. Stage is
+// likewise always server-set to "requirements" — a task always starts at
+// the beginning of its lifecycle; only Finalize/Revise (lifecycle.go) move
+// Stage after creation.
 func (s *FileStore) Create(t Task) (Task, error) {
 	if err := validateID(t.ID); err != nil {
 		return Task{}, err
@@ -127,7 +127,6 @@ func (s *FileStore) Create(t Task) (Task, error) {
 	t.CreatedAt = now
 	t.UpdatedAt = now
 	t.Stage = StageRequirements
-	t.Status = "draft"
 
 	if err := s.writeTask(t); err != nil {
 		return Task{}, err

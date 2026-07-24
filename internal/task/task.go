@@ -35,8 +35,7 @@ type Task struct {
 
 	Project string `yaml:"project" json:"project"`
 
-	Status string `yaml:"status" json:"status"`
-	Stage  string `yaml:"stage" json:"stage"`
+	Stage string `yaml:"stage" json:"stage"`
 
 	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
 	UpdatedAt time.Time `yaml:"updated_at" json:"updated_at"`

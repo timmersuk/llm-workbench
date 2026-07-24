@@ -24,7 +24,6 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     id: taskId,
     title: 'Task A',
     project: projectId,
-    status: 'draft',
     stage: 'planning',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',

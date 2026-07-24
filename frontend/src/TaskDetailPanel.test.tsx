@@ -49,7 +49,6 @@ function makeTask(stage: TaskStage, overrides: Partial<Task> = {}): Task {
     id: 'task-a',
     title: 'Task A',
     project: projectId,
-    status: 'draft',
     stage,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
@@ -287,33 +286,6 @@ describe('TaskDetailPanel — summary/interview zone separation', () => {
 
     await screen.findByTestId('grillme-panel')
     expect(container.querySelector('.task-summary')).not.toBeInTheDocument()
-  })
-})
-
-describe('TaskDetailPanel — status select', () => {
-  it('changing the status calls updateProjectTask with the full current task fields', async () => {
-    const user = userEvent.setup()
-    stubNoContextOrPlan()
-    const task = makeTask('requirements', { title: 'Task A', objective: 'ship it', constraints: ['no new deps'] })
-    const updated = { ...task, status: 'in_progress' as const }
-    vi.mocked(api.updateProjectTask).mockResolvedValue(updated)
-
-    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} />)
-    await screen.findByTestId('grillme-panel')
-
-    await user.selectOptions(screen.getByDisplayValue('draft'), 'in_progress')
-
-    expect(api.updateProjectTask).toHaveBeenCalledWith(projectId, 'task-a', {
-      title: 'Task A',
-      status: 'in_progress',
-      stage: 'requirements',
-      objective: 'ship it',
-      constraints: ['no new deps'],
-      assumptions: [],
-      success_criteria: [],
-      references: { knowledge: [], repo: [] },
-    })
-    await waitFor(() => expect(screen.getByDisplayValue('in_progress')).toBeInTheDocument())
   })
 })
 
