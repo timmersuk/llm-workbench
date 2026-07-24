@@ -45,7 +45,7 @@ const claudeRunnerMaxTurns = 30
 // claudeRunnerMaxTurns because an actual implementation run (write code,
 // run tests, fix failures, commit) legitimately needs far more turns than
 // an interview question does.
-const claudeExecutionMaxTurns = 100
+const claudeExecutionMaxTurns = 1000
 
 // executionKickoffMessage is the fixed user turn Execute sends to start an
 // autonomous run — all real instructions live in the system prompt

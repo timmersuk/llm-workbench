@@ -61,7 +61,7 @@ describe('ExecutePanel — running an execution', () => {
 
     expect(await screen.findByText('starting up')).toBeInTheDocument()
     expect(screen.getByText('Write')).toBeInTheDocument()
-    expect(screen.getByText('Tool result')).toBeInTheDocument()
+    expect(screen.getByText('wrote file')).toBeInTheDocument()
   })
 
   it('calls onExecuted with the recorded Execution once the run completes', async () => {
@@ -133,18 +133,19 @@ describe('ExecutePanel — running an execution', () => {
   })
 })
 
-describe('ExecutePanel — tool_result error styling', () => {
-  it('labels a failing tool result distinctly from a successful one', async () => {
+describe('ExecutePanel — tool activity error styling', () => {
+  it('shows a distinct status glyph for a failing tool call, paired with its call', async () => {
     const user = userEvent.setup()
     vi.mocked(api.startExecution).mockImplementation(async (_projectId, _taskId, _executor, onEvent) => {
+      onEvent({ type: 'tool_call', tool_name: 'Bash', tool_input: '{"command":"false"}' })
       onEvent({ type: 'tool_result', tool_result: 'exit 1', is_error: true })
     })
 
     const { container } = render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
     await user.click(await screen.findByRole('button', { name: 'Run Execution' }))
 
-    const summary = await screen.findByText('Tool error')
-    expect(within(container).getByText('exit 1')).toBeInTheDocument()
-    expect(summary).toBeInTheDocument()
+    expect(await screen.findByText('exit 1')).toBeInTheDocument()
+    expect(within(container).getByText('Bash')).toBeInTheDocument()
+    expect(container.querySelector('.tool-status-error')).toBeInTheDocument()
   })
 })

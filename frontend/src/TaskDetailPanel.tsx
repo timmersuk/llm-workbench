@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listReviews, reviseRequirements, revisePlan, updateProjectTask } from './api'
+import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listExecutions, listReviews, reviseRequirements, revisePlan, updateProjectTask } from './api'
 import { ExecutePanel } from './ExecutePanel'
 import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
 import { PRReviewPanel } from './PRReviewPanel'
 import { ReviewPanel } from './ReviewPanel'
-import type { Review, Task, TaskContext, TaskPlan, TaskStatus, WorkspaceStatusResult } from './types'
+import type { Execution, Review, Task, TaskContext, TaskPlan, TaskStatus, WorkspaceStatusResult } from './types'
 
 const STATUSES: TaskStatus[] = ['draft', 'ready', 'in_progress', 'blocked', 'failed', 'complete']
 
@@ -37,6 +37,11 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   // project. Advisory only: a failed fetch just means no banner, never
   // blocks the rest of the view (docs/milestones/done/milestone8a.md).
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusResult | null>(null)
+  // latestExecution backs the failure banner below — surfaced at the top of
+  // the task view (not just in ExecutePanel's own history list, which is
+  // easy to miss since a failed run leaves stage/status unchanged and the
+  // panel scrolled below other content).
+  const [latestExecution, setLatestExecution] = useState<Execution | null>(null)
 
   useEffect(() => {
     setContext(null)
@@ -51,6 +56,16 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
       .then(setWorkspaceStatus)
       .catch(() => undefined)
   }, [projectId])
+
+  useEffect(() => {
+    setLatestExecution(null)
+    listExecutions(projectId, task.id)
+      .then((result) => {
+        const executions = result.executions ?? []
+        setLatestExecution(executions.length > 0 ? executions[executions.length - 1] : null)
+      })
+      .catch(() => undefined) // no prior attempts, or the list failed to load — no banner either way
+  }, [projectId, task.id])
 
   useEffect(() => {
     setPlan(null)
@@ -105,6 +120,26 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
     task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0 || context || plan,
   )
 
+  // executionFailureNotice surfaces the most recent run's outcome at the
+  // top of the task view when it didn't succeed — ExecutePanel's own
+  // execution-history list shows the same status, but it's scrolled below
+  // requirements/context/plan and easy to miss, especially since a failed
+  // run leaves task.status/stage unchanged (internal/task/execution.go's
+  // RecordExecution only advances stage on success). Hitting the turn cap
+  // gets its own wording rather than the raw SDK error string, since it's
+  // common enough (claude_runner.go's claudeExecutionMaxTurns) to deserve a
+  // plain "what happened, what to do" message instead of "Reached maximum
+  // number of turns (100)".
+  const isMaxTurnsFailure = Boolean(
+    latestExecution?.failure?.message && /maximum number of turns/i.test(latestExecution.failure.message),
+  )
+  const executionFailureNotice =
+    latestExecution && latestExecution.status !== 'success'
+      ? isMaxTurnsFailure
+        ? `Last execution (${latestExecution.execution_id}) stopped after hitting its turn limit before finishing — try again, or split the plan into smaller steps.`
+        : `Last execution (${latestExecution.execution_id}) ${latestExecution.status === 'partial' ? 'finished partially' : 'failed'}${latestExecution.failure ? `: ${latestExecution.failure.message}` : '.'}`
+      : null
+
   // Never mentions a clean or unknown signal — same "only say something
   // when there's something to say" framing as the backend's own
   // appendWorkspaceAdvisories (stage_conversation.go), so the two surfaces
@@ -141,6 +176,8 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
       <p>
         {task.id} &middot; stage: {task.stage}
       </p>
+
+      {executionFailureNotice && <div className="execution-failure-banner">{executionFailureNotice}</div>}
 
       {workspaceNotices.length > 0 && (
         <div className="workspace-status-banner">
@@ -255,7 +292,8 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
           <ExecutePanel
             projectId={projectId}
             taskId={task.id}
-            onExecuted={() => {
+            onExecuted={(execution) => {
+              setLatestExecution(execution)
               // The "done" event only carries the Execution record, not the
               // task — a successful run advances stage server-side, so
               // reload the task to pick that up (and to no-op harmlessly on

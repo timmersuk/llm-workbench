@@ -1,0 +1,47 @@
+id: configurable-execution-max-turns
+title: Make Execute's max-turns cap configurable per task, ideally auto-derived at planning time
+project: llm-workbench
+status: draft
+stage: requirements
+created_at: 2026-07-24T00:00:00Z
+updated_at: 2026-07-24T00:00:00Z
+objective: >-
+  Execute's turn budget is a single hardcoded constant —
+  claudeExecutionMaxTurns in internal/agentrunner/claude_runner.go, shared by
+  both the direct claude-code client (claude_runner.go) and the
+  ChatClientRunner path (chat_client_runner.go) — so every task, regardless of
+  its actual scope, gets the same cap. structured-ask-question-tool's exec-002
+  hit this directly: a substantial plan (new tool schema, backend wiring,
+  frontend rendering, tests across three files) exhausted the then-100-turn
+  cap and failed outright with no partial credit path other than a full
+  re-run. That constant has been bumped to 1000 as an immediate mitigation,
+  but a single global number is still a blunt instrument: too low for large
+  plans, needlessly high (and slower to fail) for small ones. This task scopes
+  making the cap configurable per task — at minimum a field the plan or task
+  can set, and ideally a value the system estimates at plan-finalize time from
+  the plan's own shape (step count, file count touched), the same "derive a
+  default at plan-finalize, let a human override it" pattern
+  automated-executor-suggestion already scopes for executor/model choice.
+constraints:
+  - "Human override always available: whatever default is computed or configured, a human must be able to see and change it before or during Execute — no silent, unreviewable cap (docs/architectural invariants.md, 'humans own intent')."
+  - "No hidden state: the effective max-turns value for a given execution must be inspectable (e.g. recorded on the Execution or Plan record), not buried in a runtime default the human can't see (docs/architectural invariants.md)."
+  - "Applies to both agentrunner paths that currently read claudeExecutionMaxTurns (claude_runner.go's direct client and chat_client_runner.go's ChatClientRunner) — a fix scoped to only one would leave the other still hardcoded."
+  - "No new runtime dependency without a stated reason (project architectural invariant)."
+assumptions:
+  - "Related seam, not a duplicate: automated-executor-suggestion (draft) already scopes 'derive a default at plan-finalize time, human can override' for executor/model selection. This task is the same pattern applied to a different knob (turn budget) — worth building on the same mechanism/UI if that task lands first, but each can also ship independently."
+  - "Open question: does the configured/derived value live on plan.yaml (alongside the existing recommended_executor seam) or on task.yaml — plan.yaml seems the better fit since it's plan shape (step/file count) that would drive an estimate, not task-level intent."
+  - "Open question: what estimate signal is actually predictive — plan.steps count, referenced file count, task.constraints complexity — versus just letting a human pick from a small set of presets (e.g. small/medium/large). Start minimal; do not build a scoring model before a real failure pattern (beyond this one incident) justifies it."
+  - "Immediate mitigation already applied: claudeExecutionMaxTurns bumped from 100 to 1000 as a stopgap (internal/agentrunner/claude_runner.go) — this task is about making the cap configurable, not about re-tuning the single global default further."
+success_criteria:
+  - "A documented decision on the surfacing point (plan.yaml field vs. task.yaml field vs. Execute-trigger UI default) and, if auto-derivation is in scope, what plan-shape signal feeds it."
+  - "If built, the effective max-turns value for a given Execute run is inspectable on the resulting Execution record, and a human can override whatever default was computed or configured."
+  - "Both agentrunner call sites that currently hardcode claudeExecutionMaxTurns read the configured/derived value instead."
+references:
+  knowledge: []
+  repo:
+    - internal/agentrunner/claude_runner.go
+    - internal/agentrunner/chat_client_runner.go
+    - data/projects/llm-workbench/tasks/automated-executor-suggestion/task.yaml
+    - data/projects/llm-workbench/tasks/structured-ask-question-tool/executions/exec-002.yaml
+    - docs/task schema v0.md
+    - docs/architectural invariants.md
