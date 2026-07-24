@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PlanningModePanel } from './PlanningModePanel'
@@ -74,5 +74,89 @@ describe('PlanningModePanel', () => {
     await user.click(await screen.findByRole('button', { name: 'Finalize' }))
 
     await waitFor(() => expect(onFinalized).toHaveBeenCalledWith(resultTask, resultPlan))
+  })
+})
+
+describe('PlanningModePanel — ask_question', () => {
+  beforeEach(() => {
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
+  })
+
+  it('renders option buttons with the recommendation highlighted, and clicking one sends its label like a typed reply', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'planning', messages: [] })
+
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<PlanningModePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start Planning' }))
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'go ahead')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    act(() =>
+      deliver({
+        tool_call: {
+          name: 'ask_question',
+          arguments: JSON.stringify({ options: ['Small PRs', 'One big PR'], recommended_option: 'Small PRs', recommendation_reason: 'Easier to review' }),
+        },
+      }),
+    )
+
+    const recommended = screen.getByRole('button', { name: /Small PRs/ })
+    expect(recommended).toHaveClass('ask-question-option-recommended')
+    expect(screen.getByRole('button', { name: 'One big PR' })).not.toHaveClass('ask-question-option-recommended')
+
+    vi.mocked(api.postStageMessage).mockResolvedValue()
+    await user.click(recommended)
+
+    await waitFor(() =>
+      expect(api.postStageMessage).toHaveBeenLastCalledWith(
+        projectId,
+        taskId,
+        'planning',
+        'Small PRs',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
+    )
+    expect(screen.queryByRole('button', { name: 'One big PR' })).not.toBeInTheDocument()
+  })
+
+  it('only rehydrates pending options when ask_question is the last loaded message, and free text still works alongside them', async () => {
+    vi.mocked(api.getStageConversation).mockResolvedValue({
+      stage: 'planning',
+      messages: [
+        {
+          role: 'assistant',
+          content: 'How should we structure the PRs?',
+          tool_call: {
+            id: 'call-1',
+            name: 'ask_question',
+            arguments: JSON.stringify({ options: ['Small PRs', 'One big PR'], recommended_option: 'Small PRs', recommendation_reason: 'Easier to review' }),
+          },
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    })
+
+    const user = userEvent.setup()
+    render(<PlanningModePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: /Small PRs/ })).toBeInTheDocument()
+
+    vi.mocked(api.postStageMessage).mockResolvedValue()
+    const textarea = screen.getByPlaceholderText('Reply...')
+    expect(textarea).not.toBeDisabled()
+    await user.type(textarea, 'Neither, split by risk{Enter}')
+
+    await waitFor(() => expect(api.postStageMessage).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: /Small PRs/ })).not.toBeInTheDocument()
   })
 })

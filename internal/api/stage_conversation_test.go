@@ -755,7 +755,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
 		return in.SessionKey == "TASK-0001:"+task.StagePlanning &&
 			in.Workspace == filepath.Join(reposRoot, "logthing") && in.UserMessage == "go ahead" &&
-			len(in.Tools) == 1 && in.Tools[0].Function.Name == proposePlanToolName
+			len(in.Tools) == 2 && in.Tools[0].Function.Name == proposePlanToolName && in.Tools[1].Function.Name == askQuestionToolName
 	}), mock.Anything).Return([]chat.Delta{{Content: "thinking..."}, {Content: "here's the plan"}}, agentrunner.RunOutput{
 		Content: "here's the plan",
 		ToolCall: &chat.ToolCall{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{

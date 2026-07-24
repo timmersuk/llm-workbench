@@ -604,3 +604,172 @@ describe('GrillMePanel — Draft review', () => {
     expect(screen.getByText('Proposed a draft (propose_context)')).toBeInTheDocument()
   })
 })
+
+describe('GrillMePanel — ask_question', () => {
+  async function sendAndReceiveQuestion(argsObject: Record<string, unknown>) {
+    const user = userEvent.setup()
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'Please ask me a question')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    act(() => deliver({ tool_call: { name: 'ask_question', arguments: JSON.stringify(argsObject) } }))
+    return user
+  }
+
+  it('renders each option as a button and visually distinguishes the recommended one', async () => {
+    await sendAndReceiveQuestion({
+      options: ['REST', 'GraphQL', 'gRPC'],
+      recommended_option: 'REST',
+      recommendation_reason: 'Matches the rest of the codebase',
+    })
+
+    expect(screen.getByRole('button', { name: /REST/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'GraphQL' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'gRPC' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /REST/ })).toHaveClass('ask-question-option-recommended')
+    expect(screen.getByRole('button', { name: 'GraphQL' })).not.toHaveClass('ask-question-option-recommended')
+    expect(screen.getByText('Matches the rest of the codebase')).toBeInTheDocument()
+    // The generic "Proposed a draft (...)" chip must not appear for
+    // ask_question — it isn't a Draft proposal.
+    expect(screen.queryByText(/Proposed a draft/)).not.toBeInTheDocument()
+  })
+
+  it('clicking an option sends its label through the normal postStageMessage path and clears the options', async () => {
+    const user = await sendAndReceiveQuestion({
+      options: ['Yes', 'No'],
+      recommended_option: 'Yes',
+      recommendation_reason: 'Simpler',
+    })
+    vi.mocked(api.postStageMessage).mockResolvedValue()
+
+    await user.click(screen.getByRole('button', { name: /Yes/ }))
+
+    await waitFor(() =>
+      expect(api.postStageMessage).toHaveBeenLastCalledWith(
+        projectId,
+        taskId,
+        'requirements',
+        'Yes',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
+    )
+    expect(screen.queryByRole('button', { name: /No/ })).not.toBeInTheDocument()
+  })
+
+  it('leaves the free-text textarea usable alongside the option buttons, and sending typed text also clears the options', async () => {
+    const user = await sendAndReceiveQuestion({
+      options: ['Yes', 'No'],
+      recommended_option: 'Yes',
+      recommendation_reason: 'Simpler',
+    })
+    vi.mocked(api.postStageMessage).mockResolvedValue()
+
+    const textarea = screen.getByPlaceholderText('Reply...')
+    expect(textarea).not.toBeDisabled()
+    await user.type(textarea, 'Actually, something else entirely{Enter}')
+
+    await waitFor(() =>
+      expect(api.postStageMessage).toHaveBeenLastCalledWith(
+        projectId,
+        taskId,
+        'requirements',
+        'Actually, something else entirely',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
+    )
+    expect(screen.queryByRole('button', { name: /No/ })).not.toBeInTheDocument()
+  })
+
+  it('degrades silently when recommended_option does not match any option — all options still render, none highlighted', async () => {
+    await sendAndReceiveQuestion({
+      options: ['A', 'B'],
+      recommended_option: 'C',
+      recommendation_reason: 'irrelevant',
+    })
+
+    expect(screen.getByRole('button', { name: 'A' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'B' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'A' })).not.toHaveClass('ask-question-option-recommended')
+    expect(screen.getByRole('button', { name: 'B' })).not.toHaveClass('ask-question-option-recommended')
+  })
+
+  it('does not crash and shows no option buttons when options is missing entirely', async () => {
+    await sendAndReceiveQuestion({ recommended_option: 'x', recommendation_reason: 'y' })
+
+    expect(screen.queryByRole('button', { name: 'x' })).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Reply...')).toBeInTheDocument()
+  })
+
+  it('rehydrates pending options only when ask_question is the very last loaded message', async () => {
+    vi.mocked(api.getStageConversation).mockResolvedValue({
+      stage: 'requirements',
+      messages: [
+        {
+          role: 'assistant',
+          content: 'What transport?',
+          tool_call: { id: 'call-1', name: 'ask_question', arguments: JSON.stringify({ options: ['REST', 'gRPC'], recommended_option: 'REST', recommendation_reason: 'simplicity' }) },
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: /REST/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'gRPC' })).toBeInTheDocument()
+  })
+
+  it('does not rehydrate a stale ask_question that is no longer the last message', async () => {
+    vi.mocked(api.getStageConversation).mockResolvedValue({
+      stage: 'requirements',
+      messages: [
+        {
+          role: 'assistant',
+          content: 'What transport?',
+          tool_call: { id: 'call-1', name: 'ask_question', arguments: JSON.stringify({ options: ['REST', 'gRPC'], recommended_option: 'REST', recommendation_reason: 'simplicity' }) },
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        { role: 'user', content: 'REST', created_at: '2026-01-01T00:00:01Z' },
+        { role: 'assistant', content: 'Great, next question...', created_at: '2026-01-01T00:00:02Z' },
+      ],
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await screen.findByText('Great, next question...')
+    expect(screen.queryByRole('button', { name: /REST/ })).not.toBeInTheDocument()
+  })
+
+  it('an ask_question tool_call is never misparsed as the propose_context draft on rehydration', async () => {
+    vi.mocked(api.getStageConversation).mockResolvedValue({
+      stage: 'requirements',
+      messages: [
+        {
+          role: 'assistant',
+          content: 'What transport?',
+          tool_call: { id: 'call-1', name: 'ask_question', arguments: JSON.stringify({ options: ['REST'], recommended_option: 'REST', recommendation_reason: 'x' }) },
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await screen.findByRole('button', { name: /REST/ })
+    expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
+  })
+})

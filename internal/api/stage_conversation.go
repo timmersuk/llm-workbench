@@ -31,6 +31,7 @@ const (
 	proposePlanToolName      = drafttool.ProposePlanName
 	proposeReviewToolName    = drafttool.ProposeReviewName
 	proposeKnowledgeToolName = drafttool.ProposeKnowledgeName
+	askQuestionToolName      = drafttool.AskQuestionName
 )
 
 // grillMeSystemPrompt and planningModeSystemPrompt encode the "grilling"
@@ -38,14 +39,23 @@ const (
 // stages share: one question at a time, a recommended answer with every
 // question, questions resolved in dependency order, and no proposal until
 // the human has confirmed shared understanding. They differ only in what
-// they're interviewing toward and which tool they end with.
+// they're interviewing toward and which tool they end with. The
+// recommended-answer rule is expressed as a call to ask_question
+// (internal/drafttool) rather than prose written into the reply: the
+// question text itself still belongs in the assistant's normal message
+// content, but the selectable options/recommendation travel as the tool
+// call's structured arguments, which the frontend renders as clickable
+// choices (StageConversationPanel.tsx) instead of text the human has to
+// read and retype. This composes with the one-question-per-turn discipline
+// below rather than replacing it — only the transport of the recommended
+// answer changed, not the pacing or judgment rules around it.
 const (
 	grillMeSystemPrompt = `You are GrillMe, interviewing the user to sharpen a task's requirements.
 
 Rules for this interview:
 - If you have tools available (Read/Grep/Glob), explore the project's repository first and answer your own questions from the code wherever you can. Only ask the human what the code cannot tell you.
 - Ask exactly one question per turn. Never batch multiple questions into one message.
-- Every question comes with your recommended answer and a short reason why. Present it as a default the user can accept or redirect, not a decision already made.
+- When a question has a small set of sensible answers, call ask_question with those options, your recommended one, and a short reason why — put the question text itself in your normal reply, not in the tool call. Present the recommendation as a default the user can accept or redirect, not a decision already made. If the question is genuinely open-ended (no useful fixed set of answers), just ask it in your reply text without calling ask_question.
 - Walk the design tree: resolve dependent decisions in order, one branch at a time, rather than jumping around.
 - Do not call propose_context until the objective, constraints, assumptions, and success criteria are coherent AND the user has confirmed shared understanding — do not propose on your own initiative just because you have enough to guess.
 - If the user's reply contains a fenced JSON block representing a requested change to a draft you already proposed, treat that block as the authoritative starting point for your revision — refine it, don't discard it and start over.
@@ -56,7 +66,7 @@ Rules for this interview:
 Rules for this interview:
 - If you have tools available (Read/Grep/Glob), explore the project's repository first and answer your own questions from the code wherever you can. Only ask the human what the code cannot tell you.
 - Ask exactly one question per turn. Never batch multiple questions into one message.
-- Every question comes with your recommended answer and a short reason why. Present it as a default the user can accept or redirect, not a decision already made.
+- When a question has a small set of sensible answers, call ask_question with those options, your recommended one, and a short reason why — put the question text itself in your normal reply, not in the tool call. Present the recommendation as a default the user can accept or redirect, not a decision already made. If the question is genuinely open-ended (no useful fixed set of answers), just ask it in your reply text without calling ask_question.
 - Walk the design tree: resolve dependent decisions in order (approach, then steps, then risks and complexity), one branch at a time, rather than jumping around.
 - Do not call propose_plan until the approach, steps, risks, and estimated complexity are coherent AND the user has confirmed shared understanding — do not propose on your own initiative just because you have enough to guess.
 - If the user's reply contains a fenced JSON block representing a requested change to a plan you already proposed, treat that block as the authoritative starting point for your revision — refine it, don't discard it and start over.
@@ -107,18 +117,23 @@ func chatToolFor(d drafttool.Definition) chat.Tool {
 // stageTool returns the Draft-proposing tool(s) registered for stage, and
 // whether stage is a valid Conversation stage at all (requirements,
 // planning, or review — see task.ErrInvalidStage). Requirements/Planning
-// each offer exactly one; Review offers two at once — propose_review (the
+// each offer their own Draft-proposing tool plus ask_question (the
+// structured interview-question affordance, internal/drafttool) — a model
+// can call either one on a given turn, same as Review's two-at-once shape
+// below, just never both. Review offers two at once — propose_review (the
 // stage's own verdict) and propose_knowledge (folding a durable learning
 // into the Knowledge layer, docs/milestones/done/milestone9.md) — since either
 // may be called independently within the same conversation, not in a fixed
-// order. Name/description/schema come from internal/drafttool, shared with
+// order; ask_question is deliberately not offered there — reviewSystemPrompt
+// has no "one question per turn" interview discipline for this to compose
+// with. Name/description/schema come from internal/drafttool, shared with
 // cmd/draftmcp.
 func stageTool(stage string) ([]chat.Tool, bool) {
 	switch stage {
 	case task.StageRequirements:
-		return []chat.Tool{chatToolFor(drafttool.ProposeContext)}, true
+		return []chat.Tool{chatToolFor(drafttool.ProposeContext), chatToolFor(drafttool.AskQuestion)}, true
 	case task.StagePlanning:
-		return []chat.Tool{chatToolFor(drafttool.ProposePlan)}, true
+		return []chat.Tool{chatToolFor(drafttool.ProposePlan), chatToolFor(drafttool.AskQuestion)}, true
 	case task.StageReview:
 		return []chat.Tool{chatToolFor(drafttool.ProposeReview), chatToolFor(drafttool.ProposeKnowledge)}, true
 	default:
