@@ -523,11 +523,13 @@ func fakeUpstreamProposingToolCall(t *testing.T, toolName, argumentsJSON string)
 // full Review-stage conversation over the real router/FileStore/chat.ChatClient
 // chain: a task sitting at stage review with a real execution worktree. It
 // asserts the end-to-end wiring PR 2 adds — resolveStageRun resolves the
-// worktree, buildReviewContext puts the real diff + verification steps into the
-// system prompt, the confined bash tool is offered alongside propose_review,
-// and a propose_review tool call streams back and persists. This is the
-// closest to M8's live-verify bar reachable without a real model: the model is
-// faked, but every other collaborator (git, the stores, the tool loop) is real.
+// worktree, buildReviewContext puts the changed-files summary + verification
+// steps into the system prompt (the diff text itself is deliberately left for
+// the agent's own bash tool to fetch — see buildReviewContext's doc comment),
+// the confined bash tool is offered alongside propose_review, and a
+// propose_review tool call streams back and persists. This is the closest to
+// M8's live-verify bar reachable without a real model: the model is faked, but
+// every other collaborator (git, the stores, the tool loop) is real.
 func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.T) {
 	root := t.TempDir()
 	projectRoot := filepath.Join(root, "projects", "demo-project")
@@ -552,9 +554,14 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	gitRun(t, ws.Path, "commit", "-q", "-m", "add feature")
 
 	// Seed the task straight to stage review via the public store API, in the
-	// same tasks root the router will read from.
+	// same tasks root the router will read from. Output is populated from the
+	// real worktree above (as a completed execution would via
+	// agentrunner.CollectExecutionOutput, internal/api/execution.go) so
+	// buildReviewContext has real commits/changed files to report.
+	commits, artifacts, err := agentrunner.CollectExecutionOutput(context.Background(), ws, "")
+	require.NoError(t, err)
 	tasksRoot := filepath.Join(projectRoot, "tasks")
-	seedReviewableTask(t, task.NewFileStore(tasksRoot), "TASK-0001")
+	seedReviewableTaskWithOutput(t, task.NewFileStore(tasksRoot), "TASK-0001", task.ExecutionOutput{Commits: commits, Artifacts: artifacts})
 
 	// A capturing fake upstream: record the request the model saw, then answer
 	// with a propose_review tool call (the loop's stop condition).
@@ -629,14 +636,18 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	}
 	require.True(t, sawReview, "expected a propose_review tool_call SSE event")
 
-	// The model actually saw the execution's diff and verification steps in its
-	// system prompt, and was offered the confined bash tool plus propose_review.
+	// The model actually saw the execution's changed files and verification
+	// steps in its system prompt, and was offered the confined bash tool plus
+	// propose_review. The diff text itself is deliberately not inlined (see
+	// buildReviewContext's doc comment) — the model is told to fetch it itself.
 	mu.Lock()
 	captured := gotReq
 	mu.Unlock()
 	require.NotEmpty(t, captured.Messages)
 	system := captured.Messages[0].Content
-	assert.Contains(t, system, "feature.go", "the execution diff must reach the model")
+	assert.Contains(t, system, "feature.go", "the changed-files list must reach the model")
+	assert.Contains(t, system, "git diff main...HEAD", "the model must be told how to fetch the real diff itself")
+	assert.NotContains(t, system, "```diff", "the diff text itself must not be inlined")
 	assert.Contains(t, system, "run go test", "verification steps must reach the model")
 	var toolNames []string
 	for _, tl := range captured.Tools {

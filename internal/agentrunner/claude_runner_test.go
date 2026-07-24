@@ -555,6 +555,27 @@ func TestSystemPromptWithHistory_AppendsRenderedTranscript(t *testing.T) {
 	assert.Contains(t, got, "assistant: sure, tell me more")
 }
 
+func TestSystemPromptWithHistory_TruncatesOldestWhenOverBudget(t *testing.T) {
+	huge := strings.Repeat("x", maxHistoryReplayBytes)
+	got := systemPromptWithHistory("be nice", []chat.Message{
+		{Role: "user", Content: "oldest turn, should be dropped"},
+		{Role: "assistant", Content: huge},
+	})
+	assert.Contains(t, got, "earliest turns omitted")
+	assert.NotContains(t, got, "oldest turn, should be dropped")
+	assert.Contains(t, got, huge)
+	assert.Less(t, len(got), len("be nice")+len(huge)+len("oldest turn, should be dropped")+200)
+}
+
+func TestSystemPromptWithHistory_NeverDropsTheOnlyMessageEvenIfOversized(t *testing.T) {
+	huge := strings.Repeat("x", maxHistoryReplayBytes*2)
+	got := systemPromptWithHistory("be nice", []chat.Message{
+		{Role: "assistant", Content: huge},
+	})
+	assert.Contains(t, got, huge)
+	assert.NotContains(t, got, "earliest turns omitted")
+}
+
 func TestIsStaleClaudeConnectionError_MatchesKnownDeadPipeMessages(t *testing.T) {
 	cases := []string{
 		`querying claude code agent: failed to write message: write |1: The pipe is being closed.`,

@@ -365,6 +365,20 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	return client, nil
 }
 
+// maxHistoryReplayBytes bounds how much prior-conversation transcript
+// systemPromptWithHistory replays into the system prompt. The claude CLI
+// receives the system prompt as a literal --system-prompt argument (the
+// claude-agent-sdk-go transport has no file-based alternative), and on
+// Windows the whole command line (every flag combined, including the
+// review system prompt, task/project text, and the maxReviewPatchBytes
+// diff addendum from stage_conversation.go) shares a single ~32,767
+// character CreateProcess limit — exceeding it fails Connect with
+// "The filename or extension is too long" rather than any error naming the
+// actual cause. Replaying an uncapped history was the one uncapped
+// contributor to that budget, so it's kept comfortably below the other
+// pieces' combined size rather than tuned to the platform limit exactly.
+const maxHistoryReplayBytes = 8 * 1024
+
 // systemPromptWithHistory returns systemPrompt unchanged when history is
 // empty (the common case: an already-live session, or a brand-new
 // conversation with nothing to replay), or with a rendered transcript of
@@ -374,18 +388,46 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 // conversation-{stage}.yaml). The CLI has no "resume with this history"
 // primitive — only a system prompt fixed at connect time and a fresh
 // Query — so a rendered transcript block is the only way a new session's
-// agent learns what was already discussed.
+// agent learns what was already discussed. The transcript is capped to
+// maxHistoryReplayBytes, keeping the most recent messages: a long-running
+// review conversation replaying in full is what blows the CLI's
+// command-line limit (see maxHistoryReplayBytes), and the recent turns are
+// what the agent actually needs to pick the conversation back up.
 func systemPromptWithHistory(systemPrompt string, history []chat.Message) string {
 	if len(history) == 0 {
 		return systemPrompt
 	}
+	kept, truncated := recentHistoryWithinBudget(history, maxHistoryReplayBytes)
 	var b strings.Builder
 	b.WriteString(systemPrompt)
 	b.WriteString("\n\n## Prior conversation (restored after restart)\n")
-	for _, m := range history {
+	if truncated {
+		b.WriteString("(earliest turns omitted to keep this within the CLI's command-line limit)\n")
+	}
+	for _, m := range kept {
 		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
 	}
 	return b.String()
+}
+
+// recentHistoryWithinBudget returns the longest chronological suffix of
+// history whose rendered size (role + content, roughly matching
+// systemPromptWithHistory's "%s: %s\n" line format) fits within budget
+// bytes, and whether any earlier messages were dropped to get there. Always
+// keeps at least the single most recent message, even if it alone exceeds
+// budget, so a truncated replay is never empty.
+func recentHistoryWithinBudget(history []chat.Message, budget int) (kept []chat.Message, truncated bool) {
+	total := 0
+	start := len(history) - 1
+	for i := len(history) - 1; i >= 0; i-- {
+		size := len(history[i].Role) + len(history[i].Content) + 4
+		if total+size > budget && i != len(history)-1 {
+			break
+		}
+		total += size
+		start = i
+	}
+	return history[start:], start > 0
 }
 
 // isStaleClaudeConnectionError reports whether err indicates the cached
