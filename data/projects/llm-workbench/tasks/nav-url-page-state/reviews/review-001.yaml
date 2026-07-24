@@ -1,0 +1,19 @@
+review_id: review-001
+task_id: nav-url-page-state
+execution_id: exec-001
+decision: approved
+notes: |-
+    Phase 1 (automated): 235/235 tests pass, lint (oxlint) clean, tsc+vite build clean. No new dependency added (hand-rolled url.ts, no react-router) — satisfies the constraint. No Go/backend files touched, consistent with "no backend changes" assumption; existing GET /api/v1/projects/{id} and GET /api/v1/projects/{projectId}/tasks/{taskId} endpoints used as-is.
+
+    Standards + spec pass: url.ts is a pure parsePath/routeToPath pair; App.tsx is sole owner of history (pushState for all user-driven nav via navigate(), replaceState reserved for silent-fallback correction via correctTo()) — matches the constraint exactly. Invalid task -> project view (if project valid) else -> /projects; invalid project -> /projects, both via replaceState. Panels resolve selection against already-loaded list first, falling back to fetch-by-id only for deep links (avoids redundant network calls on normal clicks). docs/engineering conventions.md updated to document the pattern. Minor non-blocking note: callbacks passed to ProjectsPanel are new arrow-function literals each App render, causing extra re-renders on route change — not a correctness issue, flagged for awareness only.
+
+    Phase 2 (test-meaningfulness): Reviewed url.test.ts, App.test.tsx, ProjectsPanel.test.tsx, ProjectDetailPanel.test.tsx in full. Assertions check exact pushState/replaceState call args, distinguish list-resolution vs. fetch-fallback paths via explicit call/no-call expectations, and popstate tests verify the app reacts to a browser-driven pathname change without itself re-invoking pushState/replaceState. No vacuous or mis-targeted tests found.
+
+    Phase 3 (verification steps):
+    - agent_executable (pushState vs replaceState unit coverage): confirmed via dedicated App.test.tsx describe blocks spying on window.history; suite passes.
+    - human_judgment (4 canonical URLs load correct view on fresh load): confirmed by human against live dev server + real data (demo-project/build-skeleton).
+    - human_judgment (invalid project id / invalid task id fall back silently with URL rewrite): confirmed by human.
+    - human_judgment (back/forward retraces tab->project->task navigation in order, no dead ends): confirmed by human.
+
+    Human's verbatim confirmation: "all as expected. excellent." All success criteria and constraints satisfied; no blocking findings.
+created_at: 2026-07-24T14:54:35.165271Z
