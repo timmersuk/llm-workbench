@@ -84,36 +84,16 @@ describe('ProjectDetailPanel — task list states', () => {
     expect(await screen.findByText('No tasks yet.')).toBeInTheDocument()
   })
 
-  it('renders a populated list-view table with a partial-load-errors notice', async () => {
+  it('renders populated tasks on the kanban board with a partial-load-errors notice', async () => {
     vi.mocked(api.listProjectTasks).mockResolvedValue({
-      tasks: [makeTask({ id: 'task-a', title: 'Task A' })],
+      tasks: [makeTask({ id: 'task-a', title: 'Task A', stage: 'requirements' })],
       errors: [{ id: 'task-b', error: 'parsing failed' }],
     })
     renderPanel()
 
     expect(await screen.findByText('Task A')).toBeInTheDocument()
-    expect(screen.getByText(/1 task failed to load: task-b/)).toBeInTheDocument()
-  })
-})
-
-describe('ProjectDetailPanel — list/kanban toggle', () => {
-  it('switches between list and kanban views', async () => {
-    const user = userEvent.setup()
-    vi.mocked(api.listProjectTasks).mockResolvedValue({
-      tasks: [makeTask({ id: 'task-a', title: 'Task A', stage: 'requirements' })],
-      errors: [],
-    })
-    renderPanel()
-    await screen.findByText('Task A')
-
-    expect(screen.getByRole('table')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Kanban' }))
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
     expect(screen.getByText('Requirements')).toBeInTheDocument() // kanban column header
-
-    await user.click(screen.getByRole('button', { name: 'List' }))
-    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.getByText(/1 task failed to load: task-b/)).toBeInTheDocument()
   })
 })
 
@@ -141,7 +121,7 @@ describe('ProjectDetailPanel — task creation and selection', () => {
     await waitFor(() => expect(api.listProjectTasks).toHaveBeenCalledTimes(2))
   })
 
-  it('Open calls onSelectTask with the clicked task id (no fetch)', async () => {
+  it('clicking a kanban card calls onSelectTask with the clicked task id (no fetch)', async () => {
     const user = userEvent.setup()
     const onSelectTask = vi.fn()
     vi.mocked(api.listProjectTasks).mockResolvedValue({
@@ -151,7 +131,7 @@ describe('ProjectDetailPanel — task creation and selection', () => {
     renderPanel({ onSelectTask })
     await screen.findByText('Task A')
 
-    await user.click(screen.getByRole('button', { name: 'Open' }))
+    await user.click(screen.getByRole('button', { name: /Task A/ }))
 
     expect(onSelectTask).toHaveBeenCalledWith('task-a')
     expect(api.getProjectTask).not.toHaveBeenCalled()
