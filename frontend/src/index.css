@@ -144,6 +144,8 @@ th {
   flex-direction: column;
   gap: 8px;
   min-height: 120px;
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
 .chat-message {
@@ -498,6 +500,26 @@ td button {
   font-style: italic;
 }
 
+/* tool-status-error marks a failed call's status glyph and any sequence/
+   summary chip containing one (docs/adr/0019) — success and pending glyphs
+   use the surrounding text's default color, so only failure needs calling
+   out. */
+.tool-status-error {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.tool-activity-preview {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.tool-activity-row {
+  margin-left: 12px;
+}
+
 /* workspace-status-banner surfaces the shared checkout's advisory hygiene
    signals (docs/milestones/done/milestone8a.md) — a distinct amber/--warning
    tone from .error's red, since nothing has failed here; it's informational. */
@@ -513,6 +535,20 @@ td button {
 
 .workspace-status-banner p {
   margin: 4px 0;
+}
+
+/* execution-failure-banner surfaces the latest Implementation-stage run's
+   non-success outcome at the top of TaskDetailPanel — --error tone (unlike
+   .workspace-status-banner's advisory --warning) since a run actually
+   failed here. */
+.execution-failure-banner {
+  padding: 12px 16px;
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--error);
+  margin-bottom: 16px;
+  font-size: 14px;
 }
 
 /* task-summary (read-only Requirements/Context/Plan) and task-interview

@@ -11,8 +11,10 @@ import {
   startStageConversation,
 } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
+import { ToolActivitySequence } from './ToolActivity'
 import type { ChatStreamEvent, ConversationMessage, ConversationToolActivity } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
+import { useStickyAutoScroll } from './useStickyAutoScroll'
 
 interface DisplayMessage {
   role: string
@@ -200,6 +202,7 @@ export function StageConversationPanel<D, S = never>({
   const [streamedChars, setStreamedChars] = useState(0)
   const [finalTokens, setFinalTokens] = useState<number | undefined>(undefined)
   const liveTurnStatus = useLiveTurnStatus(sending, streamedChars, finalTokens)
+  const historyRef = useStickyAutoScroll(messages)
 
   useEffect(() => {
     let cancelled = false
@@ -721,7 +724,7 @@ export function StageConversationPanel<D, S = never>({
         </div>
       )}
 
-      <div className="chat-history">
+      <div className="chat-history" ref={historyRef}>
         {messages.map((message, index) => (
           <div key={index} className={`chat-message chat-message-${message.role}`}>
             {message.reasoningContent && (
@@ -730,44 +733,15 @@ export function StageConversationPanel<D, S = never>({
                 <div className="thinking-content">{message.reasoningContent}</div>
               </details>
             )}
-            {message.toolActivity.length > 0 && (
-              sending && index === messages.length - 1 ? (
-                // Live: each call/result appears as its own chip the
-                // instant it happens, so new elements visibly accumulate
-                // during the gap rather than one line silently sitting
-                // still (docs/adr/0018; mirrors ExecutePanel's pattern).
-                <>
-                  {message.toolActivity.map((activity, i) => (
-                    <details key={i} className="thinking-panel">
-                      <summary>
-                        <span className="tool-call-chip">{activity.name}</span>
-                        {activity.result === undefined && <span className="tool-activity-pending"> running…</span>}
-                      </summary>
-                      <div className={activity.is_error ? 'thinking-content error' : 'thinking-content'}>
-                        {activity.result ?? activity.arguments}
-                      </div>
-                    </details>
-                  ))}
-                </>
-              ) : (
-                // At rest (turn closed, or reopened via Revise): the same
-                // list collapses into one summary chip (CONTEXT.md's "Tool
-                // Activity").
-                <details className="thinking-panel">
-                  <summary>
-                    Used {message.toolActivity.length} tool{message.toolActivity.length === 1 ? '' : 's'}
-                  </summary>
-                  {message.toolActivity.map((activity, i) => (
-                    <div key={i} className="thinking-content">
-                      <span className="tool-call-chip">{activity.name}</span>
-                      {activity.result !== undefined && (
-                        <div className={activity.is_error ? 'error' : undefined}>{activity.result}</div>
-                      )}
-                    </div>
-                  ))}
-                </details>
-              )
-            )}
+            <ToolActivitySequence
+              activities={message.toolActivity.map((a) => ({
+                name: a.name,
+                arguments: a.arguments,
+                result: a.result,
+                isError: a.is_error,
+              }))}
+              live={sending && index === messages.length - 1}
+            />
             <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
             {message.toolCallName && <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>}
             {message.error && <p className="error">{message.error}</p>}
