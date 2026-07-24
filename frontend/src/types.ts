@@ -3,7 +3,6 @@ export interface TaskReferences {
   repo: string[]
 }
 
-export type TaskStatus = 'draft' | 'ready' | 'in_progress' | 'blocked' | 'failed' | 'complete'
 export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'pr_review' | 'merged'
 
 export interface PullRequest {
@@ -16,7 +15,6 @@ export interface Task {
   id: string
   title: string
   project: string
-  status: TaskStatus
   stage: TaskStage
   created_at: string
   updated_at: string
@@ -41,11 +39,11 @@ export interface Project {
 
 // CreateTaskRequest is the body for creating a task within a project (the
 // project itself comes from the URL, not this body). id is client-chosen
-// and must be unique within that project. status/stage/objective/
-// constraints/assumptions/success_criteria are deliberately absent: a task
-// always starts at stage: requirements, status: draft (server-defaulted),
-// and its requirements fields are set later via GrillMe's Finalize, not at
-// creation (see CONTEXT.md's "Draft"/"Finalize").
+// and must be unique within that project. stage/objective/constraints/
+// assumptions/success_criteria are deliberately absent: a task always
+// starts at stage: requirements (server-defaulted), and its requirements
+// fields are set later via GrillMe's Finalize, not at creation (see
+// CONTEXT.md's "Draft"/"Finalize").
 export interface CreateTaskRequest {
   id: string
   title: string
@@ -56,7 +54,6 @@ export interface CreateTaskRequest {
 // project are fixed by the URL and can never change.
 export interface UpdateTaskRequest {
   title: string
-  status: TaskStatus
   stage: TaskStage
   objective: string
   constraints: string[]

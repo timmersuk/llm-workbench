@@ -37,8 +37,6 @@ id: fix-login-bug
 title: ""
 project: auth-service
 
-status: draft  # draft | ready | in_progress | blocked | failed | complete
-
 stage: requirements  # requirements | planning | implementation | review | pr_review | merged
 # pr_review (Milestone 7) is live-reachable from an approved review as of
 # PR 2, but has no route/UI to act on it until PR 3 ships — see

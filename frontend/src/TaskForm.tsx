@@ -9,7 +9,7 @@ interface TaskFormProps {
 }
 
 // TaskForm only ever creates a task: id, title, and references. Every task
-// starts at stage: requirements, status: draft (server-defaulted) — its
+// starts at stage: requirements (server-defaulted) — its
 // objective/constraints/assumptions/success_criteria are set afterward via
 // GrillMe (TaskDetailPanel), not here. See CONTEXT.md's "Draft"/"GrillMe".
 export function TaskForm({ onSubmit, onCancel }: TaskFormProps) {

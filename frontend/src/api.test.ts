@@ -158,7 +158,6 @@ describe('mutateJSON-backed requests', () => {
 
   const updateReq: UpdateTaskRequest = {
     title: 'Updated',
-    status: 'draft',
     stage: 'requirements',
     objective: '',
     constraints: [],

@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react'
-import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listExecutions, listReviews, reviseRequirements, revisePlan, updateProjectTask } from './api'
+import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listExecutions, listReviews, reviseRequirements, revisePlan } from './api'
 import { ExecutePanel } from './ExecutePanel'
 import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
 import { PRReviewPanel } from './PRReviewPanel'
 import { ReviewPanel } from './ReviewPanel'
-import type { Execution, Review, Task, TaskContext, TaskPlan, TaskStatus, WorkspaceStatusResult } from './types'
-
-const STATUSES: TaskStatus[] = ['draft', 'ready', 'in_progress', 'blocked', 'failed', 'complete']
+import type { Execution, Review, Task, TaskContext, TaskPlan, WorkspaceStatusResult } from './types'
 
 interface TaskDetailPanelProps {
   projectId: string
@@ -39,8 +37,8 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusResult | null>(null)
   // latestExecution backs the failure banner below — surfaced at the top of
   // the task view (not just in ExecutePanel's own history list, which is
-  // easy to miss since a failed run leaves stage/status unchanged and the
-  // panel scrolled below other content).
+  // easy to miss since a failed run leaves stage unchanged and the panel
+  // scrolled below other content).
   const [latestExecution, setLatestExecution] = useState<Execution | null>(null)
 
   useEffect(() => {
@@ -86,20 +84,6 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
       })
       .catch(() => undefined) // no verdict readable — the confirmation still shows
   }, [projectId, task.id, task.stage])
-
-  async function handleStatusChange(status: TaskStatus) {
-    const updated = await updateProjectTask(projectId, task.id, {
-      title: task.title,
-      status,
-      stage: task.stage,
-      objective: task.objective,
-      constraints: task.constraints,
-      assumptions: task.assumptions,
-      success_criteria: task.success_criteria,
-      references: task.references,
-    })
-    setTask(updated)
-  }
 
   async function handleRevise(action: () => Promise<Task>) {
     if (revising) {
@@ -178,13 +162,6 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
 
       <div className="panel-actions">
         <h3>{task.title || task.id}</h3>
-        <select value={task.status} onChange={(e) => handleStatusChange(e.target.value as TaskStatus)}>
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
       </div>
       <p>
         {task.id} &middot; stage: {task.stage}

@@ -38,7 +38,6 @@ const integrationTaskYAML = `
 id: TASK-0001
 title: Do the thing
 project: demo-project
-status: draft
 stage: requirements
 created_at: 2026-07-05T00:00:00Z
 updated_at: 2026-07-05T00:00:00Z

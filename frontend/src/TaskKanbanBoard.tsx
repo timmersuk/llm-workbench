@@ -31,9 +31,7 @@ export function TaskKanbanBoard({ tasks, onSelect }: TaskKanbanBoardProps) {
             .map((task) => (
               <button key={task.id} type="button" className="kanban-card" onClick={() => onSelect(task)}>
                 <strong>{task.title || task.id}</strong>
-                <span className="kanban-card-meta">
-                  {task.id} &middot; {task.status}
-                </span>
+                <span className="kanban-card-meta">{task.id}</span>
               </button>
             ))}
         </div>
