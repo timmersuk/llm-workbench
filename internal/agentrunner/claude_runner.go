@@ -153,6 +153,34 @@ func (r *ClaudeRunner) CloseSession(sessionKey string) {
 	}
 }
 
+// CloseAll disconnects every cached `claude` CLI client this runner is
+// holding, regardless of session key. Unlike CloseSession (one key, called
+// from real application logic — Finalize, "New chat"), this exists purely
+// for process shutdown (main.go's run(), via a `interface{ CloseAll() }`
+// type assertion — see docs/engineering conventions.md's AGENT_TIMEOUT/
+// SHUTDOWN_TIMEOUT entry): without it, a `claude` subprocess left connected
+// when the server exits is orphaned rather than terminated. Snapshots and
+// clears the client map under the lock, then disconnects each client
+// concurrently outside the lock — mirrors CloseSession's ignore-error
+// posture (Disconnect() failures don't block shutdown) and its lock/call
+// split (never call into the SDK while holding mu).
+func (r *ClaudeRunner) CloseAll() {
+	r.mu.Lock()
+	clients := r.clients
+	r.clients = make(map[string]claudecode.Client)
+	r.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, client := range clients {
+		wg.Add(1)
+		go func(c claudecode.Client) {
+			defer wg.Done()
+			_ = c.Disconnect()
+		}(client)
+	}
+	wg.Wait()
+}
+
 // Run implements AgentRunner. Unlike the engine-backed ChatClientRunner
 // (whose intermediate tool activity flows through toolloop.Config's
 // OnToolCall/OnToolResult), the claude CLI drives its own subprocess and

@@ -758,6 +758,25 @@ func TestClaudeRunner_CloseSession_OnUnknownKeyIsANoOp(t *testing.T) {
 	assert.NotPanics(t, func() { r.CloseSession("no-such-session") })
 }
 
+func TestClaudeRunner_CloseAll_DisconnectsEveryCachedClientAndClearsCache(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	clientA := &fakeClaudeClient{}
+	clientB := &fakeClaudeClient{}
+	r.clients["task-a:planning"] = clientA
+	r.clients["task-b:review"] = clientB
+
+	r.CloseAll()
+
+	assert.True(t, clientA.disconnected)
+	assert.True(t, clientB.disconnected)
+	assert.Empty(t, r.clients)
+}
+
+func TestClaudeRunner_CloseAll_OnEmptyCacheIsANoOp(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	assert.NotPanics(t, func() { r.CloseAll() })
+}
+
 // fakeClaudeClient is a minimal claudecode.Client stub for exercising
 // ClaudeRunner without a live subprocess. queryErr scripts Query's return
 // value (e.g. a stale-pipe error); ReceiveMessages always returns a
