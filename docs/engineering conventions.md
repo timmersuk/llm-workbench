@@ -29,16 +29,44 @@ doesn't have to be re-derived or re-litigated later.
 
 ## Configuration
 
-* Env vars are read once, at the top of `main()`, before any component is
-  constructed (`cmd/server/main.go`). Names are `SCREAMING_SNAKE_CASE` with
-  no prefix namespacing (`HTTP_ADDR`, `WORKSPACE_ROOT`, `LOG_LEVEL`,
-  `LLM_BASE_URL`, ...).
+* Env vars are read once, in `loadConfig() config`, called at the top of
+  `main()` before any component is constructed (`cmd/server/main.go`).
+  Names are `SCREAMING_SNAKE_CASE` with no prefix namespacing (`HTTP_ADDR`,
+  `WORKSPACE_ROOT`, `LOG_LEVEL`, `LLM_BASE_URL`, ...).
 * Optional vars use `utils.GetEnvDefault[T](key, default)`
   (`internal/utils/env.go`) — generic over `string`/`bool`/`int`/
   `time.Duration`, silently falling back to `default` if the var is unset or
   fails to parse. Required vars use the `utils.MustGetEnv*` family, which
   calls `logrus.Fatalf` on missing or invalid values. Don't hand-roll
   `os.LookupEnv`/`strconv` calls outside these helpers.
+
+## Graceful shutdown
+
+* `cmd/server/main.go` splits into `loadConfig() config` (env parsing —
+  called directly from `main()`, so `utils.MustGetEnv`'s process-exiting
+  Fatal path only ever runs before `run()` starts) and
+  `run(ctx context.Context, cfg config) error` (server construction and
+  serving). `main()` is the only `os.Exit`/`logrus.Fatal` point in the
+  process; `run()` must never call one directly, or it would bypass
+  shutdown. `main()` derives `ctx` via
+  `signal.NotifyContext(context.Background(), os.Interrupt)`, so Ctrl+C
+  cancels it.
+* `run()` builds an `*http.Server` (rather than a bare `http.ListenAndServe`
+  call) and races its `ListenAndServe` against `ctx.Done()`. On
+  cancellation it calls `srv.Shutdown`, bounded by a fresh
+  `context.WithTimeout(context.Background(), cfg.shutdownTimeout)` —
+  `SHUTDOWN_TIMEOUT` (default 10s), read with the same `utils.GetEnvDefault`
+  pattern as `AGENT_TIMEOUT`/`LLM_TIMEOUT` — so shutdown can't hang
+  indefinitely waiting on in-flight requests.
+* After `Shutdown`, `run()` walks the `agentRunners` map and type-asserts
+  each entry against `interface{ CloseAll() }` — deliberately not an
+  `AgentRunner` interface method — to release any resources a live
+  conversation left open. Today only `*ClaudeRunner` implements it,
+  disconnecting every cached `claude` CLI client (`ClaudeRunner.CloseAll`,
+  `internal/agentrunner/claude_runner.go`) so no `claude` subprocess is left
+  orphaned when the server exits. `ChatClientRunner`/`CodexRunner` own
+  nothing to close, so a type assertion means they need no no-op stub the
+  way adding this to the `AgentRunner` interface would have forced.
 
 ## Storage & file layout
 
