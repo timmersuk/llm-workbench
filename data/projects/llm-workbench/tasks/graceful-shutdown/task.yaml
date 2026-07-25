@@ -1,9 +1,9 @@
 id: graceful-shutdown
 title: Add graceful shutdown to the server process
 project: llm-workbench
-stage: review
+stage: merged
 created_at: 2026-07-07T00:00:00Z
-updated_at: 2026-07-25T20:50:24.1639119Z
+updated_at: 2026-07-25T20:59:07.4220617Z
 objective: 'Add graceful shutdown to cmd/server/main.go: extract main()''s bootstrap into a run(ctx context.Context) error function; build an http.Server{} (replacing the direct http.ListenAndServe call) and call Shutdown(ctx) with a bounded timeout when ctx is cancelled; add a CloseAll()-style method to ClaudeRunner (internal/agentrunner/claude_runner.go) that disconnects every cached per-session claude CLI client, invoked from the shutdown path via a type assertion (not an AgentRunner interface method) so no claude subprocess is orphaned on exit.'
 constraints:
     - Must not change today's console/dev-mode behaviour (make build && run the binary) beyond adding clean shutdown-on-Ctrl+C.
@@ -25,3 +25,7 @@ references:
     repo:
         - cmd/server/main.go
         - internal/agentrunner/claude_runner.go
+pull_request:
+    url: https://github.com/timmersuk/llm-workbench/pull/54
+    number: 54
+    branch: task-exec/graceful-shutdown/exec-001
