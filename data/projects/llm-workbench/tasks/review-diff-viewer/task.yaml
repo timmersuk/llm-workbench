@@ -1,0 +1,68 @@
+id: review-diff-viewer
+title: Replace the Review stage's raw text diff with a real diff viewer
+
+project: llm-workbench
+
+stage: requirements
+
+created_at: 2026-07-25T00:00:00Z
+updated_at: 2026-07-25T00:00:00Z
+
+objective: >-
+  ReviewPanel (frontend/src/ReviewPanel.tsx) currently renders the full
+  unified diff a human reviews as a single unstyled `<pre>{patch}</pre>`
+  block inside a collapsible `<details>` — the raw text getReviewDiff (backed
+  by internal/api/review.go's handler and
+  agentrunner.CollectExecutionPatch's `git diff` output) returns, with no
+  syntax highlighting, no per-file breakdown, and no line-by-line/side-by-side
+  rendering. For anything beyond a trivial change this is hard to actually
+  review from. Replace it with a proper diff viewer so a human reviewing a
+  task's execution can read the change the way they would in a PR review
+  tool, not as a wall of unformatted +/- text.
+
+constraints:
+  - >-
+    The backend already returns the full unified diff as plain text
+    (GET .../review/diff, internal/api/review.go); this is a frontend-only
+    change unless requirements finds a real reason the wire format needs to
+    change (e.g. structured per-file hunks instead of one raw string).
+  - >-
+    Must still degrade sensibly when patch is null/empty (today: diff
+    omitted entirely, per ReviewPanel.tsx's 404/worktree-gone handling) —
+    don't regress that case.
+  - >-
+    Evaluate whether to pull in a diff-rendering library (e.g. something in
+    the react-diff-view/diff2html family) versus hand-rolling parsing of the
+    unified diff format — per the "prefer open standards" architectural
+    invariant and "no new runtime dependency without a stated reason"
+    constraint pattern used elsewhere in this project's tasks, justify
+    whichever is chosen during planning rather than defaulting to a new
+    dependency.
+  - Follow docs/engineering conventions.md for implementation choices.
+
+assumptions:
+  - >-
+    Read-only viewing is in scope; inline commenting/annotation on the diff
+    is a separate, larger feature and out of scope here unless requirements
+    finds it trivial to bundle.
+  - >-
+    Large diffs (many files or very large individual files) should at least
+    not hang or freeze the browser — some form of collapsing/virtualizing
+    per-file sections is likely needed, exact approach left to
+    planning.
+
+success_criteria:
+  - >-
+    ReviewPanel shows the execution's diff broken out per changed file, with
+    added/removed lines visually distinguished (not a single unstyled
+    <pre> block).
+  - The existing "no diff available" fallback behavior still works.
+  - A decision is made and justified on hand-rolled vs. library-based rendering.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+  repo:
+    - frontend/src/ReviewPanel.tsx
+    - internal/api/review.go
+    - internal/agentrunner/worktree.go
