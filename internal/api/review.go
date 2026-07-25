@@ -83,7 +83,7 @@ func (s *Server) handleReviewDiff() http.HandlerFunc {
 		// to review (same selection buildReviewContext makes).
 		latest := executions[len(executions)-1]
 
-		ws, err := agentrunner.ResolveReviewWorkspace(r.Context(), s.ReposRoot, proj.Repositories, latest.ExecutionID, defaultBranch)
+		ws, err := agentrunner.ResolveReviewWorkspace(r.Context(), s.ReposRoot, proj.Repositories, taskId, latest.ExecutionID, defaultBranch)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resolving review workspace: %v", err), http.StatusInternalServerError)
 			return

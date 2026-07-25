@@ -1001,7 +1001,7 @@ func (s *Server) buildReviewContext(ctx context.Context, proj project.Project, s
 	// is the most recent attempt — the one that advanced the task to review.
 	latest := executions[len(executions)-1]
 
-	ws, err := agentrunner.ResolveReviewWorkspace(ctx, s.ReposRoot, proj.Repositories, latest.ExecutionID, defaultBranch)
+	ws, err := agentrunner.ResolveReviewWorkspace(ctx, s.ReposRoot, proj.Repositories, taskID, latest.ExecutionID, defaultBranch)
 	if err != nil {
 		return "", "", fmt.Errorf("resolving review workspace: %w", err)
 	}

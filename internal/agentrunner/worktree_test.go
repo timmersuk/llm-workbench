@@ -112,6 +112,44 @@ func TestResolveExecutionWorkspace_RejectsUnsafeIDs(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidRepository)
 }
 
+// TestResolveExecutionWorkspace_RemovesStrayBranchFromPriorFailedAttempt
+// locks in the fix for a real incident: `git worktree add -b <branch>`
+// creates the branch before validating the target path and doesn't roll it
+// back if that validation fails, so a first attempt that failed after the
+// branch was created (e.g. the original taskID-less worktree path collision)
+// leaves a branch with no worktree behind it. A retry with the same
+// taskID/executionID must still succeed instead of failing with "a branch
+// named ... already exists".
+func TestResolveExecutionWorkspace_RemovesStrayBranchFromPriorFailedAttempt(t *testing.T) {
+	reposRoot := t.TempDir()
+	repoDir := initTestRepo(t, reposRoot, "myrepo")
+
+	_, err := gitutil.RunGit(context.Background(), repoDir, "branch", "task-exec/task-a/exec-001")
+	require.NoError(t, err)
+
+	ws, err := ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "", "main")
+	require.NoError(t, err)
+	assert.Equal(t, "task-exec/task-a/exec-001", ws.Branch)
+	assert.DirExists(t, ws.Path)
+}
+
+// TestResolveExecutionWorkspace_RefusesToStealBranchFromLiveWorktree proves
+// the stray-branch cleanup can't discard real work: if the deterministic
+// branch name is actually checked out in some other worktree, `git branch
+// -D` itself refuses, and that refusal must surface as an error rather than
+// being swallowed.
+func TestResolveExecutionWorkspace_RefusesToStealBranchFromLiveWorktree(t *testing.T) {
+	reposRoot := t.TempDir()
+	repoDir := initTestRepo(t, reposRoot, "myrepo")
+
+	otherWorktree := filepath.Join(reposRoot, "manually-placed")
+	_, err := gitutil.RunGit(context.Background(), repoDir, "worktree", "add", "-b", "task-exec/task-a/exec-001", otherWorktree, "main")
+	require.NoError(t, err)
+
+	_, err = ResolveExecutionWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "", "main")
+	assert.Error(t, err)
+}
+
 func TestCollectExecutionOutput_ReturnsCommitsAndChangedFiles(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
@@ -253,7 +291,7 @@ func TestResolveReviewWorkspace_LocatesExistingExecutionWorktree(t *testing.T) {
 
 	// Review resolves the same worktree the execution left in place, without
 	// creating anything new.
-	review, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "exec-001", "main")
+	review, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "main")
 	require.NoError(t, err)
 	assert.Equal(t, created.Path, review.Path)
 	assert.Equal(t, created.Branch, review.Branch)
@@ -264,7 +302,7 @@ func TestResolveReviewWorkspace_MissingWorktreeIsAnError(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	_, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "exec-404", "main")
+	_, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-404", "main")
 	assert.ErrorIs(t, err, ErrInvalidRepository)
 }
 
@@ -272,7 +310,10 @@ func TestResolveReviewWorkspace_RejectsUnsafeID(t *testing.T) {
 	reposRoot := t.TempDir()
 	initTestRepo(t, reposRoot, "myrepo")
 
-	_, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "../escape", "main")
+	_, err := ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "../escape", "exec-001", "main")
+	assert.ErrorIs(t, err, ErrInvalidRepository)
+
+	_, err = ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "../escape", "main")
 	assert.ErrorIs(t, err, ErrInvalidRepository)
 }
 
@@ -319,6 +360,6 @@ func TestResolveReviewWorkspace_RefusesWrongBranch(t *testing.T) {
 	_, err = gitutil.RunGit(context.Background(), repoDir, "checkout", "-q", "-b", "some-feature-branch")
 	require.NoError(t, err)
 
-	_, err = ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "exec-001", "main")
+	_, err = ResolveReviewWorkspace(context.Background(), reposRoot, []string{"github.com/x/myrepo"}, "task-a", "exec-001", "main")
 	assert.ErrorIs(t, err, ErrWrongBranch)
 }

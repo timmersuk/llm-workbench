@@ -8,6 +8,7 @@ package gitutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,6 +38,24 @@ func CurrentBranch(ctx context.Context, dir string) (string, error) {
 		return "", fmt.Errorf("resolving current branch for %s: %w", dir, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// BranchExists reports whether dir's repository has a local branch named
+// branch (refs/heads/branch) — unlike CurrentBranch, branch doesn't need to
+// be checked out anywhere. `git show-ref` exits 1 (not an error condition)
+// when the ref simply isn't found, so that specific case is distinguished
+// from a real failure (dir isn't a git checkout, git not installed) via the
+// underlying *exec.ExitError, the same way Go's os/exec surfaces "command
+// ran but reported failure" generally.
+func BranchExists(ctx context.Context, dir, branch string) (bool, error) {
+	if _, err := RunGit(ctx, dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking for branch %s in %s: %w", branch, dir, err)
+	}
+	return true, nil
 }
 
 // Clone clones url into dest via `git clone url dest`. dest must not

@@ -118,9 +118,17 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 	// base == filepath.Join(root, repoName) by ResolveWorkspace's own
 	// construction, so filepath.Dir(base) recovers the same reposRoot
 	// (absolute, already validated) without re-deriving it.
+	//
+	// worktreePath is keyed by taskID/executionID, not executionID alone:
+	// NextExecutionID (internal/task/execution.go) numbers each task's
+	// executions independently starting at "exec-001", so two different
+	// tasks' first executions collide on the same "exec-001" id. Without
+	// taskID in the path, a second task's first execution would try to
+	// create a worktree at a path an earlier, unrelated task already left
+	// behind, and `git worktree add` fails with "already exists".
 	root := filepath.Dir(base)
 	repoName := filepath.Base(base)
-	worktreePath := filepath.Join(root, ".worktrees", repoName, executionID)
+	worktreePath := filepath.Join(root, ".worktrees", repoName, taskID, executionID)
 	branch := ExecutionBranchName(taskID, executionID)
 
 	forkRef := baseBranch
@@ -132,6 +140,27 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 		return ExecutionWorkspace{}, fmt.Errorf("creating worktree parent directory: %w", err)
 	}
 
+	// `git worktree add -b <branch>` creates the branch before it validates
+	// the target path, and does not roll the branch back if that later step
+	// fails — verified against real git behavior, not assumed. Since branch
+	// is a pure function of taskID/executionID (ExecutionBranchName) and
+	// this is the only place that name is ever created, and the caller only
+	// reaches RecordExecution (the one thing that retires an executionID so
+	// a later request gets a fresh one) when this function succeeds, a retry
+	// after a failed call here always reuses the exact same branch name. Any
+	// existing branch with that name is therefore always a stray from a
+	// prior failed attempt, never real work — remove it before asking git to
+	// create it again. `git branch -D` itself refuses (and returns an error
+	// this surfaces) if the branch is actually checked out in some worktree,
+	// so this can't silently discard live work.
+	if exists, err := gitutil.BranchExists(ctx, base, branch); err != nil {
+		return ExecutionWorkspace{}, fmt.Errorf("checking for stale branch %s: %w", branch, err)
+	} else if exists {
+		if _, err := gitutil.RunGit(ctx, base, "branch", "-D", branch); err != nil {
+			return ExecutionWorkspace{}, fmt.Errorf("removing stale branch %s before creating worktree: %w", branch, err)
+		}
+	}
+
 	if _, err := gitutil.RunGit(ctx, base, "worktree", "add", "-b", branch, worktreePath, forkRef); err != nil {
 		return ExecutionWorkspace{}, fmt.Errorf("creating git worktree for execution %s: %w", executionID, err)
 	}
@@ -140,19 +169,23 @@ func ResolveExecutionWorkspace(ctx context.Context, reposRoot string, repositori
 }
 
 // ResolveReviewWorkspace locates the execution worktree ResolveExecutionWorkspace
-// already created for executionID and left in place — it never creates one.
-// The Review conversation (Milestone 6) runs against this same isolated
+// already created for taskID/executionID and left in place — it never creates
+// one. The Review conversation (Milestone 6) runs against this same isolated
 // worktree so its confined bash tool can run the project's tests over the
 // executed change, and its diff can be collected (CollectExecutionPatch),
 // without touching the project's shared checkout. The worktree path is
 // reconstructed deterministically the same way ResolveExecutionWorkspace built
-// it (<reposRoot>/.worktrees/<repoName>/<executionID>) and must already exist;
-// BaseBranch is re-derived from the shared checkout's current branch, exactly
-// as the execution derived it originally — which is also why defaultBranch
-// (see ResolveExecutionWorkspace's doc comment) is checked here too, even
-// though this never forks a new worktree: a wrong branch would silently
-// corrupt BaseBranch, and with it every diff Review computes against it.
-func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories []string, executionID, defaultBranch string) (ExecutionWorkspace, error) {
+// it (<reposRoot>/.worktrees/<repoName>/<taskID>/<executionID>) and must
+// already exist; BaseBranch is re-derived from the shared checkout's current
+// branch, exactly as the execution derived it originally — which is also why
+// defaultBranch (see ResolveExecutionWorkspace's doc comment) is checked here
+// too, even though this never forks a new worktree: a wrong branch would
+// silently corrupt BaseBranch, and with it every diff Review computes against
+// it.
+func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories []string, taskID, executionID, defaultBranch string) (ExecutionWorkspace, error) {
+	if strings.ContainsAny(taskID, `/\`) || strings.Contains(taskID, "..") {
+		return ExecutionWorkspace{}, fmt.Errorf("%w: task id %q", ErrInvalidRepository, taskID)
+	}
 	if strings.ContainsAny(executionID, `/\`) || strings.Contains(executionID, "..") {
 		return ExecutionWorkspace{}, fmt.Errorf("%w: execution id %q", ErrInvalidRepository, executionID)
 	}
@@ -172,7 +205,7 @@ func ResolveReviewWorkspace(ctx context.Context, reposRoot string, repositories 
 
 	root := filepath.Dir(base)
 	repoName := filepath.Base(base)
-	worktreePath := filepath.Join(root, ".worktrees", repoName, executionID)
+	worktreePath := filepath.Join(root, ".worktrees", repoName, taskID, executionID)
 
 	info, err := os.Stat(worktreePath)
 	if err != nil {

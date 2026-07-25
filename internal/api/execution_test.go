@@ -391,7 +391,7 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 	assert.Contains(t, gotIn.SystemPrompt, "Continuing prior work")
 	assert.Contains(t, gotIn.SystemPrompt, "fix the widget")
 
-	assert.FileExists(t, filepath.Join(reposRoot, ".worktrees", "demo-repo", "exec-002", "wip.txt"))
+	assert.FileExists(t, filepath.Join(reposRoot, ".worktrees", "demo-repo", "TASK-0001", "exec-002", "wip.txt"))
 }
 
 // TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments
@@ -615,7 +615,7 @@ func TestHandleStartExecution_ContinueFromFailureForksFromPriorBranch(t *testing
 	assert.Contains(t, gotIn.SystemPrompt, "Continuing a prior failed attempt")
 	assert.Contains(t, gotIn.SystemPrompt, "Reached maximum number of turns (100)")
 
-	assert.FileExists(t, filepath.Join(reposRoot, ".worktrees", "demo-repo", "exec-002", "wip.txt"))
+	assert.FileExists(t, filepath.Join(reposRoot, ".worktrees", "demo-repo", "TASK-0001", "exec-002", "wip.txt"))
 }
 
 // TestHandleStartExecution_ContinueFromExecutionID_MismatchRejected proves
