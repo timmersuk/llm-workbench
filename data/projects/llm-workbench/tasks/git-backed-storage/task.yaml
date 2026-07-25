@@ -1,37 +1,34 @@
 id: git-backed-storage
 title: Migrate task/project storage to a real git-backed repository
 project: llm-workbench
-
-status: draft
-
-stage: requirements
-
+stage: implementation
 created_at: 2026-07-06T00:00:00Z
-updated_at: 2026-07-06T00:00:00Z
-
-objective: >-
-  Revisit persistence for tasks and projects: today they're plain files under
-  data/ (WORKSPACE_ROOT), read/written directly via os.ReadFile/os.WriteFile
-  with no version history. Explore migrating to an actual git-backed
-  repository (a commit per create/update, full history/diff/blame available
-  for every task.yaml and project.yaml change) instead of the current
-  flat-file FileStore, matching the "git-backed" framing docs/project_summary.md
-  and CLAUDE.md originally used before Milestone 2 walked that back to plain
-  on-disk persistence.
-
+updated_at: 2026-07-24T21:20:41.6289595Z
+objective: Replace the flat-file FileStore for tasks and projects with a real git-backed store (GitStore) built on go-git, so every task.yaml/project.yaml create or update is a commit, giving full history/diff/blame — restoring the "git-backed" framing docs/project_summary.md and CLAUDE.md used before Milestone 2 walked it back to plain on-disk persistence. This task delivers the working GitStore implementation itself, not just a decision document; a PR-by-PR milestone plan is written during this same task's later planning stage.
 constraints:
-  - "No in-app git operations are in scope for Milestone 2 — this is deferred, future-milestone work only."
-  - "Must not require a running git binary as a hard runtime dependency without first evaluating a pure-Go git library (see architectural invariants: prefer open standards)."
-
+    - No in-app git operations, browsing, history/diff/blame UI or API is in scope for this milestone — storage-layer swap only; surfacing history is deferred to a later milestone.
+    - Must not add a running git binary as a hard runtime dependency; go-git (pure-Go) is adopted directly as the implementation library, per the "prefer open standards" architectural invariant.
+    - 'DATA_REPO_URL becomes a mandatory startup config: main.go refuses to start without it. FileStore survives only as a test fixture — never reachable in production.'
+    - DATA_REPO_URL is treated strictly as a local filesystem path for this milestone — no network transport, no auth. Remote hosting/credentials are explicitly punted to a future milestone.
+    - Migration of any pre-existing populated WORKSPACE_ROOT, and untangling this repo's own data/ folder from the main code repo's git tracking, are both out of scope — manual/deployment concerns handled outside this milestone's PRs.
+    - Follow docs/engineering conventions.md for implementation choices; no new runtime dependency without a stated reason.
 assumptions:
-  - A pure-Go git implementation (e.g. go-git) is preferable to shelling out to a git binary, but this hasn't been evaluated yet.
-  - The existing on-disk layout (data/projects/{projectId}/tasks/{taskId}/task.yaml) is a reasonable working-tree shape for a future git repo root and wouldn't need to change, only gain a .git/ alongside it.
-
+    - go-git is preferable to shelling out to a git binary and is committed to upfront for this milestone — no separate evaluation/spike gate before adoption.
+    - The existing on-disk layout (data/projects/{projectId}/tasks/{taskId}/task.yaml) is a reasonable git working-tree shape and needs no restructuring, only gaining a .git/ alongside it.
+    - On startup, GitStore clones DATA_REPO_URL into WORKSPACE_ROOT if it's empty; if WORKSPACE_ROOT is non-empty, it resumes if already a matching clone, else errors as an ambiguous state.
+    - Every Create/Update commits locally and synchronously on every write, guarded by a single process-wide mutex. A background worker periodically pushes accumulated commits; it never pulls after startup. Push failures are logged and retried next interval indefinitely (no backoff/alerting). Non-fast-forward push rejections are a documented limitation requiring manual operator reconciliation — no auto merge/rebase.
+    - Storage becomes a single process-wide singleton store instance (the TaskStoreFactory per-project-root pattern is removed); api.TaskStore/task.Store interfaces gain an explicit projectID parameter. FileStore is refactored to the same interface for consistency (touches ~150 test call sites).
+    - Go unit/integration tests construct Store values directly, bypassing main.go. The e2e harness, which boots the real binary, provisions its own git init --bare temp remote and exports DATA_REPO_URL before launching the subprocess — mirroring the same local-path, no-auth model at the process-boot layer.
 success_criteria:
-  - A follow-up milestone plan exists that either adopts real git-backed persistence or explicitly re-confirms plain on-disk persistence is sufficient long-term.
-
+    - A working GitStore implementation exists (using go-git) satisfying the task.Store/api.TaskStore interfaces with an explicit projectID parameter, committing every create/update synchronously and locally.
+    - main.go requires DATA_REPO_URL at startup and fails fast if unset; FileStore is no longer reachable in production, only used as a test fixture.
+    - 'Startup clone/resume logic is implemented: clone into empty WORKSPACE_ROOT, resume if already a matching clone, error on ambiguous non-empty non-matching state.'
+    - A background push worker periodically pushes local commits to DATA_REPO_URL, logging and retrying failures indefinitely without pulling after startup.
+    - FileStore is refactored onto the same singleton + projectID-param interface shape as GitStore, and existing tests are updated accordingly.
+    - The e2e harness provisions its own bare-repo remote and DATA_REPO_URL before launching the real binary subprocess.
+    - A PR-by-PR milestone plan is written (in this task's later planning stage) sequencing the above into shippable increments.
 references:
-  knowledge:
-    - docs/engineering conventions.md
-    - docs/milestones/done/milestone2.md
-  repo: []
+    knowledge:
+        - docs/engineering conventions.md
+        - docs/milestones/done/milestone2.md
+    repo: []

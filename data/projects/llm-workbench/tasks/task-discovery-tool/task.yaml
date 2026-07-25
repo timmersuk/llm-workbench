@@ -1,0 +1,63 @@
+id: task-discovery-tool
+title: Give executors a tool to discover and propose sibling tasks in the same project
+
+project: llm-workbench
+
+stage: requirements
+
+created_at: 2026-07-24T00:00:00Z
+updated_at: 2026-07-24T00:00:00Z
+
+objective: >-
+  During a task's requirements/planning-stage conversation, an executor
+  frequently discovers follow-on work (a related task that should exist, or
+  should be checked against one that already does) but today has no way to
+  see its sibling tasks within the same project at all — it can only see the
+  one task.yaml/context.yaml/plan.yaml it was given. Add a read tool so an
+  executor can list/inspect the other tasks (and, if task-grouping ships,
+  the groupings) already in its project, plus a human-approval-gated write
+  path so it can propose a new task or an edit to an existing one rather
+  than silently inventing follow-up work nobody signed off on.
+
+constraints:
+  - >-
+    The write side must not bypass human approval under any framing — this
+    mirrors internal/drafttool's existing Draft/Finalize discipline
+    (docs/adr/0007-reuse-conversation-draft-finalize-for-review.md): nothing
+    proposed by an executor is written to disk until a human accepts it.
+    Model the accept/reject step on ProposeKnowledge's two-way
+    accept/reject (internal/drafttool/drafttool.go, scoped in
+    docs/milestones/done/milestone9.md's "write path" section) rather than
+    inventing a new confirmation mechanism from scratch.
+  - >-
+    The read side should follow the same shape ProposeKnowledge's sibling
+    read tool took in Milestone 9 (docs/milestones/done/milestone9.md's
+    "discovery mechanism" section) — an always-available, read-only List
+    (task ids plus enough of title/objective/stage to browse) and Get (full
+    task.yaml/context.yaml by id) — rather than requiring a human to have
+    already curated a list of relevant sibling tasks up front.
+  - Read scope is this task's own project only (docs/task schema v0.md §6: a task belongs to exactly one project) — cross-project discovery is out of scope unless requirements surfaces a real need.
+  - If task-grouping (data/projects/llm-workbench/tasks/task-grouping/task.yaml) ships first, extend the read tool to also list groupings and a task's membership in one; if it hasn't shipped yet, this task's read scope is just the flat task list and should not block on it.
+  - Follow docs/engineering conventions.md for implementation choices.
+  - "No new runtime dependency without a stated reason (see architectural invariants: prefer open standards)."
+
+assumptions:
+  - The primary consumer is the Requirements/Planning-stage conversation (GrillMe/Planning Mode), the same stages ProposeContext/ProposePlan already serve — not Review or Execute, which have a different, narrower trust/tool boundary today.
+  - A newly proposed task's stage always starts at requirements, same as any human-created task — this tool does not let an executor fast-track a task into a later stage.
+  - Confirmation UX (e.g. reusing the structured ask_question tool, or a dedicated accept/reject affordance like ProposeKnowledge's) is a design question for this task's own requirements/planning stage, not decided here.
+
+success_criteria:
+  - A concrete tool schema exists for listing and fetching sibling tasks within the current project, following the List/Get shape used for KnowledgeStore in Milestone 9.
+  - A concrete tool schema exists for proposing a new task or an edit to an existing sibling task, gated behind an explicit human accept/reject step before anything is written via TaskStore.
+  - The relationship to task-grouping is resolved: either this ships independently of it (flat task list only) or the two are sequenced so the read tool covers groupings from the start.
+
+references:
+  knowledge:
+    - docs/task schema v0.md
+    - docs/engineering conventions.md
+    - docs/adr/0007-reuse-conversation-draft-finalize-for-review.md
+  repo:
+    - docs/milestones/done/milestone9.md
+    - internal/drafttool/drafttool.go
+    - data/projects/llm-workbench/tasks/task-grouping/task.yaml
+    - data/projects/llm-workbench/tasks/structured-ask-question-tool/task.yaml
