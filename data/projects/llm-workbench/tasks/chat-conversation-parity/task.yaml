@@ -1,0 +1,79 @@
+id: chat-conversation-parity
+title: Reconcile chat's conversation implementation with task conversations' (history and frontend UI)
+
+project: llm-workbench
+
+stage: requirements
+
+created_at: 2026-07-26T00:00:00Z
+updated_at: 2026-07-26T00:00:00Z
+
+objective: >-
+  Task-stage conversations (Requirements/Planning/Review) and free-form
+  Chat already execute turns through the same agentrunner.AgentRunner
+  interface — internal/api/stage_conversation.go and internal/api/chat.go
+  both call into ChatClientRunner/ClaudeRunner, and per docs/engineering
+  conventions.md "there is no separate direct chat.ChatClient code path in
+  internal/api." Where the two diverge is entirely in history handling.
+  Task conversations persist every turn to disk as an append-only
+  conversation-<stage>.yaml (internal/task/conversation.go), keyed by a
+  deterministic taskId:stage SessionKey, and the frontend
+  (StageConversationPanel.tsx) loads that history back on mount. Chat has
+  no disk persistence at all: history lives only in
+  ChatClientRunner.sessions, an in-memory map keyed by a SessionKey that
+  ChatPanel.tsx generates fresh (crypto.randomUUID()) on every mount and
+  never reads back, so a reload always starts empty even though the old
+  in-memory session may still be sitting unreachable server-side until
+  eviction. Work out what "more in line with task conversations" means
+  concretely for Chat: whether it should adopt an equivalent durable
+  per-session history file, a stable/reloadable SessionKey scheme, an
+  explicit replace-history operation analogous to
+  ReplaceConversationMessages, a fetch-on-load path in ChatPanel.tsx, or
+  some subset of these.
+
+  The same lagging-behind pattern also shows up in the frontend input UI,
+  confirmed on 2026-07-26: ChatPanel.tsx's chat-input block (textarea,
+  edit/stop/send button logic, className="chat-input") is a near-verbatim
+  copy of StageConversationPanel.tsx's, and has already drifted out of
+  sync — StageConversationPanel.tsx wires an onKeyDown handler
+  (handleDraftKeyDown) so plain Enter sends and Alt+Enter inserts a
+  newline, plus a "Enter to send / Alt+Enter for a new line" hint;
+  ChatPanel.tsx has neither, so Enter just inserts a newline there. Patching
+  ChatPanel.tsx to re-add the missing handler would only re-sync today's
+  drift and leave the same copy-paste risk for the next change. Scope this
+  task to cover both axes: backend history/session-identity (above) and
+  whatever de-duplication of the frontend input UI (e.g. a shared input
+  component used by both panels) prevents this class of silent drift going
+  forward.
+
+constraints:
+  - This task's scope is reconciling the two conversation-history models' shape and durability, not deciding disk-persistence format details for chat that overlap with the separate chat-history-persistence task — sequence or merge the two during requirements rather than duplicating scope.
+  - docs/engineering conventions.md's current prose describing chat.ChatClient.StreamSessionTurn and client-side session-holding is stale relative to the already-shipped retire-session-turn-methods task and should not be treated as the current architecture when scoping this.
+  - Any frontend de-duplication must account for the two panels' real differences, not force a false unification — e.g. StageConversationPanel.tsx renders a pendingQuestion options block above the input that ChatPanel.tsx has no equivalent of, and ChatPanel.tsx's send path is gated on an extra executor condition StageConversationPanel.tsx doesn't have.
+  - Follow docs/engineering conventions.md for implementation choices.
+  - "No new runtime dependency without a stated reason (see architectural invariants: prefer open standards)."
+
+assumptions:
+  - Both conversation surfaces already share the same execution path (agentrunner.AgentRunner, ChatClientRunner/ClaudeRunner) — this task is about reconciling history storage and session identity, not about unifying how a turn is actually run, which is already shared.
+  - The exact persisted format for chat (its own file per session, reuse of task.Conversation's shape, or something else) is a design question for this task's own requirements/planning stage, not decided here, and should be coordinated with chat-history-persistence if that task is in flight at the same time.
+  - The backend history/session-identity gap and the frontend input-UI duplication are two separate axes of the same underlying pattern (chat's implementation copied from task conversations' and then left to drift) and are scoped together here rather than split into separate tasks, but nothing requires them to be solved by the same mechanism.
+
+success_criteria:
+  - A decision is recorded on which of task conversations' properties (disk durability, stable SessionKey, replace-history semantics, load-on-mount in the frontend) Chat should adopt, and which are intentionally left different and why.
+  - The relationship to chat-history-persistence and resumable-chat-streams is made explicit so the three don't ship overlapping or conflicting mechanisms.
+  - ChatPanel.tsx and StageConversationPanel.tsx no longer carry two independently-maintained copies of the same input-area logic (textarea, keydown handling, edit/stop/send buttons) — whether via a shared component or another mechanism that stops them silently drifting apart.
+  - The concrete Enter-to-send / Alt+Enter-newline gap found on 2026-07-26 is closed as a byproduct of that de-duplication, not as a one-off patch to ChatPanel.tsx alone.
+
+references:
+  knowledge:
+    - docs/task schema v0.md
+    - docs/engineering conventions.md
+  repo:
+    - internal/api/chat.go
+    - internal/api/stage_conversation.go
+    - internal/task/conversation.go
+    - internal/agentrunner/chat_client_runner.go
+    - frontend/src/ChatPanel.tsx
+    - frontend/src/StageConversationPanel.tsx
+    - data/projects/llm-workbench/tasks/resumable-chat-streams/task.yaml
+    - data/projects/llm-workbench/tasks/retire-session-turn-methods/task.yaml

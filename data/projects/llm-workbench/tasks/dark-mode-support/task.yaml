@@ -1,0 +1,46 @@
+id: dark-mode-support
+title: Decide what dark mode support should add beyond the existing OS-driven theme
+
+project: llm-workbench
+
+stage: requirements
+
+created_at: 2026-07-26T00:00:00Z
+updated_at: 2026-07-26T00:00:00Z
+
+objective: >-
+  The frontend already ships automatic dark mode: frontend/src/index.css
+  defines the entire color palette as CSS custom properties on :root and
+  overrides every one of them inside a "@media (prefers-color-scheme:
+  dark)" block, and no component hardcodes colors outside that file — this
+  is the stated theming convention in docs/engineering conventions.md.
+  What's actually missing is any user-facing control over the choice: there
+  is no toggle, no persisted override, and no data-theme attribute anywhere
+  in the frontend, so a user whose OS reports light mode has no way to see
+  or use the app's dark palette, and vice versa. The existing dark palette
+  has also never been reviewed as a user-reachable surface rather than an
+  implicit OS fallback, so it may need a legibility/contrast pass. Decide
+  what "dark mode support" should actually add on top of what already
+  exists — a manual override control, a persisted preference, a palette
+  review, or some combination — and how a user would reach it.
+
+constraints:
+  - Any user-facing override should build on the existing CSS-custom-properties-in-index.css convention documented in docs/engineering conventions.md rather than introducing a second theming mechanism alongside it.
+  - Follow docs/engineering conventions.md for implementation choices.
+  - "No new runtime dependency without a stated reason (see architectural invariants: prefer open standards)."
+
+assumptions:
+  - OS-driven dark mode (frontend/src/index.css's prefers-color-scheme block) already works and stays in scope as the default/fallback behavior — this task is about adding user control and reviewing quality on top of it, not replacing it.
+  - Where an override preference would be stored (localStorage, a server-side user setting, etc.) is a design question for this task's own requirements/planning stage, not decided here.
+
+success_criteria:
+  - A decision is recorded on what dark mode support consists of beyond the existing automatic OS-driven theme.
+  - If a manual override is in scope, a user can select and persist a theme choice independent of their OS setting.
+  - The existing dark palette (frontend/src/index.css's dark media-query block) has been reviewed for legibility/contrast rather than assumed correct by construction.
+
+references:
+  knowledge:
+    - docs/engineering conventions.md
+  repo:
+    - frontend/src/index.css
+    - frontend/src/App.tsx

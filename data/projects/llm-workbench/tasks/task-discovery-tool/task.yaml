@@ -36,7 +36,7 @@ constraints:
     (task ids plus enough of title/objective/stage to browse) and Get (full
     task.yaml/context.yaml by id) — rather than requiring a human to have
     already curated a list of relevant sibling tasks up front.
-  - Read scope is this task's own project only (docs/task schema v0.md §6: a task belongs to exactly one project) — cross-project discovery is out of scope unless requirements surfaces a real need.
+  - "Read scope is this task's own project only (docs/task schema v0.md §6: a task belongs to exactly one project) — cross-project discovery is out of scope unless requirements surfaces a real need."
   - If task-grouping (data/projects/llm-workbench/tasks/task-grouping/task.yaml) ships first, extend the read tool to also list groupings and a task's membership in one; if it hasn't shipped yet, this task's read scope is just the flat task list and should not block on it.
   - Follow docs/engineering conventions.md for implementation choices.
   - "No new runtime dependency without a stated reason (see architectural invariants: prefer open standards)."
@@ -49,7 +49,7 @@ assumptions:
 success_criteria:
   - A concrete tool schema exists for listing and fetching sibling tasks within the current project, following the List/Get shape used for KnowledgeStore in Milestone 9.
   - A concrete tool schema exists for proposing a new task or an edit to an existing sibling task, gated behind an explicit human accept/reject step before anything is written via TaskStore.
-  - The relationship to task-grouping is resolved: either this ships independently of it (flat task list only) or the two are sequenced so the read tool covers groupings from the start.
+  - "The relationship to task-grouping is resolved: either this ships independently of it (flat task list only) or the two are sequenced so the read tool covers groupings from the start."
 
 references:
   knowledge:

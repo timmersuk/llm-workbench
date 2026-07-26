@@ -37,7 +37,7 @@ assumptions:
 
 success_criteria:
   - A concrete name and schema exist for the grouping object (id, title, member task ids, optional ordering/dependency between members) and where it's stored (e.g. a new file under the project directory, or a field added to task.yaml/project.yaml).
-  - The relationship to project scoping (docs/task schema v0.md §6) is explicitly preserved: grouping a task never changes which project owns it.
+  - "The relationship to project scoping (docs/task schema v0.md §6) is explicitly preserved: grouping a task never changes which project owns it."
   - A decision is recorded on whether dependency ordering is purely advisory (surfaced to humans/executors) or enforced anywhere in the workflow engine.
 
 references:
