@@ -25,12 +25,15 @@ type Plan struct {
 // GetPlan returns the task's plan.yaml. A task that hasn't finished
 // Planning Mode yet has no plan.yaml at all — reported as the underlying
 // fs.ErrNotExist (via %w).
-func (s *FileStore) GetPlan(id string) (Plan, error) {
+func (s *FileStore) GetPlan(projectID, id string) (Plan, error) {
+	if err := validateID(projectID); err != nil {
+		return Plan{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Plan{}, err
 	}
 
-	path := filepath.Join(s.Root, id, "plan.yaml")
+	path := filepath.Join(s.taskDir(projectID, id), "plan.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Plan{}, fmt.Errorf("reading %s: %w", path, err)
@@ -44,8 +47,8 @@ func (s *FileStore) GetPlan(id string) (Plan, error) {
 }
 
 // writePlan writes plan.yaml for id.
-func (s *FileStore) writePlan(id string, p Plan) error {
-	dir := filepath.Join(s.Root, id)
+func (s *FileStore) writePlan(projectID, id string, p Plan) error {
+	dir := s.taskDir(projectID, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}

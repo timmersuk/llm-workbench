@@ -19,21 +19,20 @@ import (
 func TestHandleFinalizeReview_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: "looks good"}
 	updated := task.Task{ID: "TASK-0001", Stage: task.StageMerged}
 	recorded := task.Review{ReviewID: "review-001", TaskID: "TASK-0001", Decision: task.ReviewDecisionApproved, Notes: "looks good"}
 
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeReview", "TASK-0001", draft).Return(updated, nil)
-	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{recorded}, nil)
+	tasks.On("FinalizeReview", "demo-project", "TASK-0001", draft).Return(updated, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{recorded}, nil)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/review/finalize", draft)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeReview()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizeReview()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizeReviewResponse
@@ -46,17 +45,16 @@ func TestHandleFinalizeReview_OK(t *testing.T) {
 func TestHandleFinalizeReview_WrongStage(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.ReviewDraft{Decision: task.ReviewDecisionApproved}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeReview", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
+	tasks.On("FinalizeReview", "demo-project", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/review/finalize", draft)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeReview()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizeReview()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -64,7 +62,6 @@ func TestHandleFinalizeReview_WrongStage(t *testing.T) {
 func TestHandleFinalizeReview_InvalidBody(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
 
@@ -72,7 +69,7 @@ func TestHandleFinalizeReview_InvalidBody(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeReview()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizeReview()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -82,13 +79,12 @@ func TestHandleFinalizeReview_InvalidBody(t *testing.T) {
 func TestHandleFinalizeReview_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.ReviewDraft{Decision: task.ReviewDecisionNeedsChanges}
 	updated := task.Task{ID: "TASK-0001", Stage: task.StageImplementation}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeReview", "TASK-0001", draft).Return(updated, nil)
-	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{{ReviewID: "review-001", Decision: task.ReviewDecisionNeedsChanges}}, nil)
+	tasks.On("FinalizeReview", "demo-project", "TASK-0001", draft).Return(updated, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{{ReviewID: "review-001", Decision: task.ReviewDecisionNeedsChanges}}, nil)
 
 	runner := new(mockAgentRunner)
 	runner.On("CloseSession", "TASK-0001:"+task.StageReview)
@@ -97,7 +93,7 @@ func TestHandleFinalizeReview_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeReview()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeReview()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	runner.AssertCalled(t, "CloseSession", "TASK-0001:"+task.StageReview)
@@ -106,11 +102,10 @@ func TestHandleFinalizeReview_ClosesAgentSessionsOnSuccess(t *testing.T) {
 func TestHandleFinalizeReview_DoesNotCloseSessionsWhenFinalizeFails(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.ReviewDraft{Decision: task.ReviewDecisionApproved}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeReview", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
+	tasks.On("FinalizeReview", "demo-project", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
 
 	runner := new(mockAgentRunner)
 
@@ -118,7 +113,7 @@ func TestHandleFinalizeReview_DoesNotCloseSessionsWhenFinalizeFails(t *testing.T
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeReview()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeReview()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	runner.AssertNotCalled(t, "CloseSession", mock.Anything)
@@ -127,20 +122,19 @@ func TestHandleFinalizeReview_DoesNotCloseSessionsWhenFinalizeFails(t *testing.T
 func TestHandleListReviews_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	reviews := []task.Review{
 		{ReviewID: "review-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the edge case"},
 		{ReviewID: "review-002", Decision: task.ReviewDecisionApproved, Notes: "good now"},
 	}
 	tasks := new(mockTaskStore)
-	tasks.On("ListReviews", "TASK-0001").Return(reviews, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(reviews, nil)
 
 	req := newProjectRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/reviews", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleListReviews()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleListReviews()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got struct {
@@ -161,13 +155,12 @@ func TestHandleReviewDiff_OK(t *testing.T) {
 
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("unused", nil)
 
 	req := newProjectRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks/task-a/review/diff", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot}).handleReviewDiff()(w, req)
+	(&Server{Projects: projects, Tasks: store, ReposRoot: reposRoot}).handleReviewDiff()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got reviewDiffResponse
@@ -180,18 +173,17 @@ func TestHandleReviewDiff_NoExecutionIsNotFound(t *testing.T) {
 	initReviewRepo(t, reposRoot)
 
 	store := task.NewFileStore(t.TempDir())
-	_, err := store.Create(task.Task{ID: "task-b", Title: "B"})
+	_, err := store.Create("demo-project", task.Task{ID: "task-b", Title: "B"})
 	require.NoError(t, err)
 
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("unused", nil)
 
 	req := newProjectRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks/task-b/review/diff", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-b")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot}).handleReviewDiff()(w, req)
+	(&Server{Projects: projects, Tasks: store, ReposRoot: reposRoot}).handleReviewDiff()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

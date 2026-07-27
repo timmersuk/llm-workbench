@@ -88,9 +88,9 @@ func seedReviewableTask(t *testing.T, store *task.FileStore, id string) {
 // directly instead of recomputing them.
 func seedReviewableTaskWithOutput(t *testing.T, store *task.FileStore, id string, output task.ExecutionOutput) {
 	t.Helper()
-	_, err := store.Create(task.Task{ID: id, Title: "A"})
+	_, err := store.Create("demo-project", task.Task{ID: id, Title: "A"})
 	require.NoError(t, err)
-	_, err = store.FinalizeRequirements(id, task.RequirementsDraft{
+	_, err = store.FinalizeRequirements("demo-project", id, task.RequirementsDraft{
 		Objective: "ship it",
 		Context: task.Context{
 			Summary: "does the thing",
@@ -101,9 +101,9 @@ func seedReviewableTaskWithOutput(t *testing.T, store *task.FileStore, id string
 		},
 	}) // requirements -> planning, writes context.yaml
 	require.NoError(t, err)
-	_, err = store.FinalizePlan(id, task.Plan{Approach: "do it", EstimatedComplexity: "low"}) // planning -> implementation
+	_, err = store.FinalizePlan("demo-project", id, task.Plan{Approach: "do it", EstimatedComplexity: "low"}) // planning -> implementation
 	require.NoError(t, err)
-	_, err = store.RecordExecution(id, task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: output}) // implementation -> review
+	_, err = store.RecordExecution("demo-project", id, task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: output}) // implementation -> review
 	require.NoError(t, err)
 }
 
@@ -119,7 +119,7 @@ func TestBuildReviewContext_IncludesChangedFilesAndVerificationSteps(t *testing.
 	addendum, workspace, err := (&Server{ReposRoot: reposRoot}).buildReviewContext(
 		context.Background(),
 		project.Project{Repositories: []string{"github.com/x/myrepo"}},
-		store, "task-a", "main",
+		store, "demo-project", "task-a", "main",
 	)
 	require.NoError(t, err)
 	assert.Equal(t, ws.Path, workspace)
@@ -136,13 +136,13 @@ func TestBuildReviewContext_NoExecutionIsAnError(t *testing.T) {
 	initReviewRepo(t, reposRoot)
 
 	store := task.NewFileStore(t.TempDir())
-	_, err := store.Create(task.Task{ID: "task-b", Title: "B"})
+	_, err := store.Create("demo-project", task.Task{ID: "task-b", Title: "B"})
 	require.NoError(t, err)
 
 	_, _, err = (&Server{ReposRoot: reposRoot}).buildReviewContext(
 		context.Background(),
 		project.Project{Repositories: []string{"github.com/x/myrepo"}},
-		store, "task-b", "main",
+		store, "demo-project", "task-b", "main",
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no execution to review")
@@ -150,10 +150,10 @@ func TestBuildReviewContext_NoExecutionIsAnError(t *testing.T) {
 
 func TestBuildRejectedReviewContext_NoReviewsYet_ReturnsEmpty(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
-	_, err := store.Create(task.Task{ID: "task-c", Title: "C"})
+	_, err := store.Create("demo-project", task.Task{ID: "task-c", Title: "C"})
 	require.NoError(t, err)
 
-	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "task-c"}, "")
+	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, "demo-project", task.Task{ID: "task-c"}, "")
 	require.NoError(t, err)
 	assert.Empty(t, addendum)
 }
@@ -161,10 +161,10 @@ func TestBuildRejectedReviewContext_NoReviewsYet_ReturnsEmpty(t *testing.T) {
 func TestBuildRejectedReviewContext_LatestApproved_ReturnsEmpty(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
 	seedReviewableTask(t, store, "task-d")
-	_, err := store.FinalizeReview("task-d", task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: "looks good"})
+	_, err := store.FinalizeReview("demo-project", "task-d", task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: "looks good"})
 	require.NoError(t, err)
 
-	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "task-d"}, "")
+	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, "demo-project", task.Task{ID: "task-d"}, "")
 	require.NoError(t, err)
 	assert.Empty(t, addendum)
 }
@@ -172,10 +172,10 @@ func TestBuildRejectedReviewContext_LatestApproved_ReturnsEmpty(t *testing.T) {
 func TestBuildRejectedReviewContext_LatestRejected_IncludesNotesAndBranch(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
 	seedReviewableTask(t, store, "task-e")
-	_, err := store.FinalizeReview("task-e", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "wrong requirements entirely"})
+	_, err := store.FinalizeReview("demo-project", "task-e", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "wrong requirements entirely"})
 	require.NoError(t, err)
 
-	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "task-e"}, "")
+	addendum, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, "demo-project", task.Task{ID: "task-e"}, "")
 	require.NoError(t, err)
 	assert.Contains(t, addendum, "wrong requirements entirely")
 	assert.Contains(t, addendum, "task-exec/task-e/exec-001")
@@ -185,7 +185,7 @@ func TestBuildRejectedReviewContext_LatestRejected_IncludesNotesAndBranch(t *tes
 func TestBuildRejectedReviewContext_InvalidTaskID_PropagatesError(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
 
-	_, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, task.Task{ID: "../evil"}, "")
+	_, err := (&Server{}).buildRejectedReviewContext(context.Background(), store, "demo-project", task.Task{ID: "../evil"}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing reviews")
 }
@@ -197,7 +197,7 @@ func TestBuildRejectedReviewContext_InvalidTaskID_PropagatesError(t *testing.T) 
 func TestBuildRejectedReviewContext_LatestRejectedWithOpenPR_WritesCommentsFile(t *testing.T) {
 	store := task.NewFileStore(t.TempDir())
 	seedReviewableTask(t, store, "task-f")
-	_, err := store.FinalizeReview("task-f", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "needs a rethink"})
+	_, err := store.FinalizeReview("demo-project", "task-f", task.ReviewDraft{Decision: task.ReviewDecisionRejected, Notes: "needs a rethink"})
 	require.NoError(t, err)
 
 	workspace := filepath.Join(t.TempDir(), "repo")
@@ -207,7 +207,7 @@ func TestBuildRejectedReviewContext_LatestRejectedWithOpenPR_WritesCommentsFile(
 	prClient := &fakeGitHubPRClient{comments: agentrunner.PRCommentsYAML("- kind: comment\n  author: dana\n  body: please reconsider the approach\n")}
 	tk := task.Task{ID: "task-f", PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7}}
 
-	addendum, err := (&Server{PRClient: prClient}).buildRejectedReviewContext(context.Background(), store, tk, workspace)
+	addendum, err := (&Server{PRClient: prClient}).buildRejectedReviewContext(context.Background(), store, "demo-project", tk, workspace)
 	require.NoError(t, err)
 	assert.Contains(t, addendum, ".llm-workbench/pr-comments/task-f.yaml")
 

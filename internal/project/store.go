@@ -44,14 +44,12 @@ type ListResult struct {
 	Errors   []LoadError `yaml:"errors" json:"errors"`
 }
 
-// Store lists, retrieves, creates, and updates projects, and resolves the
-// task-store root for a given project id.
+// Store lists, retrieves, creates, and updates projects.
 type Store interface {
 	List() (ListResult, error)
 	Get(id string) (Project, error)
 	Create(in CreateInput) (Project, error)
 	Update(id string, in UpdateInput) (Project, error)
-	TasksRoot(id string) (string, error)
 }
 
 // FileStore is a read-only Store backed by a directory of <id>/project.yaml
@@ -177,17 +175,6 @@ func (s *FileStore) Update(id string, in UpdateInput) (Project, error) {
 		return Project{}, err
 	}
 	return p, nil
-}
-
-// TasksRoot returns the directory containing task subdirectories for the
-// given project id (<root>/<id>/tasks), without checking the project
-// actually exists — callers that need a 404 for a missing project should
-// call Get first.
-func (s *FileStore) TasksRoot(id string) (string, error) {
-	if err := validateID(id); err != nil {
-		return "", err
-	}
-	return filepath.Join(s.Root, id, "tasks"), nil
 }
 
 func (s *FileStore) writeProject(p Project) error {

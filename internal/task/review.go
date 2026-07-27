@@ -69,12 +69,12 @@ type ReviewDraft struct {
 // (NextReviewID) and expects (RecordReview), mirroring executionIDPattern.
 var reviewIDPattern = regexp.MustCompile(`^review-(\d{3,})$`)
 
-func reviewsDir(root, id string) string {
-	return filepath.Join(root, id, "reviews")
+func reviewsDir(dir string) string {
+	return filepath.Join(dir, "reviews")
 }
 
-func reviewPath(root, id, reviewID string) string {
-	return filepath.Join(reviewsDir(root, id), reviewID+".yaml")
+func reviewPath(dir, reviewID string) string {
+	return filepath.Join(reviewsDir(dir), reviewID+".yaml")
 }
 
 // NextReviewID returns the next sequential "review-NNN" id for id's task, by
@@ -83,12 +83,15 @@ func reviewPath(root, id, reviewID string) string {
 // anything, so a caller that ends up not recording a review simply leaves a
 // gap in the sequence, which is fine — ids only need to be unique and
 // increasing, not contiguous.
-func (s *FileStore) NextReviewID(id string) (string, error) {
+func (s *FileStore) NextReviewID(projectID, id string) (string, error) {
+	if err := validateID(projectID); err != nil {
+		return "", err
+	}
 	if err := validateID(id); err != nil {
 		return "", err
 	}
 
-	entries, err := os.ReadDir(reviewsDir(s.Root, id))
+	entries, err := os.ReadDir(reviewsDir(s.taskDir(projectID, id)))
 	if os.IsNotExist(err) {
 		return "review-001", nil
 	}
@@ -128,7 +131,10 @@ func (s *FileStore) NextReviewID(id string) (string, error) {
 // touches the task's Stage: the review verdict's stage transition is
 // FinalizeReview's responsibility (lifecycle.go), keeping this a pure
 // append-only store.
-func (s *FileStore) RecordReview(id string, review Review) (Review, error) {
+func (s *FileStore) RecordReview(projectID, id string, review Review) (Review, error) {
+	if err := validateID(projectID); err != nil {
+		return Review{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Review{}, err
 	}
@@ -136,7 +142,8 @@ func (s *FileStore) RecordReview(id string, review Review) (Review, error) {
 		return Review{}, err
 	}
 
-	path := reviewPath(s.Root, id, review.ReviewID)
+	taskDir := s.taskDir(projectID, id)
+	path := reviewPath(taskDir, review.ReviewID)
 	if _, err := os.Stat(path); err == nil {
 		return Review{}, fmt.Errorf("recording review %s for %s: %w", review.ReviewID, id, ErrReviewAlreadyExists)
 	} else if !os.IsNotExist(err) {
@@ -146,7 +153,7 @@ func (s *FileStore) RecordReview(id string, review Review) (Review, error) {
 	review.TaskID = id
 	review.CreatedAt = time.Now().UTC()
 
-	dir := reviewsDir(s.Root, id)
+	dir := reviewsDir(taskDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Review{}, fmt.Errorf("creating reviews directory %s: %w", dir, err)
 	}
@@ -167,12 +174,15 @@ func (s *FileStore) RecordReview(id string, review Review) (Review, error) {
 // chronologically). A task with no reviews/ directory yet returns an empty
 // slice, not an error — the same "missing file means normal starting state"
 // treatment ListExecutions gives.
-func (s *FileStore) ListReviews(id string) ([]Review, error) {
+func (s *FileStore) ListReviews(projectID, id string) ([]Review, error) {
+	if err := validateID(projectID); err != nil {
+		return nil, err
+	}
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
 
-	dir := reviewsDir(s.Root, id)
+	dir := reviewsDir(s.taskDir(projectID, id))
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil

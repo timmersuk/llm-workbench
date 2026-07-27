@@ -1,9 +1,10 @@
-// Package task provides the Task type and a file-backed store over a
+// Package task provides the Task type and a file-backed store over every
 // project's tasks/ directory, per docs/task schema v0.md. A task belongs to
-// exactly one project permanently; this package has no notion of "project"
-// beyond the opaque Project field — the store is always constructed rooted
-// at a single project's task directory (see project.FileStore.TasksRoot),
-// and a task's id is unique only within that root, not globally.
+// exactly one project permanently, named by the Project field and by the
+// explicit projectID parameter every Store method takes — the store itself
+// is a single process-wide singleton rooted at the shared projects root
+// (the same Root as project.FileStore), not one instance per project, and
+// a task's id is unique only within its owning project, not globally.
 package task
 
 import "time"

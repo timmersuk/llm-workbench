@@ -183,20 +183,3 @@ func TestFileStore_Update_RejectsMissingName(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMissingName)
 }
 
-func TestFileStore_TasksRoot_OK(t *testing.T) {
-	root := t.TempDir()
-	store := NewFileStore(root)
-
-	tasksRoot, err := store.TasksRoot("demo-project")
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(root, "demo-project", "tasks"), tasksRoot)
-}
-
-func TestFileStore_TasksRoot_RejectsPathTraversal(t *testing.T) {
-	root := t.TempDir()
-	store := NewFileStore(root)
-
-	_, err := store.TasksRoot("../escape")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidID)
-}

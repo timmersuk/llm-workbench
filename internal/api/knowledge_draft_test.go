@@ -28,12 +28,11 @@ func newReviewStageServer(t *testing.T, knowledgeStore *mockKnowledgeStore) (*mo
 	t.Helper()
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageReview}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageReview}, nil)
 
-	return projects, tasks, &Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), KnowledgeStore: knowledgeStore}
+	return projects, tasks, &Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeStore}
 }
 
 func TestHandleFinalizeKnowledge_Accepted_WritesConcept(t *testing.T) {
@@ -82,12 +81,11 @@ func TestHandleFinalizeKnowledge_Rejected_NeverWrites(t *testing.T) {
 func TestHandleFinalizeKnowledge_WrongStage(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
-	server := &Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), KnowledgeStore: new(mockKnowledgeStore)}
+	server := &Server{Projects: projects, Tasks: tasks, KnowledgeStore: new(mockKnowledgeStore)}
 
 	req := newFinalizeKnowledgeRequest(t, finalizeKnowledgeRequest{
 		ConceptID: "x", Type: "Reference", Decision: knowledgeDecisionAccepted,

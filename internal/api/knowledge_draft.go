@@ -62,13 +62,14 @@ type finalizeKnowledgeResponse struct {
 // knowledge-store write with no relationship to what's on screen.
 func (s *Server) handleFinalizeKnowledge() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
 		taskId := r.PathValue("taskId")
-		t, err := store.Get(taskId)
+		t, err := store.Get(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return

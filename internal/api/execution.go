@@ -135,14 +135,9 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
 			return
 		}
-		root, err := s.Projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := s.TaskStores(root)
+		store := s.Tasks
 
-		t, err := store.Get(taskId)
+		t, err := store.Get(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -152,19 +147,19 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			return
 		}
 
-		plan, err := store.GetPlan(taskId)
+		plan, err := store.GetPlan(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
 
-		forkFrom, reviewFeedback, err := resolveReviewContinuation(store, taskId)
+		forkFrom, reviewFeedback, err := resolveReviewContinuation(store, projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
 
-		failureExecutionID, failureForkFrom, failureMessage, err := resolveFailureContinuation(store, taskId, forkFrom)
+		failureExecutionID, failureForkFrom, failureMessage, err := resolveFailureContinuation(store, projectId, taskId, forkFrom)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -187,7 +182,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			priorFailureMessage = failureMessage
 		}
 
-		executionID, err := store.NextExecutionID(taskId)
+		executionID, err := store.NextExecutionID(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -343,7 +338,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		}
 		classifyExecutionOutcome(&exec, execErr, r.Context())
 
-		recorded, recordErr := store.RecordExecution(taskId, exec)
+		recorded, recordErr := store.RecordExecution(projectId, taskId, exec)
 		if recordErr != nil {
 			logrus.WithError(recordErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Error("persisting execution record")
 			writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("saving execution record: %v", recordErr)})
@@ -383,12 +378,13 @@ func classifyExecutionOutcome(exec *task.Execution, err error, ctx context.Conte
 // (out of scope for this milestone).
 func (s *Server) handleListExecutions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
-		executions, err := store.ListExecutions(r.PathValue("taskId"))
+		executions, err := store.ListExecutions(projectId, r.PathValue("taskId"))
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -406,19 +402,20 @@ func (s *Server) handleListExecutions() http.HandlerFunc {
 // ExecutionID is empty in the response when there's nothing to offer.
 func (s *Server) handleGetContinuableExecution() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 		taskId := r.PathValue("taskId")
 
-		reviewForkFrom, _, err := resolveReviewContinuation(store, taskId)
+		reviewForkFrom, _, err := resolveReviewContinuation(store, projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
 		}
 
-		executionID, _, _, err := resolveFailureContinuation(store, taskId, reviewForkFrom)
+		executionID, _, _, err := resolveFailureContinuation(store, projectId, taskId, reviewForkFrom)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -444,8 +441,8 @@ func (s *Server) handleGetContinuableExecution() http.HandlerFunc {
 // latest review actually reviewed. ExecutionID is captured by FinalizeReview
 // at the one moment that ambiguity can't exist, so this just looks it up
 // directly instead of re-inferring it here.
-func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, reviewFeedback string, err error) {
-	reviews, err := store.ListReviews(taskId)
+func resolveReviewContinuation(store TaskStore, projectId, taskId string) (forkFrom, reviewFeedback string, err error) {
+	reviews, err := store.ListReviews(projectId, taskId)
 	if err != nil {
 		return "", "", fmt.Errorf("listing reviews for %s: %w", taskId, err)
 	}
@@ -457,7 +454,7 @@ func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, review
 		return "", "", nil
 	}
 
-	executions, err := store.ListExecutions(taskId)
+	executions, err := store.ListExecutions(projectId, taskId)
 	if err != nil {
 		return "", "", fmt.Errorf("listing executions for %s: %w", taskId, err)
 	}
@@ -486,12 +483,12 @@ func resolveReviewContinuation(store TaskStore, taskId string) (forkFrom, review
 // returns an empty executionID, the signal both handleStartExecution's
 // validation and handleGetContinuableExecution's hint use for "nothing to
 // offer here."
-func resolveFailureContinuation(store TaskStore, taskId, reviewForkFrom string) (executionID, forkFrom, failureMessage string, err error) {
+func resolveFailureContinuation(store TaskStore, projectId, taskId, reviewForkFrom string) (executionID, forkFrom, failureMessage string, err error) {
 	if reviewForkFrom != "" {
 		return "", "", "", nil
 	}
 
-	executions, err := store.ListExecutions(taskId)
+	executions, err := store.ListExecutions(projectId, taskId)
 	if err != nil {
 		return "", "", "", fmt.Errorf("listing executions for %s: %w", taskId, err)
 	}

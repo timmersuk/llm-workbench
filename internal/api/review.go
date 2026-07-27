@@ -26,12 +26,13 @@ type reviewDiffResponse struct {
 // PR 3 decision 4).
 func (s *Server) handleListReviews() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
-		reviews, err := store.ListReviews(r.PathValue("taskId"))
+		reviews, err := store.ListReviews(projectId, r.PathValue("taskId"))
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -62,14 +63,9 @@ func (s *Server) handleReviewDiff() http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
 			return
 		}
-		root, err := s.Projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := s.TaskStores(root)
+		store := s.Tasks
 
-		executions, err := store.ListExecutions(taskId)
+		executions, err := store.ListExecutions(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return

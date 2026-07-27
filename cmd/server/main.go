@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -19,9 +20,8 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/api"
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/gitstore"
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
-	"github.com/timmersuk/llm-workbench/internal/project"
-	"github.com/timmersuk/llm-workbench/internal/task"
 	"github.com/timmersuk/llm-workbench/internal/utils"
 	"github.com/timmersuk/llm-workbench/internal/web"
 )
@@ -35,6 +35,8 @@ var BuildID = "dev"
 type config struct {
 	httpAddr              string
 	workspaceRoot         string
+	dataRepoURL           string
+	pushInterval          time.Duration
 	logLevel              string
 	logFormat             string
 	llmBaseURL            string
@@ -49,22 +51,33 @@ type config struct {
 }
 
 // loadConfig reads every environment-derived setting main() needs.
-// AGENT_REPOS_ROOT is the one hard startup requirement (via
+// AGENT_REPOS_ROOT and DATA_REPO_URL are hard startup requirements (via
 // utils.MustGetEnv, which itself calls logrus.Fatal and exits the process)
 // — every agent runner capable of introspecting a task's reference
-// repository needs it, so the server refuses to start without one. Kept as
-// its own step (called directly from main(), before run()) rather than
-// folded into run() so run() itself never has a Fatal-style exit path: it
-// stays main()'s sole point of process termination.
+// repository needs the former; the latter is gitstore.Open's mandatory
+// "origin" remote (see run()'s doc comment below for the subprocess-boot
+// provisioning pattern a caller must follow). Kept as its own step (called
+// directly from main(), before run()) rather than folded into run() so
+// run() itself never has a Fatal-style exit path: it stays main()'s sole
+// point of process termination.
 func loadConfig() config {
 	return config{
 		httpAddr:      utils.GetEnvDefault("HTTP_ADDR", ":8080"),
 		workspaceRoot: utils.GetEnvDefault("WORKSPACE_ROOT", "data"),
-		logLevel:      utils.GetEnvDefault("LOG_LEVEL", "info"),
-		logFormat:     utils.GetEnvDefault("LOG_FORMAT", "json"),
-		llmBaseURL:    utils.GetEnvDefault("LLM_BASE_URL", "http://localhost:11434/v1"),
-		llmAPIKey:     utils.GetEnvDefault("LLM_API_KEY", ""),
-		llmModel:      utils.GetEnvDefault("LLM_MODEL", "llama3"),
+		// DATA_REPO_URL is treated strictly as a local filesystem path this
+		// milestone — no network transport, no auth (remote hosting/
+		// credentials are punted to a future milestone). See gitstore.Open's
+		// doc comment for the clone/resume/ambiguous-workspace contract this
+		// drives.
+		dataRepoURL: utils.MustGetEnv("DATA_REPO_URL"),
+		// How often the background push worker (gitstore.Store.RunPushWorker)
+		// attempts to push accumulated local commits to DATA_REPO_URL.
+		pushInterval: utils.GetEnvDefault("PUSH_INTERVAL", 30*time.Second),
+		logLevel:     utils.GetEnvDefault("LOG_LEVEL", "info"),
+		logFormat:    utils.GetEnvDefault("LOG_FORMAT", "json"),
+		llmBaseURL:   utils.GetEnvDefault("LLM_BASE_URL", "http://localhost:11434/v1"),
+		llmAPIKey:    utils.GetEnvDefault("LLM_API_KEY", ""),
+		llmModel:     utils.GetEnvDefault("LLM_MODEL", "llama3"),
 		// Idle timeout between streamed chunks (resets on every chunk received);
 		// total-duration timeout for non-streaming calls.
 		llmTimeout:   utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second),
@@ -111,10 +124,55 @@ func main() {
 // os.Exit/logrus.Fatal path other than reporting run's returned error, so
 // this function must never call one either (that would bypass shutdown
 // entirely, e.g. leaving a `claude` CLI subprocess connected).
+//
+// Design note — subprocess-boot provisioning for tests: gitstore.Open
+// (internal/gitstore/gitstore.go) requires cfg.dataRepoURL to already name
+// a real git remote before this process starts — it never creates one
+// itself. Any harness that boots this binary as a real subprocess (a
+// future e2e-tests task, per this milestone's plan — not implemented or
+// verified here) must therefore provision that remote first:
+//
+//  1. Create an empty bare repository in a throwaway directory, e.g. via
+//     `git init --bare <tmp>/data-remote.git` (or go-git's
+//     `git.PlainInit(dir, true)`, exactly as this package's own tests do —
+//     see internal/gitstore/gitstore_test.go's newBareRemote helper).
+//  2. Export DATA_REPO_URL=<tmp>/data-remote.git (and WORKSPACE_ROOT
+//     pointing at another empty throwaway directory) in the subprocess's
+//     environment before starting it.
+//
+// gitstore.Open's clone step (an empty bare remote) falls back to a local
+// PlainInit + origin remote, exactly the "empty WORKSPACE_ROOT, fresh
+// clone" startup path documented on gitstore.Open — so this is the
+// harness-side equivalent of a brand-new deployment's first boot, not a
+// special test-only code path in the server itself.
 func run(ctx context.Context, cfg config) error {
 	configureLogging(cfg.logLevel, cfg.logFormat)
 
-	projectStore := project.NewFileStore(filepath.Join(cfg.workspaceRoot, "projects"))
+	store, err := gitstore.Open(cfg.workspaceRoot, cfg.dataRepoURL)
+	if err != nil {
+		return fmt.Errorf("opening git-backed data store: %w", err)
+	}
+
+	// Push worker outlives no request — it runs for exactly as long as run()
+	// itself does. pushCtx is its own child of ctx (not ctx directly) so
+	// that every one of run()'s exit paths — not just "ctx cancelled" — stops
+	// it: a real ListenAndServe failure, say, must return promptly rather
+	// than block up to ctx's own deadline waiting for the worker to notice.
+	// The deferred cancel-then-wait guarantees the worker is both told to
+	// stop and actually stopped before run() returns, so no push is left
+	// mid-flight when the process exits.
+	pushCtx, cancelPush := context.WithCancel(ctx)
+	var pushWG sync.WaitGroup
+	pushWG.Add(1)
+	go func() {
+		defer pushWG.Done()
+		store.RunPushWorker(pushCtx, cfg.pushInterval)
+	}()
+	defer func() {
+		cancelPush()
+		pushWG.Wait()
+	}()
+
 	knowledgeRoot := filepath.Join(cfg.workspaceRoot, "knowledge")
 	knowledgeStore := knowledge.NewFileStore(knowledgeRoot)
 
@@ -141,12 +199,12 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("mounting embedded frontend: %w", err)
 	}
 
-	taskStores := func(root string) api.TaskStore { return task.NewFileStore(root) }
-	router := api.NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, cfg.agentReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
+	router := api.NewRouter(store.Projects, store.Tasks, knowledgeStore, agentRunners, cfg.agentReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":           cfg.httpAddr,
 		"workspaceRoot":  cfg.workspaceRoot,
+		"dataRepoURL":    cfg.dataRepoURL,
 		"llmBaseURL":     cfg.llmBaseURL,
 		"llmModel":       cfg.llmModel,
 		"agentReposRoot": cfg.agentReposRoot,

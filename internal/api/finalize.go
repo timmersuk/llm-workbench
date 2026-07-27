@@ -79,7 +79,7 @@ func (s *Server) handleFinalizeRequirements() http.HandlerFunc {
 		}
 
 		taskId := r.PathValue("taskId")
-		updated, err := store.FinalizeRequirements(taskId, draft)
+		updated, err := store.FinalizeRequirements(projectId, taskId, draft)
 		if err != nil {
 			writeMutationError(w, err)
 			return
@@ -98,7 +98,7 @@ func (s *Server) handleFinalizeRequirements() http.HandlerFunc {
 			logrus.WithError(projErr).WithFields(logrus.Fields{"project": projectId}).Warn("resolving project for pr-comments cleanup")
 		}
 
-		ctx, err := store.GetContext(taskId)
+		ctx, err := store.GetContext(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -113,7 +113,8 @@ func (s *Server) handleFinalizeRequirements() http.HandlerFunc {
 // handleFinalizeRequirements's comment for the CloseSession rationale.
 func (s *Server) handleFinalizePlan() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
@@ -125,14 +126,14 @@ func (s *Server) handleFinalizePlan() http.HandlerFunc {
 		}
 
 		taskId := r.PathValue("taskId")
-		updated, err := store.FinalizePlan(taskId, plan)
+		updated, err := store.FinalizePlan(projectId, taskId, plan)
 		if err != nil {
 			writeMutationError(w, err)
 			return
 		}
 		s.closeSessions(taskId + ":" + task.StagePlanning)
 
-		savedPlan, err := store.GetPlan(taskId)
+		savedPlan, err := store.GetPlan(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -153,7 +154,8 @@ func (s *Server) handleFinalizePlan() http.HandlerFunc {
 // shows without a second call.
 func (s *Server) handleFinalizeReview() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
@@ -165,7 +167,7 @@ func (s *Server) handleFinalizeReview() http.HandlerFunc {
 		}
 
 		taskId := r.PathValue("taskId")
-		updated, err := store.FinalizeReview(taskId, draft)
+		updated, err := store.FinalizeReview(projectId, taskId, draft)
 		if err != nil {
 			writeMutationError(w, err)
 			return
@@ -174,7 +176,7 @@ func (s *Server) handleFinalizeReview() http.HandlerFunc {
 
 		// FinalizeReview appended a fresh review-NNN.yaml; the last entry is
 		// that verdict (ListReviews sorts ascending by zero-padded id).
-		reviews, err := store.ListReviews(taskId)
+		reviews, err := store.ListReviews(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return

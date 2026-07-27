@@ -13,13 +13,13 @@ import (
 func newReviewTask(t *testing.T, store *FileStore, id string) Task {
 	t.Helper()
 	newImplementationTask(t, store, id)
-	_, err := store.RecordExecution(id, Execution{
+	_, err := store.RecordExecution("demo-project", id, Execution{
 		ExecutionID: "exec-001",
 		Status:      ExecutionStatusSuccess,
 		Output:      ExecutionOutput{GitBranch: "task-exec/" + id + "/exec-001", Commits: []string{"abc123"}},
 	})
 	require.NoError(t, err)
-	tk, err := store.Get(id)
+	tk, err := store.Get("demo-project", id)
 	require.NoError(t, err)
 	require.Equal(t, StageReview, tk.Stage)
 	return tk
@@ -32,11 +32,11 @@ func newReviewTask(t *testing.T, store *FileStore, id string) Task {
 func newPRReviewTask(t *testing.T, store *FileStore, id string) Task {
 	t.Helper()
 	newReviewTask(t, store, id)
-	tk, err := store.Get(id)
+	tk, err := store.Get("demo-project", id)
 	require.NoError(t, err)
 	tk.Stage = StagePRReview
-	require.NoError(t, store.writeTask(tk))
-	tk, err = store.Get(id)
+	require.NoError(t, store.writeTask("demo-project", tk))
+	tk, err = store.Get("demo-project", id)
 	require.NoError(t, err)
 	require.Equal(t, StagePRReview, tk.Stage)
 	return tk
@@ -47,12 +47,12 @@ func TestFileStore_RecordReview_RoundTripsAndListsSorted(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	_, err := store.RecordReview("task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionNeedsChanges, Notes: "add a test"})
+	_, err := store.RecordReview("demo-project", "task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionNeedsChanges, Notes: "add a test"})
 	require.NoError(t, err)
-	_, err = store.RecordReview("task-a", Review{ReviewID: "review-002", Decision: ReviewDecisionApproved, Notes: "looks good"})
+	_, err = store.RecordReview("demo-project", "task-a", Review{ReviewID: "review-002", Decision: ReviewDecisionApproved, Notes: "looks good"})
 	require.NoError(t, err)
 
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 2)
 
@@ -69,12 +69,12 @@ func TestFileStore_ListReviews_SortedNumericallyPastThreeDigits(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	_, err := store.RecordReview("task-a", Review{ReviewID: "review-1000", Decision: ReviewDecisionNeedsChanges, Notes: "later cycle"})
+	_, err := store.RecordReview("demo-project", "task-a", Review{ReviewID: "review-1000", Decision: ReviewDecisionNeedsChanges, Notes: "later cycle"})
 	require.NoError(t, err)
-	_, err = store.RecordReview("task-a", Review{ReviewID: "review-999", Decision: ReviewDecisionApproved, Notes: "earlier cycle"})
+	_, err = store.RecordReview("demo-project", "task-a", Review{ReviewID: "review-999", Decision: ReviewDecisionApproved, Notes: "earlier cycle"})
 	require.NoError(t, err)
 
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 2)
 	// Lexical string comparison ("review-1000" < "review-999", since '1' <
@@ -89,14 +89,14 @@ func TestFileStore_NextReviewID_StartsAtReview001AndIncrements(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	id, err := store.NextReviewID("task-a")
+	id, err := store.NextReviewID("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, "review-001", id)
 
-	_, err = store.RecordReview("task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionNeedsChanges})
+	_, err = store.RecordReview("demo-project", "task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionNeedsChanges})
 	require.NoError(t, err)
 
-	id, err = store.NextReviewID("task-a")
+	id, err = store.NextReviewID("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, "review-002", id)
 }
@@ -106,7 +106,7 @@ func TestFileStore_ListReviews_EmptyWhenNoneRecorded(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Empty(t, reviews)
 }
@@ -116,12 +116,12 @@ func TestFileStore_FinalizeReview_ApprovedAdvancesToPRReview(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	tk, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionApproved, Notes: "ship it"})
+	tk, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: ReviewDecisionApproved, Notes: "ship it"})
 	require.NoError(t, err)
 	assert.Equal(t, StagePRReview, tk.Stage)
 
 	// The verdict is recorded append-only as review-001.
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
 	assert.Equal(t, "review-001", reviews[0].ReviewID)
@@ -135,11 +135,11 @@ func TestFileStore_FinalizeReview_NeedsChangesReturnsToImplementation(t *testing
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	tk, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionNeedsChanges, Notes: "handle the empty case"})
+	tk, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: ReviewDecisionNeedsChanges, Notes: "handle the empty case"})
 	require.NoError(t, err)
 	assert.Equal(t, StageImplementation, tk.Stage)
 
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
 	assert.Equal(t, "exec-001", reviews[0].ExecutionID, "the execution this verdict is about is captured at Finalize time")
@@ -152,11 +152,11 @@ func TestFileStore_FinalizeReview_RejectedReturnsToRequirements(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	tk, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionRejected, Notes: "requirements were wrong"})
+	tk, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: ReviewDecisionRejected, Notes: "requirements were wrong"})
 	require.NoError(t, err)
 	assert.Equal(t, StageRequirements, tk.Stage)
 
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
 	assert.Equal(t, ReviewDecisionRejected, reviews[0].Decision)
@@ -167,13 +167,13 @@ func TestFileStore_FinalizeReview_WrongStageErrorsAndRecordsNothing(t *testing.T
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a") // at implementation, not review
 
-	_, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionApproved})
+	_, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: ReviewDecisionApproved})
 	require.ErrorIs(t, err, ErrWrongStage)
 
-	tk, err := store.Get("task-a")
+	tk, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StageImplementation, tk.Stage, "stage unchanged")
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Empty(t, reviews, "no verdict recorded on a wrong-stage finalize")
 }
@@ -183,13 +183,13 @@ func TestFileStore_FinalizeReview_UnknownDecisionErrorsAndRecordsNothing(t *test
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	_, err := store.FinalizeReview("task-a", ReviewDraft{Decision: "maybe"})
+	_, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: "maybe"})
 	require.Error(t, err)
 
-	tk, err := store.Get("task-a")
+	tk, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StageReview, tk.Stage, "stage unchanged on an invalid decision")
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Empty(t, reviews, "no verdict recorded on an invalid decision")
 }
@@ -199,11 +199,11 @@ func TestFileStore_FinalizeReview_NeedsChangesFromPRReviewReturnsToImplementatio
 	store := NewFileStore(root)
 	newPRReviewTask(t, store, "task-a")
 
-	tk, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionNeedsChanges, Notes: "changes requested on the PR"})
+	tk, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: ReviewDecisionNeedsChanges, Notes: "changes requested on the PR"})
 	require.NoError(t, err)
 	assert.Equal(t, StageImplementation, tk.Stage)
 
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
 	assert.Equal(t, ReviewDecisionNeedsChanges, reviews[0].Decision)
@@ -214,11 +214,11 @@ func TestFileStore_FinalizeReview_RejectedFromPRReviewReturnsToRequirements(t *t
 	store := NewFileStore(root)
 	newPRReviewTask(t, store, "task-a")
 
-	tk, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionRejected, Notes: "rejected on the PR"})
+	tk, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: ReviewDecisionRejected, Notes: "rejected on the PR"})
 	require.NoError(t, err)
 	assert.Equal(t, StageRequirements, tk.Stage)
 
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
 	assert.Equal(t, ReviewDecisionRejected, reviews[0].Decision)
@@ -229,13 +229,13 @@ func TestFileStore_FinalizeReview_ApprovedFromPRReviewErrorsAndRecordsNothing(t 
 	store := NewFileStore(root)
 	newPRReviewTask(t, store, "task-a")
 
-	_, err := store.FinalizeReview("task-a", ReviewDraft{Decision: ReviewDecisionApproved, Notes: "should not be reachable"})
+	_, err := store.FinalizeReview("demo-project", "task-a", ReviewDraft{Decision: ReviewDecisionApproved, Notes: "should not be reachable"})
 	require.ErrorIs(t, err, ErrWrongStage)
 
-	tk, err := store.Get("task-a")
+	tk, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StagePRReview, tk.Stage, "stage unchanged")
-	reviews, err := store.ListReviews("task-a")
+	reviews, err := store.ListReviews("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Empty(t, reviews, "no verdict recorded when approved is sent from pr_review")
 }
@@ -245,9 +245,9 @@ func TestFileStore_MarkPRMerged_AdvancesToMerged(t *testing.T) {
 	store := NewFileStore(root)
 	tk := newPRReviewTask(t, store, "task-a")
 	tk.PullRequest = &PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"}
-	require.NoError(t, store.writeTask(tk))
+	require.NoError(t, store.writeTask("demo-project", tk))
 
-	got, err := store.MarkPRMerged("task-a")
+	got, err := store.MarkPRMerged("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StageMerged, got.Stage)
 }
@@ -257,7 +257,7 @@ func TestFileStore_MarkPRMerged_WrongStageErrors(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a") // at review, not pr_review
 
-	_, err := store.MarkPRMerged("task-a")
+	_, err := store.MarkPRMerged("demo-project", "task-a")
 	require.ErrorIs(t, err, ErrWrongStage)
 }
 
@@ -266,7 +266,7 @@ func TestFileStore_MarkPRMerged_RequiresPullRequestSet(t *testing.T) {
 	store := NewFileStore(root)
 	newPRReviewTask(t, store, "task-a") // no PullRequest set
 
-	_, err := store.MarkPRMerged("task-a")
+	_, err := store.MarkPRMerged("demo-project", "task-a")
 	require.Error(t, err)
 	// Wraps ErrWrongStage (Milestone 7 PR 3) like the stage guard above it —
 	// the task isn't in a state this action can be taken from either way, so
@@ -274,7 +274,7 @@ func TestFileStore_MarkPRMerged_RequiresPullRequestSet(t *testing.T) {
 	// through to a 500.
 	require.ErrorIs(t, err, ErrWrongStage)
 
-	tk, err := store.Get("task-a")
+	tk, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StagePRReview, tk.Stage, "stage unchanged")
 }
@@ -285,13 +285,13 @@ func TestFileStore_RecordPullRequest_SetsFieldWithoutChangingStage(t *testing.T)
 	newPRReviewTask(t, store, "task-a")
 
 	pr := PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"}
-	tk, err := store.RecordPullRequest("task-a", pr)
+	tk, err := store.RecordPullRequest("demo-project", "task-a", pr)
 	require.NoError(t, err)
 	assert.Equal(t, StagePRReview, tk.Stage, "stage unchanged — this is not a stage transition")
 	require.NotNil(t, tk.PullRequest)
 	assert.Equal(t, pr, *tk.PullRequest)
 
-	reloaded, err := store.Get("task-a")
+	reloaded, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	require.NotNil(t, reloaded.PullRequest)
 	assert.Equal(t, pr, *reloaded.PullRequest)
@@ -302,11 +302,11 @@ func TestFileStore_RecordPullRequest_CalledAgainOverwritesPriorRecord(t *testing
 	store := NewFileStore(root)
 	newPRReviewTask(t, store, "task-a")
 
-	_, err := store.RecordPullRequest("task-a", PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"})
+	_, err := store.RecordPullRequest("demo-project", "task-a", PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"})
 	require.NoError(t, err)
 
 	second := PullRequest{URL: "https://github.com/org/repo/pull/2", Number: 2, Branch: "task-exec/task-a/exec-002"}
-	tk, err := store.RecordPullRequest("task-a", second)
+	tk, err := store.RecordPullRequest("demo-project", "task-a", second)
 	require.NoError(t, err)
 	require.NotNil(t, tk.PullRequest)
 	assert.Equal(t, second, *tk.PullRequest, "the refspec-continuity path calls this again with the same PR reused or a fresh one after a close")
@@ -317,10 +317,10 @@ func TestFileStore_RecordPullRequest_WrongStageErrors(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a") // at review, not pr_review
 
-	_, err := store.RecordPullRequest("task-a", PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "b"})
+	_, err := store.RecordPullRequest("demo-project", "task-a", PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "b"})
 	require.ErrorIs(t, err, ErrWrongStage)
 
-	tk, err := store.Get("task-a")
+	tk, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Nil(t, tk.PullRequest, "no PR recorded on a wrong-stage call")
 }
@@ -330,9 +330,9 @@ func TestFileStore_RecordReview_AppendOnlyRejectsDuplicateID(t *testing.T) {
 	store := NewFileStore(root)
 	newReviewTask(t, store, "task-a")
 
-	_, err := store.RecordReview("task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionApproved})
+	_, err := store.RecordReview("demo-project", "task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionApproved})
 	require.NoError(t, err)
 
-	_, err = store.RecordReview("task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionApproved})
+	_, err = store.RecordReview("demo-project", "task-a", Review{ReviewID: "review-001", Decision: ReviewDecisionApproved})
 	require.ErrorIs(t, err, ErrReviewAlreadyExists)
 }

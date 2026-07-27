@@ -38,14 +38,13 @@ func TestKickoffUserMessageFor_ReviewDiffersFromInterviewStages(t *testing.T) {
 func TestHandleGetStageConversation_InvalidStage(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/implementation/conversation", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "implementation")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(new(mockTaskStore))}).handleGetStageConversation()(w, req)
+	(&Server{Projects: projects, Tasks: new(mockTaskStore)}).handleGetStageConversation()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -53,11 +52,10 @@ func TestHandleGetStageConversation_InvalidStage(t *testing.T) {
 func TestHandleGetStageConversation_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).
 		Return(task.Conversation{Stage: task.StageRequirements, Messages: []task.ConversationMessage{{Role: "user", Content: "hi"}}}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/conversation", nil)
@@ -65,7 +63,7 @@ func TestHandleGetStageConversation_OK(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetStageConversation()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetStageConversation()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Conversation
@@ -82,20 +80,19 @@ func TestHandleGetStageConversation_OK(t *testing.T) {
 func TestHandleGetStageConversation_StageMismatch(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/conversation", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetStageConversation()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetStageConversation()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
-	tasks.AssertNotCalled(t, "GetConversation", mock.Anything, mock.Anything)
+	tasks.AssertNotCalled(t, "GetConversation", "demo-project", "demo-project", "demo-project", mock.Anything, mock.Anything)
 }
 
 // newStageMessageWorkspace creates a temp reposRoot containing a single
@@ -110,15 +107,14 @@ func newStageMessageWorkspace(t *testing.T) (reposRoot string, repositories []st
 	return reposRoot, []string{"github.com/timmersuk/demo-repo"}
 }
 
-func newStageMessageServer(t *testing.T, tasks *mockTaskStore, repositories []string) (ProjectStore, TaskStoreFactory) {
+func newStageMessageServer(t *testing.T, tasks *mockTaskStore, repositories []string) (ProjectStore, TaskStore) {
 	t.Helper()
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{
 		ID: "demo-project", Name: "Demo", Description: "A demo project",
 		Constraints: []string{"no new deps"}, Repositories: repositories,
 	}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
-	return projects, fixedTaskStoreFactory(tasks)
+	return projects, tasks
 }
 
 // newAdvisoryStageWorkspace mirrors newStageMessageWorkspace but backs
@@ -156,10 +152,10 @@ func newAdvisoryPostRequest(t *testing.T) *http.Request {
 
 func TestHandlePostStageMessage_SystemPromptOmitsAdvisoryNotesOnCleanCheckout(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	reposRoot, repositories, _ := newAdvisoryStageWorkspace(t)
 	projects, factory := newStageMessageServer(t, tasks, repositories)
@@ -172,7 +168,7 @@ func TestHandlePostStageMessage_SystemPromptOmitsAdvisoryNotesOnCleanCheckout(t 
 	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "ok"}, nil)
 
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, newAdvisoryPostRequest(t))
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -182,10 +178,10 @@ func TestHandlePostStageMessage_SystemPromptOmitsAdvisoryNotesOnCleanCheckout(t 
 
 func TestHandlePostStageMessage_SystemPromptIncludesDirtyNote(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	reposRoot, repositories, _ := newAdvisoryStageWorkspace(t)
 	require.NoError(t, os.WriteFile(filepath.Join(reposRoot, "demo-repo", "scratch.txt"), []byte("x\n"), 0o644))
@@ -199,7 +195,7 @@ func TestHandlePostStageMessage_SystemPromptIncludesDirtyNote(t *testing.T) {
 	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "ok"}, nil)
 
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, newAdvisoryPostRequest(t))
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -208,10 +204,10 @@ func TestHandlePostStageMessage_SystemPromptIncludesDirtyNote(t *testing.T) {
 
 func TestHandlePostStageMessage_SystemPromptIncludesBehindOriginNote(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	reposRoot, repositories, sourceDir := newAdvisoryStageWorkspace(t)
 	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "second.txt"), []byte("x\n"), 0o644))
@@ -227,7 +223,7 @@ func TestHandlePostStageMessage_SystemPromptIncludesBehindOriginNote(t *testing.
 	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "ok"}, nil)
 
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, newAdvisoryPostRequest(t))
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -249,11 +245,11 @@ func TestResolveStageRun_ReviewStageIncludesAdvisoryNoteFromSharedCheckout(t *te
 
 	store := task.NewFileStore(t.TempDir())
 	seedReviewableTask(t, store, "task-a")
-	tk, err := store.Get("task-a")
+	tk, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 
 	proj := project.Project{Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}
-	run, err := (&Server{ReposRoot: reposRoot, KnowledgeStore: new(mockKnowledgeStore), Projects: new(mockProjectStore)}).resolveStageRun(context.Background(), proj, store, tk, task.StageReview)
+	run, err := (&Server{ReposRoot: reposRoot, KnowledgeStore: new(mockKnowledgeStore), Projects: new(mockProjectStore)}).resolveStageRun(context.Background(), proj, store, "demo-project", tk, task.StageReview)
 	require.NoError(t, err)
 	assert.Contains(t, run.SystemPrompt, "uncommitted changes")
 }
@@ -264,7 +260,7 @@ func TestHandleStartStageConversation_InvalidStage(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "implementation")
 	w := httptest.NewRecorder()
-	(&Server{Projects: new(mockProjectStore), TaskStores: fixedTaskStoreFactory(new(mockTaskStore)), KnowledgeStore: new(mockKnowledgeStore)}).handleStartStageConversation()(w, req)
+	(&Server{Projects: new(mockProjectStore), Tasks: new(mockTaskStore), KnowledgeStore: new(mockKnowledgeStore)}).handleStartStageConversation()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -275,7 +271,7 @@ func TestHandleStartStageConversation_UnknownExecutor(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: new(mockProjectStore), TaskStores: fixedTaskStoreFactory(new(mockTaskStore)), KnowledgeStore: new(mockKnowledgeStore)}).handleStartStageConversation()(w, req)
+	(&Server{Projects: new(mockProjectStore), Tasks: new(mockTaskStore), KnowledgeStore: new(mockKnowledgeStore)}).handleStartStageConversation()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -286,7 +282,7 @@ func TestHandleStartStageConversation_UnknownExecutor(t *testing.T) {
 // names a valid Conversation stage.
 func TestHandleStartStageConversation_StageMismatch(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	runner := new(mockAgentRunner)
 	reposRoot, repositories := newStageMessageWorkspace(t)
@@ -297,7 +293,7 @@ func TestHandleStartStageConversation_StageMismatch(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handleStartStageConversation()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
@@ -310,8 +306,8 @@ func TestHandleStartStageConversation_StageMismatch(t *testing.T) {
 // handlePostStageMessage instead.
 func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage:    task.StageRequirements,
 		Messages: []task.ConversationMessage{{Role: "user", Content: "already talking"}},
 	}, nil)
@@ -325,7 +321,7 @@ func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handleStartStageConversation()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
@@ -339,12 +335,12 @@ func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 // with no synthetic "user" turn alongside it.
 func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements, Objective: "ship login"}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{Stage: task.StageRequirements}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements, Objective: "ship login"}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{Stage: task.StageRequirements}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	var persistedMsgs []task.ConversationMessage
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
@@ -366,7 +362,7 @@ func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t 
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handleStartStageConversation()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -390,7 +386,7 @@ func TestHandlePostStageMessage_InvalidStage(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "implementation")
 	w := httptest.NewRecorder()
-	(&Server{Projects: new(mockProjectStore), TaskStores: fixedTaskStoreFactory(new(mockTaskStore)), KnowledgeStore: new(mockKnowledgeStore)}).handlePostStageMessage()(w, req)
+	(&Server{Projects: new(mockProjectStore), Tasks: new(mockTaskStore), KnowledgeStore: new(mockKnowledgeStore)}).handlePostStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -404,7 +400,7 @@ func TestHandlePostStageMessage_ProjectNotFound(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(new(mockTaskStore)), KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: new(mockTaskStore), KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": new(mockAgentRunner)}}).handlePostStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -416,7 +412,7 @@ func TestHandlePostStageMessage_ProjectNotFound(t *testing.T) {
 // the URL names a valid Conversation stage.
 func TestHandlePostStageMessage_StageMismatch(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	runner := new(mockAgentRunner)
 	reposRoot, repositories := newStageMessageWorkspace(t)
@@ -427,7 +423,7 @@ func TestHandlePostStageMessage_StageMismatch(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
@@ -436,13 +432,13 @@ func TestHandlePostStageMessage_StageMismatch(t *testing.T) {
 
 func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{
 		ID: "TASK-0001", Stage: task.StageRequirements, Objective: "ship login", Constraints: []string{"must use existing auth service"},
 		References: task.References{Knowledge: []string{"team/style"}},
 	}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 	knowledgeReader.On("Get", "standards/logging").Return(knowledge.Concept{Type: "Coding Standard", Body: "use logrus"}, nil)
@@ -462,14 +458,13 @@ func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 		ID: "demo-project", Name: "Demo", Description: "A demo project",
 		Constraints: []string{"no new deps"}, Knowledge: []string{"standards/logging"}, Repositories: repositories,
 	}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "let's start"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -493,8 +488,8 @@ func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 // message's content rather than reconstructed structurally.
 func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "let's start"},
@@ -503,8 +498,8 @@ func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.
 			}},
 		},
 	}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 
@@ -523,7 +518,7 @@ func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -537,9 +532,9 @@ func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.
 
 func TestHandlePostStageMessage_SelectsPlanToolForPlanningStage(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 
@@ -558,7 +553,7 @@ func TestHandlePostStageMessage_SelectsPlanToolForPlanningStage(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "planning")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -571,15 +566,15 @@ func TestHandlePostStageMessage_SelectsPlanToolForPlanningStage(t *testing.T) {
 // below covers an explicitly-selected executor via the identical code path.
 func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 
@@ -601,7 +596,7 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -632,15 +627,15 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 // conversation later still shows what the agent did.
 func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 
@@ -661,7 +656,7 @@ func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testin
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -685,15 +680,15 @@ func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testin
 // surfaced as a Draft proposal or persisted.
 func TestHandlePostStageMessage_IgnoresMismatchedToolCallName(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 
@@ -715,7 +710,7 @@ func TestHandlePostStageMessage_IgnoresMismatchedToolCallName(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -737,7 +732,7 @@ func TestHandlePostStageMessage_UnknownExecutor(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: new(mockProjectStore), TaskStores: fixedTaskStoreFactory(new(mockTaskStore)), KnowledgeStore: new(mockKnowledgeStore)}).handlePostStageMessage()(w, req)
+	(&Server{Projects: new(mockProjectStore), Tasks: new(mockTaskStore), KnowledgeStore: new(mockKnowledgeStore)}).handlePostStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -747,11 +742,11 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 	require.NoError(t, os.Mkdir(filepath.Join(reposRoot, "logthing"), 0o755))
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StagePlanning, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
@@ -762,7 +757,6 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 	projects.On("Get", "demo-project").Return(project.Project{
 		ID: "demo-project", Name: "Demo", Repositories: []string{"github.com/timmersuk/logthing"},
 	}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	runner := new(mockAgentRunner)
 	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
@@ -781,7 +775,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "planning")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -803,8 +797,8 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 
 func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesAsSSEError(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 
@@ -817,7 +811,6 @@ func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesA
 	projects.On("Get", "demo-project").Return(project.Project{
 		ID: "demo-project", Name: "Demo", Repositories: []string{"github.com/timmersuk/does-not-exist"},
 	}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	runner := new(mockAgentRunner)
 
@@ -826,7 +819,7 @@ func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesA
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "planning")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: t.TempDir()}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -844,9 +837,9 @@ func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesA
 // Workspace instead of aborting like a genuine misconfiguration would.
 func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
 
@@ -854,7 +847,6 @@ func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testin
 	// No Repositories configured at all -> ResolveWorkspace returns
 	// ErrNoRepository, which is now tolerated.
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Name: "Demo"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	var gotIn agentrunner.RunInput
 	runner := new(mockAgentRunner)
@@ -868,7 +860,7 @@ func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testin
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "planning")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), KnowledgeStore: knowledgeReader,
+	(&Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeReader,
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: t.TempDir()}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -884,15 +876,15 @@ func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testin
 // reply with no record anything went wrong.
 func TestHandlePostStageMessage_PersistsErrorOnFailedTurn(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
-	tasks.On("AppendConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		persistedMsgs = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	runner := new(mockAgentRunner)
 	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).
@@ -906,7 +898,7 @@ func TestHandlePostStageMessage_PersistsErrorOnFailedTurn(t *testing.T) {
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "requirements")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -922,7 +914,7 @@ func TestHandleDeleteStageMessage_InvalidStage(t *testing.T) {
 	req.SetPathValue("stage", "implementation")
 	req.SetPathValue("index", "0")
 	w := httptest.NewRecorder()
-	(&Server{Projects: new(mockProjectStore), TaskStores: fixedTaskStoreFactory(new(mockTaskStore))}).handleDeleteStageMessage()(w, req)
+	(&Server{Projects: new(mockProjectStore), Tasks: new(mockTaskStore)}).handleDeleteStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -930,7 +922,6 @@ func TestHandleDeleteStageMessage_InvalidStage(t *testing.T) {
 func TestHandleDeleteStageMessage_InvalidIndex(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages/notanumber", nil)
 	req.SetPathValue("projectId", "demo-project")
@@ -938,7 +929,7 @@ func TestHandleDeleteStageMessage_InvalidIndex(t *testing.T) {
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "notanumber")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(new(mockTaskStore))}).handleDeleteStageMessage()(w, req)
+	(&Server{Projects: projects, Tasks: new(mockTaskStore)}).handleDeleteStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -951,10 +942,9 @@ func TestHandleDeleteStageMessage_InvalidIndex(t *testing.T) {
 func TestHandleDeleteStageMessage_StageMismatch(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages/0", nil)
 	req.SetPathValue("projectId", "demo-project")
@@ -962,20 +952,19 @@ func TestHandleDeleteStageMessage_StageMismatch(t *testing.T) {
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "0")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleDeleteStageMessage()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleDeleteStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
-	tasks.AssertNotCalled(t, "GetConversation", mock.Anything, mock.Anything)
+	tasks.AssertNotCalled(t, "GetConversation", "demo-project", "demo-project", "demo-project", mock.Anything, mock.Anything)
 }
 
 func TestHandleDeleteStageMessage_OutOfRangeIndex(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "hi"},
@@ -988,7 +977,7 @@ func TestHandleDeleteStageMessage_OutOfRangeIndex(t *testing.T) {
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "5")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleDeleteStageMessage()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleDeleteStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -1002,11 +991,10 @@ func TestHandleDeleteStageMessage_OutOfRangeIndex(t *testing.T) {
 func TestHandleDeleteStageMessage_RemovesOnlyThatMessageAndEvictsSessions(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "first"},
@@ -1016,7 +1004,7 @@ func TestHandleDeleteStageMessage_RemovesOnlyThatMessageAndEvictsSessions(t *tes
 	}, nil)
 
 	var replaced []task.ConversationMessage
-	tasks.On("ReplaceConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("ReplaceConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		replaced = msgs
 		return true
 	})).Return(task.Conversation{Stage: task.StageRequirements, Messages: []task.ConversationMessage{
@@ -1032,7 +1020,7 @@ func TestHandleDeleteStageMessage_RemovesOnlyThatMessageAndEvictsSessions(t *tes
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "1")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}}).handleDeleteStageMessage()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}}).handleDeleteStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, replaced, 2)
@@ -1052,7 +1040,7 @@ func TestHandleRegenerateStageMessage_InvalidStage(t *testing.T) {
 	req.SetPathValue("stage", "implementation")
 	req.SetPathValue("index", "0")
 	w := httptest.NewRecorder()
-	(&Server{Projects: new(mockProjectStore), TaskStores: fixedTaskStoreFactory(new(mockTaskStore)), KnowledgeStore: new(mockKnowledgeStore)}).handleRegenerateStageMessage()(w, req)
+	(&Server{Projects: new(mockProjectStore), Tasks: new(mockTaskStore), KnowledgeStore: new(mockKnowledgeStore)}).handleRegenerateStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -1063,7 +1051,7 @@ func TestHandleRegenerateStageMessage_InvalidStage(t *testing.T) {
 // conversation just because the URL names a valid Conversation stage.
 func TestHandleRegenerateStageMessage_StageMismatch(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	runner := new(mockAgentRunner)
 	reposRoot, repositories := newStageMessageWorkspace(t)
@@ -1075,7 +1063,7 @@ func TestHandleRegenerateStageMessage_StageMismatch(t *testing.T) {
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "0")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handleRegenerateStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
@@ -1085,11 +1073,10 @@ func TestHandleRegenerateStageMessage_StageMismatch(t *testing.T) {
 func TestHandleRegenerateStageMessage_RejectsNonUserIndex(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "hi"},
@@ -1103,7 +1090,7 @@ func TestHandleRegenerateStageMessage_RejectsNonUserIndex(t *testing.T) {
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "1")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), KnowledgeStore: new(mockKnowledgeStore)}).handleRegenerateStageMessage()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, KnowledgeStore: new(mockKnowledgeStore)}).handleRegenerateStageMessage()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -1116,8 +1103,8 @@ func TestHandleRegenerateStageMessage_RejectsNonUserIndex(t *testing.T) {
 // everything from index onward with a fresh [user, assistant] pair.
 func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "earlier"},
@@ -1126,10 +1113,10 @@ func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t
 			{Role: "assistant", Content: "stale reply"},
 		},
 	}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	var replaced []task.ConversationMessage
-	tasks.On("ReplaceConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("ReplaceConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		replaced = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
@@ -1151,7 +1138,7 @@ func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "2")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handleRegenerateStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -1178,18 +1165,18 @@ func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t
 // alongside the edit.
 func TestHandleRegenerateStageMessage_EditUsesNewContent(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("GetConversation", "TASK-0001", task.StageRequirements).Return(task.Conversation{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "original question"},
 			{Role: "assistant", Content: "stale reply"},
 		},
 	}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
 	var replaced []task.ConversationMessage
-	tasks.On("ReplaceConversationMessages", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+	tasks.On("ReplaceConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
 		replaced = msgs
 		return true
 	})).Return(task.Conversation{}, nil)
@@ -1207,7 +1194,7 @@ func TestHandleRegenerateStageMessage_EditUsesNewContent(t *testing.T) {
 	req.SetPathValue("stage", "requirements")
 	req.SetPathValue("index", "0")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: factory, KnowledgeStore: new(mockKnowledgeStore),
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: new(mockKnowledgeStore),
 		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handleRegenerateStageMessage()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)

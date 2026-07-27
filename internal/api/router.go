@@ -16,44 +16,51 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
-// ProjectStore lists, retrieves, creates, and updates projects, and
-// resolves a project's task-store root. Satisfied by *project.FileStore.
+// ProjectStore lists, retrieves, creates, and updates projects. Satisfied
+// by *project.FileStore (a test fixture; no longer reachable in
+// production) and, in production, *gitstore.ProjectStore
+// (internal/gitstore), which wraps a *project.FileStore for the actual
+// read/write and commits every Create/Update to git.
 type ProjectStore interface {
 	List() (project.ListResult, error)
 	Get(id string) (project.Project, error)
 	Create(in project.CreateInput) (project.Project, error)
 	Update(id string, in project.UpdateInput) (project.Project, error)
-	TasksRoot(id string) (string, error)
 }
 
-// TaskStore lists, retrieves, creates, and updates tasks within a single
-// project's task root, plus the GrillMe/Planning Mode lifecycle: the
+// TaskStore lists, retrieves, creates, and updates tasks across every
+// project (an explicit projectID names which one on every call — see
+// task.Store's doc comment), plus the GrillMe/Planning Mode lifecycle: the
 // derived context.yaml/plan.yaml artifacts, each stage's persisted
-// Conversation, and the Finalize/Revise transitions (CONTEXT.md). Satisfied
-// by *task.FileStore.
+// Conversation, and the Finalize/Revise transitions (CONTEXT.md). A single
+// process-wide singleton, not one instance per project. Satisfied by
+// *task.FileStore (a test fixture; no longer reachable in production) and,
+// in production, *gitstore.TaskStore (internal/gitstore), which wraps a
+// *task.FileStore for the actual read/write and commits every mutating
+// call to git.
 type TaskStore interface {
-	List() (task.ListResult, error)
-	Get(id string) (task.Task, error)
-	Create(t task.Task) (task.Task, error)
-	Update(id string, t task.Task) (task.Task, error)
+	List(projectID string) (task.ListResult, error)
+	Get(projectID, id string) (task.Task, error)
+	Create(projectID string, t task.Task) (task.Task, error)
+	Update(projectID, id string, t task.Task) (task.Task, error)
 
-	GetContext(id string) (task.Context, error)
-	GetPlan(id string) (task.Plan, error)
-	GetConversation(id, stage string) (task.Conversation, error)
-	AppendConversationMessages(id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error)
-	ReplaceConversationMessages(id, stage string, msgs []task.ConversationMessage) (task.Conversation, error)
-	FinalizeRequirements(id string, draft task.RequirementsDraft) (task.Task, error)
-	FinalizePlan(id string, plan task.Plan) (task.Task, error)
-	FinalizeReview(id string, draft task.ReviewDraft) (task.Task, error)
-	MarkPRMerged(id string) (task.Task, error)
-	RecordPullRequest(id string, pr task.PullRequest) (task.Task, error)
-	ReviseToRequirements(id string) (task.Task, error)
-	ReviseToPlanning(id string) (task.Task, error)
+	GetContext(projectID, id string) (task.Context, error)
+	GetPlan(projectID, id string) (task.Plan, error)
+	GetConversation(projectID, id, stage string) (task.Conversation, error)
+	AppendConversationMessages(projectID, id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error)
+	ReplaceConversationMessages(projectID, id, stage string, msgs []task.ConversationMessage) (task.Conversation, error)
+	FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error)
+	FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error)
+	FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error)
+	MarkPRMerged(projectID, id string) (task.Task, error)
+	RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error)
+	ReviseToRequirements(projectID, id string) (task.Task, error)
+	ReviseToPlanning(projectID, id string) (task.Task, error)
 
-	NextExecutionID(id string) (string, error)
-	RecordExecution(id string, exec task.Execution) (task.Execution, error)
-	ListExecutions(id string) ([]task.Execution, error)
-	ListReviews(id string) ([]task.Review, error)
+	NextExecutionID(projectID, id string) (string, error)
+	RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error)
+	ListExecutions(projectID, id string) ([]task.Execution, error)
+	ListReviews(projectID, id string) ([]task.Review, error)
 }
 
 // KnowledgeStore resolves, lists, and writes OKF concept documents under
@@ -69,12 +76,6 @@ type KnowledgeStore interface {
 	Put(conceptID string, c knowledge.Concept) error
 }
 
-// TaskStoreFactory builds a TaskStore rooted at the given directory. Task
-// routes are always scoped to one project, so handlers resolve the root
-// per-request via ProjectStore.TasksRoot and construct a store through this
-// factory rather than holding a single package-level task store.
-type TaskStoreFactory func(root string) TaskStore
-
 // Server holds every dependency internal/api's handlers need that stays
 // invariant for the lifetime of the server process — constructed once by
 // NewRouter, with every handler (and the internal helpers that mix these
@@ -84,7 +85,7 @@ type TaskStoreFactory func(root string) TaskStore
 // entrypoint (docs/adr/0016-api-handlers-become-methods-on-an-internal-server-struct.md).
 type Server struct {
 	Projects              ProjectStore
-	TaskStores            TaskStoreFactory
+	Tasks                 TaskStore
 	KnowledgeStore        KnowledgeStore
 	AgentRunners          map[string]agentrunner.AgentRunner
 	ReposRoot             string
@@ -113,10 +114,10 @@ type Server struct {
 // (agentrunner.DefaultBranchResolver) — a real one built via
 // agentrunner.NewDefaultBranchResolver() in production, a fake in tests
 // (docs/milestones/done/milestone8a.md).
-func NewRouter(projects ProjectStore, taskStores TaskStoreFactory, knowledgeStore KnowledgeStore, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
+func NewRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeStore, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
 	s := &Server{
 		Projects:              projects,
-		TaskStores:            taskStores,
+		Tasks:                 tasks,
 		KnowledgeStore:        knowledgeStore,
 		AgentRunners:          agentRunners,
 		ReposRoot:             reposRoot,

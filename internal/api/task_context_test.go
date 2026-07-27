@@ -17,16 +17,15 @@ import (
 func TestHandleGetTaskContext_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("GetContext", "TASK-0001").Return(task.Context{Summary: "adds login"}, nil)
+	tasks.On("GetContext", "demo-project", "TASK-0001").Return(task.Context{Summary: "adds login"}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/context", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskContext()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetTaskContext()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Context
@@ -37,16 +36,15 @@ func TestHandleGetTaskContext_OK(t *testing.T) {
 func TestHandleGetTaskContext_NotFinalizedYet(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("GetContext", "TASK-0001").Return(nil, fs.ErrNotExist)
+	tasks.On("GetContext", "demo-project", "TASK-0001").Return(nil, fs.ErrNotExist)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/context", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskContext()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetTaskContext()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -54,16 +52,15 @@ func TestHandleGetTaskContext_NotFinalizedYet(t *testing.T) {
 func TestHandleGetTaskPlan_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "incremental"}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{Approach: "incremental"}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/plan", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskPlan()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetTaskPlan()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Plan
@@ -74,16 +71,15 @@ func TestHandleGetTaskPlan_OK(t *testing.T) {
 func TestHandleGetTaskPlan_NotFinalizedYet(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("GetPlan", "TASK-0001").Return(nil, fs.ErrNotExist)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(nil, fs.ErrNotExist)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/plan", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetTaskPlan()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetTaskPlan()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

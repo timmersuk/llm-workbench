@@ -61,12 +61,15 @@ type RequirementsDraft struct {
 // GrillMe yet has no context.yaml at all — that's reported as the
 // underlying fs.ErrNotExist (via %w), the same "not yet finalized" signal
 // GetPlan uses, not a distinct sentinel.
-func (s *FileStore) GetContext(id string) (Context, error) {
+func (s *FileStore) GetContext(projectID, id string) (Context, error) {
+	if err := validateID(projectID); err != nil {
+		return Context{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Context{}, err
 	}
 
-	path := filepath.Join(s.Root, id, "context.yaml")
+	path := filepath.Join(s.taskDir(projectID, id), "context.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Context{}, fmt.Errorf("reading %s: %w", path, err)
@@ -83,8 +86,8 @@ func (s *FileStore) GetContext(id string) (Context, error) {
 // it doesn't already exist (it always will by this point, since a task's
 // directory is created at task creation, but MkdirAll is a no-op in that
 // case and keeps this symmetric with writeTask).
-func (s *FileStore) writeContext(id string, c Context) error {
-	dir := filepath.Join(s.Root, id)
+func (s *FileStore) writeContext(projectID, id string, c Context) error {
+	dir := s.taskDir(projectID, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}

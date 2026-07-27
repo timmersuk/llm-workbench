@@ -143,8 +143,8 @@ func validateConversationStage(stage string) error {
 	return nil
 }
 
-func conversationPath(root, id, stage string) string {
-	return filepath.Join(root, id, "conversation-"+stage+".yaml")
+func conversationPath(dir, stage string) string {
+	return filepath.Join(dir, "conversation-"+stage+".yaml")
 }
 
 // GetConversation returns the stage's message history for id. Unlike
@@ -152,7 +152,10 @@ func conversationPath(root, id, stage string) string {
 // is a meaningful 404), a missing conversation file just means "no
 // messages yet" — a normal starting state for any task — so this returns
 // an empty Conversation rather than an error when the file doesn't exist.
-func (s *FileStore) GetConversation(id, stage string) (Conversation, error) {
+func (s *FileStore) GetConversation(projectID, id, stage string) (Conversation, error) {
+	if err := validateID(projectID); err != nil {
+		return Conversation{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Conversation{}, err
 	}
@@ -160,7 +163,7 @@ func (s *FileStore) GetConversation(id, stage string) (Conversation, error) {
 		return Conversation{}, err
 	}
 
-	path := conversationPath(s.Root, id, stage)
+	path := conversationPath(s.taskDir(projectID, id), stage)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return Conversation{Stage: stage}, nil
@@ -185,7 +188,10 @@ func (s *FileStore) GetConversation(id, stage string) (Conversation, error) {
 // format; these are small conversational logs, not execution.yaml's
 // cross-process ledger, so read-modify-rewrite is the right complexity
 // level.
-func (s *FileStore) AppendConversationMessages(id, stage string, msgs ...ConversationMessage) (Conversation, error) {
+func (s *FileStore) AppendConversationMessages(projectID, id, stage string, msgs ...ConversationMessage) (Conversation, error) {
+	if err := validateID(projectID); err != nil {
+		return Conversation{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Conversation{}, err
 	}
@@ -193,7 +199,7 @@ func (s *FileStore) AppendConversationMessages(id, stage string, msgs ...Convers
 		return Conversation{}, err
 	}
 
-	existing, err := s.GetConversation(id, stage)
+	existing, err := s.GetConversation(projectID, id, stage)
 	if err != nil {
 		return Conversation{}, err
 	}
@@ -212,7 +218,7 @@ func (s *FileStore) AppendConversationMessages(id, stage string, msgs ...Convers
 	}
 	existing.Stage = stage
 
-	return existing, writeConversation(s.Root, id, stage, existing)
+	return existing, writeConversation(s.taskDir(projectID, id), stage, existing)
 }
 
 // ReplaceConversationMessages overwrites the stage's Conversation for id
@@ -224,7 +230,10 @@ func (s *FileStore) AppendConversationMessages(id, stage string, msgs ...Convers
 // themselves. This is how a human-directed correction (not a new exchange)
 // gets to rewrite already-persisted messages, a deliberate departure from
 // AppendConversationMessages' append-only policy.
-func (s *FileStore) ReplaceConversationMessages(id, stage string, msgs []ConversationMessage) (Conversation, error) {
+func (s *FileStore) ReplaceConversationMessages(projectID, id, stage string, msgs []ConversationMessage) (Conversation, error) {
+	if err := validateID(projectID); err != nil {
+		return Conversation{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Conversation{}, err
 	}
@@ -233,24 +242,24 @@ func (s *FileStore) ReplaceConversationMessages(id, stage string, msgs []Convers
 	}
 
 	replaced := Conversation{Stage: stage, Messages: msgs}
-	return replaced, writeConversation(s.Root, id, stage, replaced)
+	return replaced, writeConversation(s.taskDir(projectID, id), stage, replaced)
 }
 
-// writeConversation marshals and writes conv to id/stage's conversation
+// writeConversation marshals and writes conv to dir/stage's conversation
 // file, creating the task directory if needed — the shared tail of both
-// AppendConversationMessages and ReplaceConversationMessages.
-func writeConversation(root, id, stage string, conv Conversation) error {
-	dir := filepath.Join(root, id)
+// AppendConversationMessages and ReplaceConversationMessages. dir is the
+// specific task's directory (FileStore.taskDir(projectID, id)).
+func writeConversation(dir, stage string, conv Conversation) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
 
 	data, err := yaml.Marshal(conv)
 	if err != nil {
-		return fmt.Errorf("encoding conversation for %s/%s: %w", id, stage, err)
+		return fmt.Errorf("encoding conversation for %s/%s: %w", dir, stage, err)
 	}
 
-	path := conversationPath(root, id, stage)
+	path := conversationPath(dir, stage)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}

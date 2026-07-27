@@ -41,37 +41,66 @@ type ListResult struct {
 	Errors []LoadError `yaml:"errors" json:"errors"`
 }
 
-// Store lists, retrieves, creates, and updates tasks within a single
-// project's task root.
+// Store lists, retrieves, creates, and updates tasks across every project,
+// keyed by an explicit projectID on every call — a single process-wide
+// store, not one instance per project (see FileStore's doc comment).
 type Store interface {
-	List() (ListResult, error)
-	Get(id string) (Task, error)
-	Create(t Task) (Task, error)
-	Update(id string, t Task) (Task, error)
+	List(projectID string) (ListResult, error)
+	Get(projectID, id string) (Task, error)
+	Create(projectID string, t Task) (Task, error)
+	Update(projectID, id string, t Task) (Task, error)
 }
 
-// FileStore is a Store backed by a directory of <id>/task.yaml files (e.g.
+// FileStore is a Store backed by a directory of
+// <projectID>/tasks/<id>/task.yaml files (e.g.
 // data/projects/<projectId>/tasks/<id>/task.yaml with the default
-// WORKSPACE_ROOT), rooted at a single project's tasks directory.
+// WORKSPACE_ROOT), rooted at the shared projects root — the same Root value
+// as project.FileStore, since tasks nest under their owning project's
+// directory. A single FileStore instance serves every project (a
+// process-wide singleton, constructed once in cmd/server/main.go), not one
+// instance per project as earlier milestones did: every method takes an
+// explicit projectID so the caller (internal/api) — not a factory closure —
+// names which project's tasks it means.
 type FileStore struct {
 	Root string
 }
 
-// NewFileStore returns a FileStore rooted at root (the directory containing
-// TASK-* subdirectories).
+// NewFileStore returns a FileStore rooted at root (the shared projects
+// directory containing every <projectID>/ subdirectory).
 func NewFileStore(root string) *FileStore {
 	return &FileStore{Root: root}
 }
 
-// List returns every task under Root, sorted by id. Non-directory entries
-// are silently skipped. Directory entries that fail to read or parse (e.g.
-// no task.yaml inside) are skipped too, logged, and reported in the
-// result's Errors rather than failing the whole call — one malformed task
-// shouldn't take down every other task.
-func (s *FileStore) List() (ListResult, error) {
-	entries, err := os.ReadDir(s.Root)
+// taskDir returns the directory holding id's task.yaml (and its sibling
+// context.yaml/plan.yaml/conversation-*.yaml/executions//reviews/) within
+// projectID's tasks root.
+func (s *FileStore) taskDir(projectID, id string) string {
+	return filepath.Join(s.Root, projectID, "tasks", id)
+}
+
+// tasksRoot returns the directory containing every task subdirectory for
+// projectID.
+func (s *FileStore) tasksRoot(projectID string) string {
+	return filepath.Join(s.Root, projectID, "tasks")
+}
+
+// List returns every task under projectID's tasks root, sorted by id.
+// Non-directory entries are silently skipped. Directory entries that fail
+// to read or parse (e.g. no task.yaml inside) are skipped too, logged, and
+// reported in the result's Errors rather than failing the whole call — one
+// malformed task shouldn't take down every other task.
+func (s *FileStore) List(projectID string) (ListResult, error) {
+	if err := validateID(projectID); err != nil {
+		return ListResult{}, err
+	}
+
+	root := s.tasksRoot(projectID)
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return ListResult{}, nil
+	}
 	if err != nil {
-		return ListResult{}, fmt.Errorf("reading task root %s: %w", s.Root, err)
+		return ListResult{}, fmt.Errorf("reading task root %s: %w", root, err)
 	}
 
 	var result ListResult
@@ -80,7 +109,7 @@ func (s *FileStore) List() (ListResult, error) {
 			continue
 		}
 
-		t, err := s.readTask(entry.Name())
+		t, err := s.readTask(projectID, entry.Name())
 		if err != nil {
 			logrus.WithError(err).WithField("id", entry.Name()).Warn("skipping task that failed to load")
 			result.Errors = append(result.Errors, LoadError{ID: entry.Name(), Error: err.Error()})
@@ -94,41 +123,50 @@ func (s *FileStore) List() (ListResult, error) {
 	return result, nil
 }
 
-// Get returns the task with the given id. It rejects ids containing path
-// separators or ".." to guard against path traversal, since task ids are
-// client-chosen slugs rather than a fixed pattern.
-func (s *FileStore) Get(id string) (Task, error) {
+// Get returns the task with the given id within projectID. It rejects ids
+// containing path separators or ".." to guard against path traversal,
+// since task (and project) ids are client-chosen slugs rather than a fixed
+// pattern.
+func (s *FileStore) Get(projectID, id string) (Task, error) {
+	if err := validateID(projectID); err != nil {
+		return Task{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Task{}, err
 	}
-	return s.readTask(id)
+	return s.readTask(projectID, id)
 }
 
-// Create writes a new task under <root>/<t.ID>/task.yaml. t.ID must be a
+// Create writes a new task under projectID's tasks root. t.ID must be a
 // valid, non-colliding id — ids are client-specified and not
 // disambiguated, so Create fails with ErrAlreadyExists if the id is already
-// taken within this store's (project-scoped) root. CreatedAt/UpdatedAt are
-// always server-set, ignoring any client-supplied values. Stage is
-// likewise always server-set to "requirements" — a task always starts at
-// the beginning of its lifecycle; only Finalize/Revise (lifecycle.go) move
-// Stage after creation.
-func (s *FileStore) Create(t Task) (Task, error) {
+// taken within this project. CreatedAt/UpdatedAt are always server-set,
+// ignoring any client-supplied values. Stage is likewise always server-set
+// to "requirements" — a task always starts at the beginning of its
+// lifecycle; only Finalize/Revise (lifecycle.go) move Stage after creation.
+// Project is always server-set to projectID, ignoring any client-supplied
+// value — like id, a task's project never changes after creation.
+func (s *FileStore) Create(projectID string, t Task) (Task, error) {
+	if err := validateID(projectID); err != nil {
+		return Task{}, err
+	}
 	if err := validateID(t.ID); err != nil {
 		return Task{}, err
 	}
 
-	if _, err := os.Stat(filepath.Join(s.Root, t.ID)); err == nil {
+	if _, err := os.Stat(s.taskDir(projectID, t.ID)); err == nil {
 		return Task{}, fmt.Errorf("creating task %s: %w", t.ID, ErrAlreadyExists)
 	} else if !os.IsNotExist(err) {
 		return Task{}, fmt.Errorf("checking existing task %s: %w", t.ID, err)
 	}
 
 	now := time.Now().UTC()
+	t.Project = projectID
 	t.CreatedAt = now
 	t.UpdatedAt = now
 	t.Stage = StageRequirements
 
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -137,8 +175,11 @@ func (s *FileStore) Create(t Task) (Task, error) {
 // Update overwrites the task at id with t's fields, preserving id and
 // CreatedAt from the existing task.yaml and bumping UpdatedAt. If t.ID is
 // set, it must match id (ErrIDMismatch) — a task's id, like its project,
-// never changes after creation.
-func (s *FileStore) Update(id string, t Task) (Task, error) {
+// never changes after creation. Project is always server-set to projectID.
+func (s *FileStore) Update(projectID, id string, t Task) (Task, error) {
+	if err := validateID(projectID); err != nil {
+		return Task{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Task{}, err
 	}
@@ -146,23 +187,24 @@ func (s *FileStore) Update(id string, t Task) (Task, error) {
 		return Task{}, fmt.Errorf("updating task %s: %w", id, ErrIDMismatch)
 	}
 
-	existing, err := s.readTask(id)
+	existing, err := s.readTask(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
 
 	t.ID = id
+	t.Project = projectID
 	t.CreatedAt = existing.CreatedAt
 	t.UpdatedAt = time.Now().UTC()
 
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
 }
 
-func (s *FileStore) writeTask(t Task) error {
-	dir := filepath.Join(s.Root, t.ID)
+func (s *FileStore) writeTask(projectID string, t Task) error {
+	dir := s.taskDir(projectID, t.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
@@ -179,8 +221,8 @@ func (s *FileStore) writeTask(t Task) error {
 	return nil
 }
 
-func (s *FileStore) readTask(id string) (Task, error) {
-	path := filepath.Join(s.Root, id, "task.yaml")
+func (s *FileStore) readTask(projectID, id string) (Task, error) {
+	path := filepath.Join(s.taskDir(projectID, id), "task.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Task{}, fmt.Errorf("reading %s: %w", path, err)
@@ -195,7 +237,8 @@ func (s *FileStore) readTask(id string) (Task, error) {
 
 // validateID rejects ids that are empty or contain path separators/"..",
 // guarding against path traversal before the id is joined into a
-// filesystem path. Checked before every path-joining operation.
+// filesystem path. Checked before every path-joining operation. Used for
+// both projectID and task id — both are client-chosen slugs.
 func validateID(id string) error {
 	if id == "" || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
 		return fmt.Errorf("%w: %q", ErrInvalidID, id)

@@ -56,7 +56,6 @@ func newExecutionTestRepo(t *testing.T, repoName string) (reposRoot string, repo
 func newExecutionProjectStore(repositories []string) ProjectStore {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: repositories, DefaultBranch: "main"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 	return projects
 }
 
@@ -102,21 +101,21 @@ func splitLines(s string) []string {
 func TestHandleStartExecution_UnknownExecutor(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{Executor: "does-not-exist"})
 	w := httptest.NewRecorder()
-	(&Server{Projects: new(mockProjectStore), TaskStores: fixedTaskStoreFactory(new(mockTaskStore))}).handleStartExecution()(w, req)
+	(&Server{Projects: new(mockProjectStore), Tasks: new(mockTaskStore)}).handleStartExecution()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleStartExecution_WrongStageRejected(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 
 	runner := new(mockAgentRunner)
 	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
@@ -132,14 +131,14 @@ func TestHandleStartExecution_WrongStageRejected(t *testing.T) {
 // enough to assert the record handed to RecordExecution is correct.
 func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
-	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
 		recorded = e
 		return true
 	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
@@ -160,7 +159,7 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -193,14 +192,14 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 // the outcome without a second request.
 func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
-	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
 		recorded = e
 		return true
 	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure}, nil)
@@ -214,7 +213,7 @@ func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -251,9 +250,9 @@ func TestClassifyExecutionOutcome_NoErrorIsSuccess(t *testing.T) {
 func TestResolveReviewContinuation(t *testing.T) {
 	t.Run("no reviews yet", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
+		tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 
-		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "demo-project", "TASK-0001")
 		require.NoError(t, err)
 		assert.Empty(t, forkFrom)
 		assert.Empty(t, feedback)
@@ -261,11 +260,11 @@ func TestResolveReviewContinuation(t *testing.T) {
 
 	t.Run("latest review is rejected, not needs_changes", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+		tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 			{Decision: task.ReviewDecisionRejected, Notes: "wrong approach entirely"},
 		}, nil)
 
-		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "demo-project", "TASK-0001")
 		require.NoError(t, err)
 		assert.Empty(t, forkFrom)
 		assert.Empty(t, feedback)
@@ -273,16 +272,16 @@ func TestResolveReviewContinuation(t *testing.T) {
 
 	t.Run("latest review is needs_changes, uses the execution named by its ExecutionID", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+		tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 			{ExecutionID: "exec-001", Decision: task.ReviewDecisionApproved, Notes: "stale, from an earlier cycle"},
 			{ExecutionID: "exec-002", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 		}, nil)
-		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 			{ExecutionID: "exec-001", Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
 			{ExecutionID: "exec-002", Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-002"}},
 		}, nil)
 
-		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "demo-project", "TASK-0001")
 		require.NoError(t, err)
 		assert.Equal(t, "task-exec/TASK-0001/exec-002", forkFrom)
 		assert.Equal(t, "fix the widget", feedback)
@@ -297,15 +296,15 @@ func TestResolveReviewContinuation(t *testing.T) {
 		// from exec-001 (what the review's ExecutionID actually names), not
 		// exec-002 (a failed run nobody reviewed and irrelevant to the link).
 		tasks := new(mockTaskStore)
-		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+		tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 			{ExecutionID: "exec-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 		}, nil)
-		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 			{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
 			{ExecutionID: "exec-002", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-002"}},
 		}, nil)
 
-		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "demo-project", "TASK-0001")
 		require.NoError(t, err)
 		assert.Equal(t, "task-exec/TASK-0001/exec-001", forkFrom)
 		assert.Equal(t, "fix the widget", feedback)
@@ -313,14 +312,14 @@ func TestResolveReviewContinuation(t *testing.T) {
 
 	t.Run("review's ExecutionID names no execution on record yields no fork branch", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+		tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 			{ExecutionID: "exec-999", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 		}, nil)
-		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 			{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
 		}, nil)
 
-		forkFrom, feedback, err := resolveReviewContinuation(tasks, "TASK-0001")
+		forkFrom, feedback, err := resolveReviewContinuation(tasks, "demo-project", "TASK-0001")
 		require.NoError(t, err)
 		assert.Empty(t, forkFrom)
 		assert.Equal(t, "fix the widget", feedback)
@@ -356,18 +355,18 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 	run("checkout", baseBranch)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 		{ExecutionID: "exec-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 	}, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: priorBranch}},
 	}, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-002", nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-002", nil)
 
 	var recorded task.Execution
-	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
 		recorded = e
 		return true
 	})).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
@@ -381,7 +380,7 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -422,19 +421,19 @@ func TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments
 	run("checkout", baseBranch)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{
 		ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it",
 		PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/42", Number: 42, Branch: "task-exec/TASK-0001/exec-001"},
 	}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 		{ExecutionID: "exec-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 	}, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: priorBranch}},
 	}, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-002", nil)
-	tasks.On("RecordExecution", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-002", nil)
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
 
 	prClient := &fakeGitHubPRClient{comments: "- kind: review\n  author: alice\n  state: CHANGES_REQUESTED\n  body: fix it\n"}
 
@@ -456,7 +455,7 @@ func TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot, PRClient: prClient}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -468,7 +467,7 @@ func TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments
 
 func TestHandleListExecutions_OK(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess},
 	}, nil)
 
@@ -476,7 +475,7 @@ func TestHandleListExecutions_OK(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(nil), TaskStores: fixedTaskStoreFactory(tasks)}).handleListExecutions()(w, req)
+	(&Server{Projects: newExecutionProjectStore(nil), Tasks: tasks}).handleListExecutions()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got map[string][]task.Execution
@@ -494,9 +493,9 @@ func TestHandleListExecutions_OK(t *testing.T) {
 func TestResolveFailureContinuation(t *testing.T) {
 	t.Run("no executions yet", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+		tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 
-		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "demo-project", "TASK-0001", "")
 		require.NoError(t, err)
 		assert.Empty(t, executionID)
 		assert.Empty(t, forkFrom)
@@ -505,35 +504,35 @@ func TestResolveFailureContinuation(t *testing.T) {
 
 	t.Run("most recent execution succeeded", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 			{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{Commits: []string{"abc"}}},
 		}, nil)
 
-		executionID, _, _, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		executionID, _, _, err := resolveFailureContinuation(tasks, "demo-project", "TASK-0001", "")
 		require.NoError(t, err)
 		assert.Empty(t, executionID)
 	})
 
 	t.Run("most recent execution failed but has no commits", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 			{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure, Failure: &task.ExecutionFailure{Message: "context deadline exceeded"}},
 		}, nil)
 
-		executionID, _, _, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		executionID, _, _, err := resolveFailureContinuation(tasks, "demo-project", "TASK-0001", "")
 		require.NoError(t, err)
 		assert.Empty(t, executionID, "an instant failure before any work happened has nothing worth continuing from")
 	})
 
 	t.Run("most recent execution failed with commits is eligible", func(t *testing.T) {
 		tasks := new(mockTaskStore)
-		tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+		tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 			{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{
 				GitBranch: "task-exec/TASK-0001/exec-001", Commits: []string{"abc"},
 			}, Failure: &task.ExecutionFailure{Message: "Reached maximum number of turns (100)"}},
 		}, nil)
 
-		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "TASK-0001", "")
+		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "demo-project", "TASK-0001", "")
 		require.NoError(t, err)
 		assert.Equal(t, "exec-001", executionID)
 		assert.Equal(t, "task-exec/TASK-0001/exec-001", forkFrom)
@@ -544,12 +543,12 @@ func TestResolveFailureContinuation(t *testing.T) {
 		tasks := new(mockTaskStore)
 		// Deliberately no ListExecutions expectation: reviewForkFrom being
 		// set must short-circuit before ever calling it.
-		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "TASK-0001", "task-exec/TASK-0001/exec-001")
+		executionID, forkFrom, msg, err := resolveFailureContinuation(tasks, "demo-project", "TASK-0001", "task-exec/TASK-0001/exec-001")
 		require.NoError(t, err)
 		assert.Empty(t, executionID)
 		assert.Empty(t, forkFrom)
 		assert.Empty(t, msg)
-		tasks.AssertNotCalled(t, "ListExecutions", mock.Anything)
+		tasks.AssertNotCalled(t, "ListExecutions", "demo-project", "demo-project", mock.Anything)
 	})
 }
 
@@ -580,18 +579,18 @@ func TestHandleStartExecution_ContinueFromFailureForksFromPriorBranch(t *testing
 	run("checkout", baseBranch)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 		{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{
 			GitBranch: priorBranch, Commits: []string{"deadbeef"},
 		}, Failure: &task.ExecutionFailure{Type: task.FailureTypeExecution, Message: "Reached maximum number of turns (100)"}},
 	}, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-002", nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-002", nil)
 
 	var recorded task.Execution
-	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
 		recorded = e
 		return true
 	})).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
@@ -605,7 +604,7 @@ func TestHandleStartExecution_ContinueFromFailureForksFromPriorBranch(t *testing
 
 	req := newExecutionRequest(t, executionStartRequest{ContinueFromExecutionID: "exec-001"})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -626,17 +625,17 @@ func TestHandleStartExecution_ContinueFromFailureForksFromPriorBranch(t *testing
 // falling back to a fresh run or continuing from the wrong branch.
 func TestHandleStartExecution_ContinueFromExecutionID_MismatchRejected(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil) // nothing eligible anymore
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil) // nothing eligible anymore
 
 	runner := new(mockAgentRunner)
 	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
 
 	req := newExecutionRequest(t, executionStartRequest{ContinueFromExecutionID: "exec-001"})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
@@ -651,14 +650,14 @@ func TestHandleStartExecution_ContinueFromExecutionID_MismatchRejected(t *testin
 // fresh worktree from this branch's tip.
 func TestHandleStartExecution_SafetyCommitsUncommittedWorkOnFailure(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
-	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
 		recorded = e
 		return true
 	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure}, nil)
@@ -675,7 +674,7 @@ func TestHandleStartExecution_SafetyCommitsUncommittedWorkOnFailure(t *testing.T
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -690,8 +689,8 @@ func TestHandleStartExecution_SafetyCommitsUncommittedWorkOnFailure(t *testing.T
 // handleStartExecution enforces, not a separately-maintained one.
 func TestHandleGetContinuableExecution_Eligible(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 		{ExecutionID: "exec-002", Status: task.ExecutionStatusFailure, Output: task.ExecutionOutput{
 			GitBranch: "task-exec/TASK-0001/exec-002", Commits: []string{"abc"},
 		}},
@@ -701,7 +700,7 @@ func TestHandleGetContinuableExecution_Eligible(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(nil), TaskStores: fixedTaskStoreFactory(tasks)}).handleGetContinuableExecution()(w, req)
+	(&Server{Projects: newExecutionProjectStore(nil), Tasks: tasks}).handleGetContinuableExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got continuableExecutionResponse
@@ -711,14 +710,14 @@ func TestHandleGetContinuableExecution_Eligible(t *testing.T) {
 
 func TestHandleGetContinuableExecution_NotEligible(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/executions/continuable", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(nil), TaskStores: fixedTaskStoreFactory(tasks)}).handleGetContinuableExecution()(w, req)
+	(&Server{Projects: newExecutionProjectStore(nil), Tasks: tasks}).handleGetContinuableExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got continuableExecutionResponse
@@ -728,10 +727,10 @@ func TestHandleGetContinuableExecution_NotEligible(t *testing.T) {
 
 func TestHandleGetContinuableExecution_HiddenByNeedsChanges(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("ListReviews", "TASK-0001").Return([]task.Review{
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 		{ExecutionID: "exec-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
 	}, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return([]task.Execution{
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
 		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: "task-exec/TASK-0001/exec-001"}},
 	}, nil)
 
@@ -739,7 +738,7 @@ func TestHandleGetContinuableExecution_HiddenByNeedsChanges(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(nil), TaskStores: fixedTaskStoreFactory(tasks)}).handleGetContinuableExecution()(w, req)
+	(&Server{Projects: newExecutionProjectStore(nil), Tasks: tasks}).handleGetContinuableExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got continuableExecutionResponse
@@ -763,14 +762,14 @@ func isCleanupPrompt(in agentrunner.ExecuteInput) bool {
 // cleanup's own commit picked up by CollectExecutionOutput.
 func TestHandleStartExecution_CleanupTurnResolvesDirtyWorkspace(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
-	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
 		recorded = e
 		return true
 	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
@@ -800,7 +799,7 @@ func TestHandleStartExecution_CleanupTurnResolvesDirtyWorkspace(t *testing.T) {
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -818,14 +817,14 @@ func TestHandleStartExecution_CleanupTurnResolvesDirtyWorkspace(t *testing.T) {
 // reports success (the original implementation work did succeed).
 func TestHandleStartExecution_CleanupTurnLeavesWorkspaceDirty(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
 
 	var recorded task.Execution
-	tasks.On("RecordExecution", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
 		recorded = e
 		return true
 	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
@@ -846,7 +845,7 @@ func TestHandleStartExecution_CleanupTurnLeavesWorkspaceDirty(t *testing.T) {
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -860,12 +859,12 @@ func TestHandleStartExecution_CleanupTurnLeavesWorkspaceDirty(t *testing.T) {
 // already leaves a clean tree gets exactly one Execute call, not two.
 func TestHandleStartExecution_CleanWorkspaceSkipsCleanupTurn(t *testing.T) {
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
-	tasks.On("ListReviews", "TASK-0001").Return(nil, nil)
-	tasks.On("ListExecutions", "TASK-0001").Return(nil, nil)
-	tasks.On("NextExecutionID", "TASK-0001").Return("exec-001", nil)
-	tasks.On("RecordExecution", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
 
 	runner := new(mockAgentRunner)
 	runner.On("Execute", mock.Anything, mock.Anything, mock.Anything).Return(nil, agentrunner.ExecuteOutput{Content: "done"}, nil)
@@ -874,7 +873,7 @@ func TestHandleStartExecution_CleanWorkspaceSkipsCleanupTurn(t *testing.T) {
 
 	req := newExecutionRequest(t, executionStartRequest{})
 	w := httptest.NewRecorder()
-	(&Server{Projects: newExecutionProjectStore(repositories), TaskStores: fixedTaskStoreFactory(tasks),
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
 		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)

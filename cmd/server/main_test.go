@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/go-git/go-git/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,12 +16,23 @@ import (
 // real environment variables (loadConfig/utils.MustGetEnv is deliberately
 // bypassed here — this test is about run()'s shutdown behavior, not env
 // parsing). httpAddr binds an OS-assigned loopback port since no test here
-// needs to know which one.
+// needs to know which one. dataRepoURL points at a fresh empty bare
+// repository under t.TempDir() — the same subprocess-boot provisioning
+// pattern documented on run() itself (an e2e harness driving the real
+// binary must do the equivalent via `git init --bare` before launch; this
+// in-process test does it directly via go-git, exactly like
+// internal/gitstore's own tests).
 func testConfig(t *testing.T) config {
 	t.Helper()
+	remote := filepath.Join(t.TempDir(), "data-remote.git")
+	_, err := git.PlainInit(remote, true)
+	require.NoError(t, err)
+
 	return config{
 		httpAddr:              "127.0.0.1:0",
-		workspaceRoot:         t.TempDir(),
+		workspaceRoot:         filepath.Join(t.TempDir(), "workspace"),
+		dataRepoURL:           remote,
+		pushInterval:          time.Hour,
 		logLevel:              "error",
 		logFormat:             "text",
 		llmBaseURL:            "http://127.0.0.1:1",
