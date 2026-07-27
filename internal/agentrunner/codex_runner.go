@@ -67,7 +67,7 @@ type CodexRunner struct {
 // NewCodexRunner returns a CodexRunner whose Run calls are each bounded by
 // timeout and whose Execute calls are separately bounded by executeTimeout
 // — split the same way and for the same reason as NewClaudeRunner's
-// timeout/executeTimeout. reposRoot is the configured AGENT_REPOS_ROOT
+// timeout/executeTimeout. reposRoot is the configured REPOS_ROOT
 // value (same role as NewClaudeRunner's). draftMCPPath is the absolute path
 // to the compiled cmd/draftmcp binary; CodexRunner registers it as an MCP
 // server the first time Run or Execute is actually called (see
@@ -96,7 +96,7 @@ func NewCodexRunner(timeout, executeTimeout time.Duration, reposRoot string, dra
 // expensive to run on every health poll.
 func (r *CodexRunner) CheckHealth(_ context.Context) error {
 	if r.reposRoot == "" {
-		return errors.New("AGENT_REPOS_ROOT is not configured")
+		return errors.New("REPOS_ROOT is not configured")
 	}
 	if r.draftMCPPath == "" {
 		return errors.New("codex draft MCP server binary is not configured")
@@ -126,7 +126,7 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 		return RunOutput{}, fmt.Errorf("registering codex draft MCP server: %w", err)
 	}
 	if in.Workspace == "" {
-		return RunOutput{}, errors.New("codex requires a project repository checked out under AGENT_REPOS_ROOT")
+		return RunOutput{}, errors.New("codex requires a project repository checked out under REPOS_ROOT")
 	}
 
 	key := in.SessionKey

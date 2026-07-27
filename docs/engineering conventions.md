@@ -32,19 +32,24 @@ doesn't have to be re-derived or re-litigated later.
 * Env vars are read once, in `loadConfig() config`, called at the top of
   `main()` before any component is constructed (`cmd/server/main.go`).
   Names are `SCREAMING_SNAKE_CASE` with no prefix namespacing (`HTTP_ADDR`,
-  `WORKSPACE_ROOT`, `LOG_LEVEL`, `LLM_BASE_URL`, ...).
+  `REPOS_ROOT`, `LOG_LEVEL`, `LLM_BASE_URL`, ...).
 * Optional vars use `utils.GetEnvDefault[T](key, default)`
   (`internal/utils/env.go`) — generic over `string`/`bool`/`int`/
   `time.Duration`, silently falling back to `default` if the var is unset or
   fails to parse. Required vars use the `utils.MustGetEnv*` family, which
   calls `logrus.Fatalf` on missing or invalid values. Don't hand-roll
   `os.LookupEnv`/`strconv` calls outside these helpers.
-* `DATA_REPO_URL` (required, `utils.MustGetEnv`) names the git remote
-  `gitstore.Open` clones/resumes `WORKSPACE_ROOT` against (Storage & file
-  layout below) — treated strictly as a local filesystem path this
-  milestone, no network transport or auth. `PUSH_INTERVAL` (optional,
-  default 30s) controls how often the background push worker attempts to
-  push local commits to it.
+* `REPOS_ROOT` (required, `utils.MustGetEnv`) is the shared parent directory
+  under which every sibling repo — the gitstore data checkout and every
+  project's code repository — is checked out. `DATA_REPO_URL` (required,
+  `utils.MustGetEnv`) names the git remote `gitstore.Open` clones/resumes
+  into `workspaceRoot` (Storage & file layout below), a directory computed
+  at startup as `REPOS_ROOT` joined with a name derived from `DATA_REPO_URL`
+  (`repoDirName`, `cmd/server/main.go`) — the same convention `git clone`
+  itself uses to name a destination directory from a remote URL, so the
+  data checkout is just another sibling repo under `REPOS_ROOT`.
+  `PUSH_INTERVAL` (optional, default 30s) controls how often the background
+  push worker attempts to push local commits to it.
 
 ## Graceful shutdown
 
@@ -83,16 +88,18 @@ doesn't have to be re-derived or re-litigated later.
   ban on a running `git` binary as a hard runtime dependency —
   `internal/gitutil`'s own shell-out is a different, already-installed-by-
   the-operator dependency for project *code* repositories, not this store's
-  own persistence). `gitstore.Open(workspaceRoot, dataRepoURL)` resolves
-  `WORKSPACE_ROOT` into a working checkout tracking `DATA_REPO_URL` as its
-  `origin` remote — cloning into an empty root, resuming an existing
-  matching checkout, or erroring (`ErrAmbiguousWorkspace`) on anything else
-  — then every `Create`/`Update` commits synchronously and locally,
-  serialized by one process-wide mutex, while a background goroutine
-  (`Store.RunPushWorker`) periodically pushes accumulated commits to
-  `origin`, logging and retrying indefinitely on failure and never pulling
-  after startup. `cmd/server/main.go` requires `DATA_REPO_URL` at startup
-  (`utils.MustGetEnv`) — the server refuses to start without it.
+  own persistence). `gitstore.Open(workspaceRoot, dataRepoURL)` resolves the
+  derived `workspaceRoot` (`REPOS_ROOT` joined with a name derived from
+  `DATA_REPO_URL`, see Configuration above) into a working checkout tracking
+  `DATA_REPO_URL` as its `origin` remote — cloning into an empty root,
+  resuming an existing matching checkout, or erroring
+  (`ErrAmbiguousWorkspace`) on anything else — then every `Create`/`Update`
+  commits synchronously and locally, serialized by one process-wide mutex,
+  while a background goroutine (`Store.RunPushWorker`) periodically pushes
+  accumulated commits to `origin`, logging and retrying indefinitely on
+  failure and never pulling after startup. `cmd/server/main.go` requires
+  `REPOS_ROOT` and `DATA_REPO_URL` at startup (`utils.MustGetEnv`) — the
+  server refuses to start without them.
 * `gitstore.Store` doesn't implement `project.Store`/`task.Store` itself —
   Go has no method overloading, and the two interfaces both declare
   `List`/`Get`/`Create`/`Update` with different signatures — so it splits
@@ -112,8 +119,9 @@ doesn't have to be re-derived or re-litigated later.
   an explicit `projectID` (`internal/task.Store`'s doc comment) rather than
   the store itself being constructed per-project — `internal/task` still
   has zero knowledge of `internal/project`; `projectID` is just a path
-  segment its `FileStore` joins under the shared root. The root defaults to
-  `WORKSPACE_ROOT` (`data/`, see Configuration above) — the workspace layout
+  segment its `FileStore` joins under the shared root. The root is
+  `workspaceRoot`, computed at startup from `REPOS_ROOT` (see Configuration
+  above) — no longer a repo-relative `data/` default — the workspace layout
   described in `CLAUDE.md` / `project_summary.md` (`data/projects/<id>/project.yaml`,
   `data/projects/<id>/tasks/<taskId>/task.yaml`) — this section is about how
   the Go code reads/writes that layout, not the domain model itself.
@@ -337,7 +345,7 @@ doesn't have to be re-derived or re-litigated later.
   CheckHealth` reports unavailable if the `claude` CLI isn't on `PATH`
   (`exec.LookPath`, indirected behind a package-level `lookPath` var for
   tests — the SDK has no cheaper real ping; a full `Connect`+`Disconnect`
-  would spawn a subprocess per check). `AGENT_REPOS_ROOT` itself is a hard
+  would spawn a subprocess per check). `REPOS_ROOT` itself is a hard
   startup requirement, not a health-checked one: `main.go` reads it via
   `utils.MustGetEnv` and refuses to start without it, since any agent
   runner capable of introspecting a task's reference repo (`claude-code`
@@ -350,14 +358,14 @@ doesn't have to be re-derived or re-litigated later.
   checking map presence. `agentrunner.ResolveWorkspace` derives a
   per-task agent's cwd from a project's first configured `Repositories`
   entry (e.g. `github.com/timmersuk/logthing`) by convention: its last path
-  segment joined under `AGENT_REPOS_ROOT` (so repos checked out as siblings
+  segment joined under `REPOS_ROOT` (so repos checked out as siblings
   of this workbench resolve correctly), validated to exist and to never
   escape that root. `handlePostStageMessage` (`stage_conversation.go`)
   calls `ResolveWorkspace` unconditionally for every executor, including
   `"local"` — a project with no resolvable `Repositories` entry can't run
   GrillMe/Planning Mode with any executor, even though `ChatClientRunner`
   itself ignores `RunInput.Workspace`. Free chat has no per-task project, so
-  it passes `AGENT_REPOS_ROOT` itself as `RunInput.Workspace` without
+  it passes `REPOS_ROOT` itself as `RunInput.Workspace` without
   calling `ResolveWorkspace` — a Claude Code session started from the Chat
   tab gets read access rooted at the whole sibling-repos directory, not one
   specific repo. `AGENT_TIMEOUT` (default 5m) bounds a single `Run` call end

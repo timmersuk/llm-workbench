@@ -218,8 +218,9 @@ func verifyOrigin(root, dataRepoURL string) error {
 
 // dirIsEmptyOrAbsent reports whether dir doesn't exist yet or exists but
 // has no entries — both are "safe to clone into" as far as Open is
-// concerned, since WORKSPACE_ROOT (data/ by default) may not have been
-// created at all on a fresh deployment.
+// concerned, since workspaceRoot (derived from REPOS_ROOT, no
+// repo-relative default) may not have been created at all on a fresh
+// deployment.
 func dirIsEmptyOrAbsent(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {

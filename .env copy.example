@@ -2,3 +2,10 @@
 LLM_BASE_URL=http://localhost:11434/v1
 LLM_API_KEY=
 LLM_MODEL=llama3
+
+# Required — see docs/engineering conventions.md's Configuration section.
+# REPOS_ROOT is the shared parent directory under which the data checkout
+# (DATA_REPO_URL) and every project's code repository are checked out as
+# sibling directories.
+REPOS_ROOT=/path/to/a/directory/one-level-above-this-repo
+DATA_REPO_URL=https://github.com/you/your-data-repo.git

@@ -517,7 +517,7 @@ func TestClaudeRunner_CheckHealth_FailsWhenReposRootEmpty(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	err := r.CheckHealth(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "AGENT_REPOS_ROOT")
+	assert.Contains(t, err.Error(), "REPOS_ROOT")
 }
 
 func TestClaudeRunner_CheckHealth_FailsWhenCLINotOnPath(t *testing.T) {
