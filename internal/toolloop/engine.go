@@ -49,8 +49,9 @@ type Config struct {
 	// propose_knowledge, docs/milestones/done/milestone9.md) — Execute leaves it
 	// empty and stops only when the model finishes without a tool call.
 	StopTools []chat.Tool
-	// MaxTurns bounds tool-call round-trips (claudeRunnerMaxTurns for Run,
-	// claudeExecutionMaxTurns for Execute). Reaching it returns Exhausted.
+	// MaxTurns bounds tool-call round-trips; reaching it returns Exhausted.
+	// Zero (or negative) means no turn-count limit — the caller is relying
+	// on ctx's own deadline instead.
 	MaxTurns int
 	// MaxTokens caps each response so a spiralling model can't generate
 	// without limit. Zero uses the provider default (not recommended for
@@ -106,12 +107,16 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 		maxCalls = defaultMaxToolCallsPerTurn
 	}
 
-	msgs := make([]chat.Message, 0, len(messages)+2*cfg.MaxTurns)
+	initialCap := len(messages)
+	if cfg.MaxTurns > 0 {
+		initialCap += 2 * cfg.MaxTurns
+	}
+	msgs := make([]chat.Message, 0, initialCap)
 	msgs = append(msgs, messages...)
 
 	var lastText string
 	var totalTokens int
-	for turn := 1; turn <= cfg.MaxTurns; turn++ {
+	for turn := 1; cfg.MaxTurns <= 0 || turn <= cfg.MaxTurns; turn++ {
 		var text strings.Builder
 		var calls []chat.ToolCall
 

@@ -92,6 +92,19 @@ function parseAskQuestionArgs(argumentsJSON: string): AskQuestionArgs {
   }
 }
 
+// isMaxTurnsError matches the SDK's "Reached maximum number of turns (N)"
+// failure text (internal/agentrunner/claude_runner.go's processMessage) —
+// same regex convention TaskDetailPanel.tsx uses for Execution failures.
+// The turn cap resets per message rather than for the whole session
+// (verified live against the `claude` CLI's stream-json protocol: a message
+// that hits its cap still leaves the session able to answer the very next
+// one with a fresh budget), so this is never a dead conversation — just a
+// turn that ran out of room, worth explaining plainly rather than showing
+// the raw SDK string.
+function isMaxTurnsError(error: string): boolean {
+  return /maximum number of turns/i.test(error)
+}
+
 function toDisplayMessage(m: ConversationMessage): DisplayMessage {
   return {
     role: m.role,
@@ -881,7 +894,25 @@ export function StageConversationPanel<D, S = never>({
               <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>
             )}
             {message.toolCallName === askQuestionToolName && <span className="tool-call-chip">Asked a question</span>}
-            {message.error && <p className="error">{message.error}</p>}
+            {message.error &&
+              (isMaxTurnsError(message.error) ? (
+                <div className="error max-turns-notice">
+                  <p>
+                    This turn ran out of its turn budget before finishing — reply below to continue, or click Continue.
+                    The conversation isn't stuck: the next turn gets a fresh budget, it just doesn't restart on its own.
+                  </p>
+                  <button
+                    type="button"
+                    className="action-btn"
+                    onClick={() => sendMessage('Please continue where you left off.')}
+                    disabled={sending}
+                  >
+                    Continue
+                  </button>
+                </div>
+              ) : (
+                <p className="error">{message.error}</p>
+              ))}
             <div className="message-actions">
               <button type="button" className="action-btn" onClick={() => handleCopyMessage(message.content)}>
                 Copy

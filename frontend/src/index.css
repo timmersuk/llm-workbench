@@ -113,6 +113,17 @@ th {
   color: var(--error);
 }
 
+.max-turns-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.max-turns-notice .action-btn {
+  border: 1px solid var(--border);
+}
+
 .chat-panel {
   display: flex;
   flex-direction: column;

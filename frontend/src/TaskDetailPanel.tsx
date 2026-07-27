@@ -111,9 +111,9 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   // run leaves task.status/stage unchanged (internal/task/execution.go's
   // RecordExecution only advances stage on success). Hitting the turn cap
   // gets its own wording rather than the raw SDK error string, since it's
-  // common enough (claude_runner.go's claudeExecutionMaxTurns) to deserve a
-  // plain "what happened, what to do" message instead of "Reached maximum
-  // number of turns (100)".
+  // common enough (internal/api/execution.go's executionMaxTurns) to
+  // deserve a plain "what happened, what to do" message instead of
+  // "Reached maximum number of turns (100)".
   const isMaxTurnsFailure = Boolean(
     latestExecution?.failure?.message && /maximum number of turns/i.test(latestExecution.failure.message),
   )

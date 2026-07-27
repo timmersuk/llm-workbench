@@ -36,17 +36,6 @@ var readOnlyTools = []string{"Read", "Grep", "Glob"}
 // stage's read-only agent has open.
 var executionTools = append(append([]string{}, readOnlyTools...), "Write", "Edit", "Bash")
 
-// claudeRunnerMaxTurns bounds how many internal tool-call round-trips a
-// single Run call may make, as a defense-in-depth cap independent of the
-// Write/Edit/Bash denial above.
-const claudeRunnerMaxTurns = 30
-
-// claudeExecutionMaxTurns bounds Execute's round-trips — higher than
-// claudeRunnerMaxTurns because an actual implementation run (write code,
-// run tests, fix failures, commit) legitimately needs far more turns than
-// an interview question does.
-const claudeExecutionMaxTurns = 1000
-
 // executionKickoffMessage is the fixed user turn Execute sends to start an
 // autonomous run — all real instructions live in the system prompt
 // (agentrunner.ExecuteInput.SystemPrompt, built by the caller), the same
@@ -262,13 +251,19 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 	runCtx, cancel := context.WithTimeout(ctx, r.executeTimeout)
 	defer cancel()
 
-	client := r.newClient(
+	opts := []claudecode.Option{
 		claudecode.WithCwd(in.Workspace),
 		claudecode.WithSystemPrompt(in.SystemPrompt),
 		claudecode.WithPartialStreaming(),
-		claudecode.WithMaxTurns(claudeExecutionMaxTurns),
 		claudecode.WithAllowedTools(executionTools...),
-	)
+	}
+	// See clientFor's identical comment: omitting WithMaxTurns entirely
+	// (rather than passing 0) is what tells the underlying `claude` CLI not
+	// to cap turns at all.
+	if in.MaxTurns > 0 {
+		opts = append(opts, claudecode.WithMaxTurns(in.MaxTurns))
+	}
+	client := r.newClient(opts...)
 	if err := client.Connect(runCtx); err != nil {
 		return ExecuteOutput{}, fmt.Errorf("connecting claude code agent for execution %s: %w", key, err)
 	}
@@ -328,7 +323,14 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 		claudecode.WithCwd(in.Workspace),
 		claudecode.WithSystemPrompt(systemPromptWithHistory(in.SystemPrompt, in.History)),
 		claudecode.WithPartialStreaming(),
-		claudecode.WithMaxTurns(claudeRunnerMaxTurns),
+	}
+	// WithMaxTurns is only added when the caller set a positive value —
+	// omitting it entirely (rather than passing 0) is how this SDK's
+	// underlying `claude` CLI is told not to cap turns at all (see
+	// internal/cli/discovery.go in the claude-agent-sdk-go module: the
+	// --max-turns flag is only emitted when MaxTurns > 0).
+	if in.MaxTurns > 0 {
+		opts = append(opts, claudecode.WithMaxTurns(in.MaxTurns))
 	}
 
 	allowedTools := append([]string{}, readOnlyTools...)

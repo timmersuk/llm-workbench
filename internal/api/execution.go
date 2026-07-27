@@ -26,6 +26,16 @@ import (
 // worth selecting at all.
 const defaultExecutionExecutor = "claude-code"
 
+// executionMaxTurns bounds an autonomous Execute run's tool-call
+// round-trips — set here, explicitly, by the caller that knows this is an
+// Implementation-stage execution (build/test/fix/commit), not defaulted
+// inside any AgentRunner implementation. Used for both the main execution
+// attempt and its post-run cleanup turn below.
+//
+// data/projects/llm-workbench/tasks/configurable-execution-max-turns scopes
+// making this configurable per task instead of one fixed global value.
+const executionMaxTurns = 1000
+
 // executionStartRequest is the request body for handleStartExecution.
 type executionStartRequest struct {
 	Model    string `json:"model"`
@@ -230,6 +240,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			Workspace:    ws.Path,
 			SystemPrompt: systemPrompt,
 			Model:        req.Model,
+			MaxTurns:     executionMaxTurns,
 		}, func(ev agentrunner.ExecuteEvent) error {
 			writeEvent(executeEventToWire(ev))
 			return nil
@@ -286,6 +297,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 					Workspace:    ws.Path,
 					SystemPrompt: buildWorkspaceCleanupPrompt(statusOut),
 					Model:        req.Model,
+					MaxTurns:     executionMaxTurns,
 				}, func(ev agentrunner.ExecuteEvent) error {
 					writeEvent(executeEventToWire(ev))
 					return nil

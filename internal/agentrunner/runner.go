@@ -78,6 +78,14 @@ type RunInput struct {
 	// still confined to Workspace (the execution worktree for a review), so
 	// this never reaches the project's shared checkout.
 	EnableBashTool bool
+	// MaxTurns bounds tool-call round-trips for this call, set explicitly by
+	// the caller (e.g. internal/api/stage_conversation.go picks a value per
+	// stage) rather than defaulted inside any AgentRunner implementation —
+	// no runner may substitute a hardcoded constant of its own when this is
+	// left at zero. Zero means no turn-count limit at all: the call is
+	// still bounded by the runner's own configured timeout, just not by a
+	// turn count.
+	MaxTurns int
 	// History is a stage conversation's persisted transcript so far
 	// (internal/task.Conversation, mapped to chat.Message by the caller),
 	// used to rehydrate an AgentRunner's in-memory session state after a
@@ -139,6 +147,12 @@ type ExecuteInput struct {
 	// Model is honored only by AgentRunner implementations backed by a
 	// model-selectable provider, same convention as RunInput.Model.
 	Model string
+	// MaxTurns bounds tool-call round-trips for this execution, same
+	// contract as RunInput.MaxTurns: set explicitly by the caller, never
+	// defaulted inside an AgentRunner implementation. Zero means no
+	// turn-count limit (bounded only by the runner's own configured
+	// executeTimeout).
+	MaxTurns int
 }
 
 // ExecuteEvent is one incremental unit of progress from an AgentRunner.Execute
