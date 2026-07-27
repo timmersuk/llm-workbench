@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"net"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,13 +20,12 @@ import (
 // repository under t.TempDir() — the same subprocess-boot provisioning
 // pattern documented on run() itself (an e2e harness driving the real
 // binary must do the equivalent via `git init --bare` before launch; this
-// in-process test does it directly via go-git, exactly like
+// in-process test does it directly via the `git` CLI, exactly like
 // internal/gitstore's own tests).
 func testConfig(t *testing.T) config {
 	t.Helper()
 	remote := filepath.Join(t.TempDir(), "data-remote.git")
-	_, err := git.PlainInit(remote, true)
-	require.NoError(t, err)
+	require.NoError(t, exec.Command("git", "init", "--bare", remote).Run())
 
 	return config{
 		httpAddr:              "127.0.0.1:0",

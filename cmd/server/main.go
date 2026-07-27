@@ -64,10 +64,14 @@ func loadConfig() config {
 	return config{
 		httpAddr:      utils.GetEnvDefault("HTTP_ADDR", ":8080"),
 		workspaceRoot: utils.GetEnvDefault("WORKSPACE_ROOT", "data"),
-		// DATA_REPO_URL is treated strictly as a local filesystem path this
-		// milestone — no network transport, no auth (remote hosting/
-		// credentials are punted to a future milestone). See gitstore.Open's
-		// doc comment for the clone/resume/ambiguous-workspace contract this
+		// DATA_REPO_URL is a real git remote URL — anything `git clone`
+		// itself accepts (a GitHub HTTPS/SSH URL, a local path, etc.).
+		// gitstore shells out to the `git` binary rather than a pure-Go
+		// library specifically so auth is never this process's problem:
+		// clone/push run through whatever credential helper or SSH agent
+		// the operator's machine already has configured, exactly as if
+		// they'd typed the command themselves. See gitstore.Open's doc
+		// comment for the clone/resume/ambiguous-workspace contract this
 		// drives.
 		dataRepoURL: utils.MustGetEnv("DATA_REPO_URL"),
 		// How often the background push worker (gitstore.Store.RunPushWorker)
@@ -133,18 +137,18 @@ func main() {
 // verified here) must therefore provision that remote first:
 //
 //  1. Create an empty bare repository in a throwaway directory, e.g. via
-//     `git init --bare <tmp>/data-remote.git` (or go-git's
-//     `git.PlainInit(dir, true)`, exactly as this package's own tests do —
-//     see internal/gitstore/gitstore_test.go's newBareRemote helper).
+//     `git init --bare <tmp>/data-remote.git`, exactly as this package's
+//     own tests do — see internal/gitstore/gitstore_test.go's
+//     newBareRemote helper.
 //  2. Export DATA_REPO_URL=<tmp>/data-remote.git (and WORKSPACE_ROOT
 //     pointing at another empty throwaway directory) in the subprocess's
 //     environment before starting it.
 //
-// gitstore.Open's clone step (an empty bare remote) falls back to a local
-// PlainInit + origin remote, exactly the "empty WORKSPACE_ROOT, fresh
-// clone" startup path documented on gitstore.Open — so this is the
-// harness-side equivalent of a brand-new deployment's first boot, not a
-// special test-only code path in the server itself.
+// gitstore.Open's clone step (an empty bare remote) is just `git clone`,
+// which succeeds against an empty remote the same way it would for a
+// human — no special-case fallback needed, so this is the harness-side
+// equivalent of a brand-new deployment's first boot, not a special
+// test-only code path in the server itself.
 func run(ctx context.Context, cfg config) error {
 	configureLogging(cfg.logLevel, cfg.logFormat)
 

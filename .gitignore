@@ -27,6 +27,11 @@ go.work.sum
 # env file
 .env
 
+# WORKSPACE_ROOT default: now a gitstore checkout of its own (DATA_REPO_URL),
+# not tracked by this repo — see docs/engineering conventions.md's
+# Configuration section.
+/data/
+
 # Editor/IDE
 # .idea/
 # .vscode/

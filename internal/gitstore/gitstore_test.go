@@ -1,13 +1,12 @@
 package gitstore
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -22,7 +21,7 @@ import (
 func newBareRemote(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "remote.git")
-	_, err := git.PlainInit(dir, true)
+	_, err := runGit("", "init", "--bare", dir)
 	require.NoError(t, err)
 	return dir
 }
@@ -60,7 +59,10 @@ func TestOpen_ResumesExistingMatchingClone(t *testing.T) {
 	require.NoError(t, err)
 
 	// Re-open the same workspaceRoot: this must resume the existing
-	// checkout (not error, not re-clone), and see the commit store1 made.
+	// checkout (not error, not re-clone), and see the write store1 made —
+	// FileStore writes land on disk immediately regardless of commit
+	// timing (commits are deferred to the push worker's tick, see
+	// commit.go), so this doesn't depend on a commit having happened yet.
 	store2, err := Open(workspaceRoot, remote)
 	require.NoError(t, err)
 
@@ -99,7 +101,7 @@ func TestOpen_AmbiguousWorkspace_GitCheckoutWithNoOriginRemote(t *testing.T) {
 	remote := newBareRemote(t)
 	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
 	require.NoError(t, os.MkdirAll(workspaceRoot, 0o755))
-	_, err := git.PlainInit(workspaceRoot, false)
+	_, err := runGit(workspaceRoot, "init")
 	require.NoError(t, err)
 
 	_, err = Open(workspaceRoot, remote)
@@ -119,10 +121,30 @@ func newTask(id string) task.Task {
 	return task.Task{ID: id, Title: "Test task", Objective: "Do the thing"}
 }
 
-// TestStore_CreateCommitsLocally exercises the actual create-then-commit
-// path end to end via the real project/task packages (not the placeholder
-// above), asserting both the on-disk YAML and the git history it produces.
-func TestStore_CreateCommitsLocally(t *testing.T) {
+// logMessages returns every commit message reachable from HEAD, oldest
+// last (matching `git log`'s default order) — nil if nothing has been
+// committed yet (an empty checkout has no HEAD).
+func logMessages(t *testing.T, root string) []string {
+	t.Helper()
+	out, err := runGit(root, "log", "--pretty=%s")
+	if err != nil {
+		// "unknown revision or path not in the working tree" et al: HEAD
+		// doesn't exist yet because nothing has been committed.
+		return nil
+	}
+	out = strings.TrimRight(out, "\n")
+	if out == "" {
+		return nil
+	}
+	return strings.Split(out, "\n")
+}
+
+// TestStore_CreateEnqueuesPendingChange exercises the actual
+// create-then-enqueue path end to end via the real project/task packages
+// (not the placeholder above): writes land on disk immediately, but
+// nothing is committed until commitPending runs (the push worker's job —
+// see push_test.go for the commit/push behavior itself).
+func TestStore_CreateEnqueuesPendingChange(t *testing.T) {
 	remote := newBareRemote(t)
 	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
 	store, err := Open(workspaceRoot, remote)
@@ -131,8 +153,11 @@ func TestStore_CreateCommitsLocally(t *testing.T) {
 	p, err := store.Projects.Create(newProjectCreateInput("Demo Project"))
 	require.NoError(t, err)
 	assert.Equal(t, "demo-project", p.ID)
+	assert.FileExists(t, filepath.Join(workspaceRoot, "projects", "demo-project", "project.yaml"))
+	assert.Nil(t, logMessages(t, workspaceRoot), "nothing should be committed before commitPending runs")
 
-	commits := logMessages(t, store.core.repo)
+	require.NoError(t, store.core.commitPending(time.Hour))
+	commits := logMessages(t, workspaceRoot)
 	require.Len(t, commits, 1)
 	assert.Equal(t, `Create project "Demo Project"`, commits[0])
 
@@ -140,15 +165,16 @@ func TestStore_CreateCommitsLocally(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "first-task", tsk.ID)
 
-	commits = logMessages(t, store.core.repo)
+	require.NoError(t, store.core.commitPending(time.Hour))
+	commits = logMessages(t, workspaceRoot)
 	require.Len(t, commits, 2)
 	assert.Equal(t, "Create task demo-project/first-task", commits[0])
 }
 
-// TestStore_UpdateCommitsLocally exercises Update's commit path (as
-// opposed to Create's), including that a failed Update (unknown id) is
-// never committed.
-func TestStore_UpdateCommitsLocally(t *testing.T) {
+// TestStore_UpdateEnqueuesPendingChange exercises Update's enqueue path (as
+// opposed to Create's), including that a failed Update (unknown id) never
+// enqueues anything.
+func TestStore_UpdateEnqueuesPendingChange(t *testing.T) {
 	remote := newBareRemote(t)
 	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
 	store, err := Open(workspaceRoot, remote)
@@ -156,41 +182,25 @@ func TestStore_UpdateCommitsLocally(t *testing.T) {
 
 	p, err := store.Projects.Create(newProjectCreateInput("Demo Project"))
 	require.NoError(t, err)
+	// Drain before the Update: both touch the same project directory, so
+	// queuing them together would squash into one commit (see
+	// TestCommitPending_SquashesPendingChangesToTheSameDirectory) — this
+	// test wants each in its own commit.
+	require.NoError(t, store.core.commitPending(time.Hour))
 
 	_, err = store.Projects.Update(p.ID, newProjectUpdateInput("Renamed Project"))
 	require.NoError(t, err)
 
-	commits := logMessages(t, store.core.repo)
+	require.NoError(t, store.core.commitPending(time.Hour))
+	commits := logMessages(t, workspaceRoot)
 	require.Len(t, commits, 2)
 	assert.Equal(t, "Update project demo-project", commits[0])
 
 	_, err = store.Projects.Update("does-not-exist", newProjectUpdateInput("Nope"))
 	require.Error(t, err)
 
-	// A failed Update must not produce a commit.
-	commits = logMessages(t, store.core.repo)
+	// A failed Update must not enqueue (and therefore must not commit).
+	require.NoError(t, store.core.commitPending(time.Hour))
+	commits = logMessages(t, workspaceRoot)
 	assert.Len(t, commits, 2)
-}
-
-func logMessages(t *testing.T, repo *git.Repository) []string {
-	t.Helper()
-	head, err := repo.Head()
-	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return nil
-	}
-	require.NoError(t, err)
-
-	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
-	require.NoError(t, err)
-	defer iter.Close()
-
-	var messages []string
-	for {
-		c, err := iter.Next()
-		if err != nil {
-			break
-		}
-		messages = append(messages, c.Message)
-	}
-	return messages
 }
