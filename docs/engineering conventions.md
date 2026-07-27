@@ -338,6 +338,22 @@ doesn't have to be re-derived or re-litigated later.
   `unlock`); a hard `context.WithTimeout` wraps each `Run` call. Nothing is
   written to `context.yaml`/`plan.yaml` from this path — same Draft/
   Finalize separation as the chat path (`internal/api/stage_conversation.go`).
+* Turn budgets (`RunInput.MaxTurns`, `ExecuteInput.MaxTurns`) are always an
+  explicit value the *caller* computes and passes in — never inferred by an
+  `AgentRunner` implementation from another field (e.g. `EnableBashTool`),
+  and never backstopped by a hardcoded per-implementation constant when
+  left unset. Zero means no turn-count limit at all (still bounded by the
+  runner's own timeout), not "substitute some default." Stage-conversation
+  callers (`internal/api/stage_conversation.go`'s `resolveStageRun`) pick
+  `requirementsPlanningMaxTurns` (30) or `reviewMaxTurns` (1000) per stage;
+  `internal/api/execution.go` sets `executionMaxTurns` (1000) for Execute.
+  `ClaudeRunner` only emits `claudecode.WithMaxTurns` when the value is
+  positive — omitting the option entirely (not passing 0) is how the
+  underlying `claude` CLI is told not to cap turns.
+  `internal/toolloop/engine.go`'s loop treats `MaxTurns <= 0` as unbounded.
+  See `data/knowledge/coding-standards/caller-supplied-configuration.md` for
+  the incident this convention comes from and why the same shape of
+  mistake is worth watching for elsewhere.
 * One `claudecode.Client` (one `claude` CLI subprocess) is created lazily
   per `SessionKey` and kept alive until `AgentRunner.CloseSession(sessionKey)`
   is called, since `WithCwd`/`WithSystemPrompt`/`WithAllowedTools` are all

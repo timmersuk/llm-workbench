@@ -390,6 +390,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 				Model:          req.Model,
 				Tools:          tools,
 				EnableBashTool: run.EnableBash,
+				MaxTurns:       run.MaxTurns,
 				History:        conversationHistoryToChatMessages(history),
 			}, writeEvent)
 		}
@@ -479,6 +480,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 				Model:          req.Model,
 				Tools:          tools,
 				EnableBashTool: run.EnableBash,
+				MaxTurns:       run.MaxTurns,
 			}, writeEvent)
 		}
 		if streamErr != nil {
@@ -642,6 +644,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 				Model:          req.Model,
 				Tools:          tools,
 				EnableBashTool: run.EnableBash,
+				MaxTurns:       run.MaxTurns,
 				History:        conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
 			}, writeEvent)
 		}
@@ -817,14 +820,30 @@ func (s *Server) buildStagePrompt(t task.Task, proj project.Project, stage strin
 	return b.String()
 }
 
+// requirementsPlanningMaxTurns bounds Requirements/Planning stage turns —
+// these agents stay read-only, so a short interview-style conversation
+// exhausting this is itself a signal something's gone wrong (a loop, a
+// confused agent), not evidence the cap needs raising.
+const requirementsPlanningMaxTurns = 30
+
+// reviewMaxTurns bounds Review stage turns. Review runs the confined bash
+// tool over the executed change (tests, live smoke-testing) — a workload
+// shaped like Execute's, not like an interview — so it gets Execute's same
+// generous budget rather than requirementsPlanningMaxTurns.
+const reviewMaxTurns = 1000
+
 // stageRun bundles the resolved workspace, the (possibly stage-augmented)
-// system prompt, and whether the confined bash tool should be offered, for one
-// stage conversation turn — the three stage-conversation handlers share it so
-// Review's extra plumbing (worktree, diff, bash) lives in exactly one place.
+// system prompt, whether the confined bash tool should be offered, and the
+// turn budget, for one stage conversation turn — the three stage-conversation
+// handlers share it so Review's extra plumbing (worktree, diff, bash, higher
+// turn budget) lives in exactly one place. MaxTurns is decided here, by the
+// caller, per stage — never inferred by an AgentRunner from EnableBash or any
+// other signal (see agentrunner.RunInput.MaxTurns).
 type stageRun struct {
 	Workspace    string
 	SystemPrompt string
 	EnableBash   bool
+	MaxTurns     int
 }
 
 // appendWorkspaceAdvisories appends a short, one-sentence note per true
@@ -886,7 +905,7 @@ func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, stor
 			}
 			systemPrompt += addendum
 		}
-		return stageRun{Workspace: ws, SystemPrompt: systemPrompt}, nil
+		return stageRun{Workspace: ws, SystemPrompt: systemPrompt, MaxTurns: requirementsPlanningMaxTurns}, nil
 	}
 
 	defaultBranch, err := s.ensureDefaultBranch(ctx, proj)
@@ -897,7 +916,7 @@ func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, stor
 	if err != nil {
 		return stageRun{}, err
 	}
-	return stageRun{Workspace: workspace, SystemPrompt: systemPrompt + addendum, EnableBash: true}, nil
+	return stageRun{Workspace: workspace, SystemPrompt: systemPrompt + addendum, EnableBash: true, MaxTurns: reviewMaxTurns}, nil
 }
 
 // buildRejectedReviewContext returns a Requirements-stage prompt addendum

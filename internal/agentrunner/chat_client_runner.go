@@ -16,7 +16,7 @@ import (
 // chatClientMaxResponseTokens caps tokens generated per model response in the
 // tool loop. It bounds a misbehaving local model that spirals or repeats
 // (Milestone 8 Phase 0) while leaving ample room for a full interview answer
-// plus reasoning. Distinct from the loop's turn bound (claudeRunnerMaxTurns).
+// plus reasoning. Distinct from the loop's turn bound (RunInput.MaxTurns).
 const chatClientMaxResponseTokens = 8192
 
 // ChatClientRunner adapts a chat.ChatClient into the AgentRunner interface,
@@ -90,7 +90,7 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 		Model:     in.Model,
 		Workspace: in.Workspace,
 		Tools:     r.loopTools(in.Workspace, in.EnableBashTool),
-		MaxTurns:  claudeRunnerMaxTurns,
+		MaxTurns:  in.MaxTurns,
 		MaxTokens: chatClientMaxResponseTokens,
 	}
 	if len(in.Tools) > 0 {
@@ -194,7 +194,7 @@ func (r *ChatClientRunner) Execute(ctx context.Context, in ExecuteInput, onEvent
 		Model:     in.Model,
 		Workspace: in.Workspace,
 		Tools:     toolloop.ExecutionTools(),
-		MaxTurns:  claudeExecutionMaxTurns,
+		MaxTurns:  in.MaxTurns,
 		MaxTokens: chatClientMaxResponseTokens,
 	}
 	var onDelta func(chat.Delta) error

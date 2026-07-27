@@ -522,7 +522,8 @@ func TestChatClientRunner_Execute_FailsLoudlyOnExhaustion(t *testing.T) {
 			Function: chat.ToolCallFunction{Name: "write_file", Arguments: `{"path":"a.txt","content":"x"}`},
 		}})
 	}
-	turns := make([]func(func(chat.Delta) error) error, claudeExecutionMaxTurns)
+	const testMaxTurns = 5
+	turns := make([]func(func(chat.Delta) error) error, testMaxTurns)
 	for i := range turns {
 		turns[i] = turn
 	}
@@ -532,11 +533,12 @@ func TestChatClientRunner_Execute_FailsLoudlyOnExhaustion(t *testing.T) {
 	out, err := runner.Execute(context.Background(), ExecuteInput{
 		SessionKey: "task-a:execute",
 		Workspace:  dir,
+		MaxTurns:   testMaxTurns,
 	}, nil)
 
 	require.Error(t, err, "turn exhaustion must fail loudly, unlike Run's graceful degradation")
 	assert.Contains(t, err.Error(), "exhausted")
-	assert.Equal(t, claudeExecutionMaxTurns, out.NumTurns, "partial output must still be reported alongside the error")
+	assert.Equal(t, testMaxTurns, out.NumTurns, "partial output must still be reported alongside the error")
 }
 
 func TestChatClientRunner_Execute_PropagatesUnderlyingError(t *testing.T) {
