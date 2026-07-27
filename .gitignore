@@ -27,9 +27,10 @@ go.work.sum
 # env file
 .env
 
-# WORKSPACE_ROOT default: now a gitstore checkout of its own (DATA_REPO_URL),
-# not tracked by this repo — see docs/engineering conventions.md's
-# Configuration section.
+# Stray data checkout landing directly under the repo root from a
+# misconfigured REPOS_ROOT (should point at a sibling directory, e.g.
+# D:\projects, not land inside the repo itself) — see /projects/ below for
+# the equivalent stray-clone case for project code repos.
 /data/
 
 # Editor/IDE
@@ -54,6 +55,6 @@ internal/web/dist/*
 .playwright-cli/*
 
 # Stray nested clone/worktree debris created directly under the repo root
-# by a misconfigured AGENT_REPOS_ROOT during local dev (should point at a
+# by a misconfigured REPOS_ROOT during local dev (should point at a
 # sibling directory, e.g. D:\projects, not land inside the repo itself).
 /projects/

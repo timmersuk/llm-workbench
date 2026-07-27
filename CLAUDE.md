@@ -27,11 +27,12 @@ are each swappable behind a narrow interface declared by the consumer (see
 ### Project Structure:
 
 A typical workspace within LLM Workbench is structured as follows, rooted at
-`WORKSPACE_ROOT` (defaults to `data/` — see `docs/engineering
-conventions.md`'s Configuration section):
+`workspaceRoot` — computed at startup from `REPOS_ROOT` (see `docs/engineering
+conventions.md`'s Configuration section), no longer a repo-relative `data/`
+default:
 
 ```
-data/                          (WORKSPACE_ROOT)
+<REPOS_ROOT>/llm-workbench-data/  (workspaceRoot — name derived from DATA_REPO_URL)
 ├── projects/
 │   ├── auth-service/
 │   │   ├── project.yaml
@@ -47,8 +48,8 @@ data/                          (WORKSPACE_ROOT)
 
 Code Repositories are external, referenced by projects.
 
-`WORKSPACE_ROOT` itself is a git working directory (`internal/gitstore`,
-built on `go-git` — no `git` binary required at runtime), not plain files:
+`workspaceRoot` itself is a git working directory (`internal/gitstore`,
+shells out to the `git` binary — not a pure-Go library), not plain files:
 every task/project create or update commits synchronously and locally,
 giving full history/diff/blame, and a background worker periodically
 pushes accumulated commits to `DATA_REPO_URL` (a mandatory startup config

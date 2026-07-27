@@ -87,7 +87,7 @@ type ClaudeRunner struct {
 // unattended multi-step implementation run to completion — reusing Run's
 // budget for Execute cut autonomous executions off mid-run well before they
 // could finish (see the blank-page bug this split was introduced to fix).
-// reposRoot is the configured AGENT_REPOS_ROOT value, held so CheckHealth
+// reposRoot is the configured REPOS_ROOT value, held so CheckHealth
 // can report unavailable when it's unset. knowledgeStore, if non-nil, is
 // exposed on every Run call via a second always-registered in-process MCP
 // server (docs/milestones/done/milestone9.md) — nil just means those two
@@ -111,7 +111,7 @@ func NewClaudeRunner(timeout, executeTimeout time.Duration, reposRoot string, kn
 // would spawn a real subprocess per check).
 func (r *ClaudeRunner) CheckHealth(_ context.Context) error {
 	if r.reposRoot == "" {
-		return errors.New("AGENT_REPOS_ROOT is not configured")
+		return errors.New("REPOS_ROOT is not configured")
 	}
 	if _, err := lookPath("claude"); err != nil {
 		return fmt.Errorf("claude CLI not found on PATH: %w", err)
@@ -316,7 +316,7 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	}
 
 	if in.Workspace == "" {
-		return nil, errors.New("claude-code requires a project repository checked out under AGENT_REPOS_ROOT")
+		return nil, errors.New("claude-code requires a project repository checked out under REPOS_ROOT")
 	}
 
 	opts := []claudecode.Option{

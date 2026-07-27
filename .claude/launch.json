@@ -12,7 +12,7 @@
     {
       "name": "backend-dev",
       "runtimeExecutable": "powershell",
-      "runtimeArgs": ["-NoProfile", "-Command", "Get-Content .env | Where-Object { $_ -match '^\\s*[^#][^=]*=' } | ForEach-Object { $k,$v = $_ -split '=',2; Set-Item \"env:$($k.Trim())\" $v.Trim() }; $env:AGENT_REPOS_ROOT = (Resolve-Path '..').Path; go run ./cmd/server"],
+      "runtimeArgs": ["-NoProfile", "-Command", "Get-Content .env | Where-Object { $_ -match '^\\s*[^#][^=]*=' } | ForEach-Object { $k,$v = $_ -split '=',2; Set-Item \"env:$($k.Trim())\" $v.Trim() }; $env:REPOS_ROOT = (Resolve-Path '..').Path; go run ./cmd/server"],
       "cwd": ".",
       "port": 8080
     }

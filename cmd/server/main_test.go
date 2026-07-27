@@ -39,7 +39,7 @@ func testConfig(t *testing.T) config {
 		llmTimeout:            time.Second,
 		agentTimeout:          time.Second,
 		agentExecutionTimeout: time.Second,
-		agentReposRoot:        t.TempDir(),
+		reposRoot:             t.TempDir(),
 		draftMCPPath:          "draftmcp",
 		shutdownTimeout:       5 * time.Second,
 	}

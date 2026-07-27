@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +37,7 @@ var BuildID = "dev"
 // nearly all of it.
 type config struct {
 	httpAddr              string
+	reposRoot             string
 	workspaceRoot         string
 	dataRepoURL           string
 	pushInterval          time.Duration
@@ -45,35 +49,53 @@ type config struct {
 	llmTimeout            time.Duration
 	agentTimeout          time.Duration
 	agentExecutionTimeout time.Duration
-	agentReposRoot        string
 	draftMCPPath          string
 	shutdownTimeout       time.Duration
 }
 
 // loadConfig reads every environment-derived setting main() needs.
-// AGENT_REPOS_ROOT and DATA_REPO_URL are hard startup requirements (via
+// REPOS_ROOT and DATA_REPO_URL are hard startup requirements (via
 // utils.MustGetEnv, which itself calls logrus.Fatal and exits the process)
-// — every agent runner capable of introspecting a task's reference
-// repository needs the former; the latter is gitstore.Open's mandatory
-// "origin" remote (see run()'s doc comment below for the subprocess-boot
-// provisioning pattern a caller must follow). Kept as its own step (called
-// directly from main(), before run()) rather than folded into run() so
-// run() itself never has a Fatal-style exit path: it stays main()'s sole
-// point of process termination.
+// — REPOS_ROOT is the shared parent directory every sibling repo (the
+// gitstore data checkout, and every project's code repository an agent
+// runner needs to introspect) is checked out under; DATA_REPO_URL is
+// gitstore.Open's mandatory "origin" remote (see run()'s doc comment below
+// for the subprocess-boot provisioning pattern a caller must follow).
+// workspaceRoot is derived, not read directly: REPOS_ROOT joined with a
+// directory name derived from DATA_REPO_URL (repoDirName), the same
+// convention `git clone` itself uses to name a destination directory from
+// a remote URL — so the data checkout is just another sibling repo under
+// REPOS_ROOT. Kept as its own step (called directly from main(), before
+// run()) rather than folded into run() so run() itself never has a
+// Fatal-style exit path: it stays main()'s sole point of process
+// termination.
 func loadConfig() config {
+	reposRoot := utils.MustGetEnv("REPOS_ROOT")
+	// DATA_REPO_URL is a real git remote URL — anything `git clone`
+	// itself accepts (a GitHub HTTPS/SSH URL, a local path, etc.).
+	// gitstore shells out to the `git` binary rather than a pure-Go
+	// library specifically so auth is never this process's problem:
+	// clone/push run through whatever credential helper or SSH agent
+	// the operator's machine already has configured, exactly as if
+	// they'd typed the command themselves. See gitstore.Open's doc
+	// comment for the clone/resume/ambiguous-workspace contract this
+	// drives.
+	dataRepoURL := utils.MustGetEnv("DATA_REPO_URL")
+
+	dataDirName, err := repoDirName(dataRepoURL)
+	if err != nil {
+		logrus.WithError(err).WithField("dataRepoURL", dataRepoURL).
+			Fatal("cannot derive a workspace directory name from DATA_REPO_URL")
+	}
+
 	return config{
-		httpAddr:      utils.GetEnvDefault("HTTP_ADDR", ":8080"),
-		workspaceRoot: utils.GetEnvDefault("WORKSPACE_ROOT", "data"),
-		// DATA_REPO_URL is a real git remote URL — anything `git clone`
-		// itself accepts (a GitHub HTTPS/SSH URL, a local path, etc.).
-		// gitstore shells out to the `git` binary rather than a pure-Go
-		// library specifically so auth is never this process's problem:
-		// clone/push run through whatever credential helper or SSH agent
-		// the operator's machine already has configured, exactly as if
-		// they'd typed the command themselves. See gitstore.Open's doc
-		// comment for the clone/resume/ambiguous-workspace contract this
-		// drives.
-		dataRepoURL: utils.MustGetEnv("DATA_REPO_URL"),
+		httpAddr:  utils.GetEnvDefault("HTTP_ADDR", ":8080"),
+		reposRoot: reposRoot,
+		// The data checkout is just another sibling repo under reposRoot,
+		// named the same way `git clone` itself would name its destination
+		// directory from dataRepoURL (see repoDirName).
+		workspaceRoot: filepath.Join(reposRoot, dataDirName),
+		dataRepoURL:   dataRepoURL,
 		// How often the background push worker (gitstore.Store.RunPushWorker)
 		// attempts to push accumulated local commits to DATA_REPO_URL.
 		pushInterval: utils.GetEnvDefault("PUSH_INTERVAL", 30*time.Second),
@@ -92,10 +114,6 @@ func loadConfig() config {
 		// autonomous executions off mid-run well before they could finish (see
 		// docs/engineering conventions.md's AGENT_TIMEOUT entry).
 		agentExecutionTimeout: utils.GetEnvDefault("AGENT_EXECUTION_TIMEOUT", 30*time.Minute),
-		// Required: any agent runner that can introspect a task's reference
-		// repository (claude-code, codex) needs to know where to find/clone
-		// it, so the server refuses to start without one.
-		agentReposRoot: utils.MustGetEnv("AGENT_REPOS_ROOT"),
 		// draftmcp is built as a sibling binary alongside this one (see
 		// Makefile's build-go-local) — defaults to that convention, override
 		// via DRAFTMCP_PATH for a non-standard layout (e.g. local `go run`).
@@ -108,6 +126,45 @@ func loadConfig() config {
 		// GetEnvDefault pattern.
 		shutdownTimeout: utils.GetEnvDefault("SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
+}
+
+// scpLikeSSH matches the scp-like SSH shorthand git accepts as a clone URL
+// ("user@host:path/repo.git"). Requiring an "@" before the colon is what
+// keeps this from misfiring on a Windows drive-letter path ("D:\repo"),
+// which has a colon but no "@".
+var scpLikeSSH = regexp.MustCompile(`^[^/@\s]+@[^/\s]+:`)
+
+// repoDirName derives the local directory name a git remote (or a plain
+// local filesystem path, as used directly by tests and local dev) should
+// be checked out under as a sibling repo beneath REPOS_ROOT — mirroring
+// the convention `git clone` itself uses: a clone's directory takes its
+// name from the remote's last path segment with a trailing ".git"
+// stripped (e.g. both "https://github.com/timmersuk/llm-workbench-data.git"
+// and "git@github.com:timmersuk/llm-workbench-data.git" name the
+// directory "llm-workbench-data"). Handles every form DATA_REPO_URL's own
+// doc comment says `git clone` itself accepts: a scheme'd URL
+// (https/http/ssh/git/...), the scp-like ssh shorthand, or a plain local
+// filesystem path (POSIX or Windows, absolute or relative). Returns an
+// error if the derived name would be empty, ".", or "/".
+func repoDirName(url string) (string, error) {
+	trimmed := strings.TrimSpace(url)
+
+	switch {
+	case strings.Contains(trimmed, "://"):
+		trimmed = trimmed[strings.Index(trimmed, "://")+len("://"):]
+	case scpLikeSSH.MatchString(trimmed):
+		trimmed = trimmed[strings.Index(trimmed, ":")+1:]
+	}
+
+	// Normalize Windows separators so path.Base sees forward slashes
+	// regardless of whether trimmed came from a URL or a native path.
+	trimmed = strings.ReplaceAll(trimmed, `\`, "/")
+
+	base := strings.TrimSuffix(path.Base(trimmed), ".git")
+	if base == "" || base == "." || base == "/" {
+		return "", fmt.Errorf("cannot derive a directory name from %q", url)
+	}
+	return base, nil
 }
 
 func main() {
@@ -140,9 +197,12 @@ func main() {
 //     `git init --bare <tmp>/data-remote.git`, exactly as this package's
 //     own tests do — see internal/gitstore/gitstore_test.go's
 //     newBareRemote helper.
-//  2. Export DATA_REPO_URL=<tmp>/data-remote.git (and WORKSPACE_ROOT
-//     pointing at another empty throwaway directory) in the subprocess's
-//     environment before starting it.
+//  2. Export DATA_REPO_URL=<tmp>/data-remote.git and REPOS_ROOT pointing at
+//     another empty throwaway directory in the subprocess's environment
+//     before starting it — loadConfig derives workspaceRoot as REPOS_ROOT
+//     joined with a name derived from DATA_REPO_URL (see repoDirName), so
+//     an empty REPOS_ROOT still produces an empty, absent workspaceRoot
+//     dir, satisfying gitstore.Open's "clone" path.
 //
 // gitstore.Open's clone step (an empty bare remote) is just `git clone`,
 // which succeeds against an empty remote the same way it would for a
@@ -190,8 +250,8 @@ func run(ctx context.Context, cfg config) error {
 	// always-available knowledge query tools (docs/milestones/done/milestone9.md)
 	// answer identically regardless of which executor a conversation uses.
 	agentRunners := map[string]agentrunner.AgentRunner{
-		"claude-code": agentrunner.NewClaudeRunner(cfg.agentTimeout, cfg.agentExecutionTimeout, cfg.agentReposRoot, knowledgeStore),
-		"codex":       agentrunner.NewCodexRunner(cfg.agentTimeout, cfg.agentExecutionTimeout, cfg.agentReposRoot, cfg.draftMCPPath, knowledgeRoot),
+		"claude-code": agentrunner.NewClaudeRunner(cfg.agentTimeout, cfg.agentExecutionTimeout, cfg.reposRoot, knowledgeStore),
+		"codex":       agentrunner.NewCodexRunner(cfg.agentTimeout, cfg.agentExecutionTimeout, cfg.reposRoot, cfg.draftMCPPath, knowledgeRoot),
 		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
 			client: chat.NewOpenAIClient(cfg.llmBaseURL, cfg.llmAPIKey, cfg.llmTimeout),
 			model:  cfg.llmModel,
@@ -203,16 +263,16 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("mounting embedded frontend: %w", err)
 	}
 
-	router := api.NewRouter(store.Projects, store.Tasks, knowledgeStore, agentRunners, cfg.agentReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
+	router := api.NewRouter(store.Projects, store.Tasks, knowledgeStore, agentRunners, cfg.reposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
-		"addr":           cfg.httpAddr,
-		"workspaceRoot":  cfg.workspaceRoot,
-		"dataRepoURL":    cfg.dataRepoURL,
-		"llmBaseURL":     cfg.llmBaseURL,
-		"llmModel":       cfg.llmModel,
-		"agentReposRoot": cfg.agentReposRoot,
-		"buildID":        BuildID,
+		"addr":          cfg.httpAddr,
+		"reposRoot":     cfg.reposRoot,
+		"workspaceRoot": cfg.workspaceRoot,
+		"dataRepoURL":   cfg.dataRepoURL,
+		"llmBaseURL":    cfg.llmBaseURL,
+		"llmModel":      cfg.llmModel,
+		"buildID":       BuildID,
 	}).Info("starting llm-workbench server")
 
 	srv := &http.Server{Addr: cfg.httpAddr, Handler: router}
