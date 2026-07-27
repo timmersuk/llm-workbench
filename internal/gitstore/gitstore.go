@@ -18,8 +18,19 @@
 // (docs/engineering conventions.md's Storage & file layout section) — and
 // layers git plumbing around them: startup clone/resume (this file),
 // synchronous local commits on every mutation (commit.go), and a
-// background push worker (push.go). Read-only methods bypass git
-// entirely and delegate straight through to the wrapped FileStores.
+// background push worker (push.go). Read-only methods bypass git entirely
+// and delegate straight through to the wrapped FileStores.
+//
+// project.Store and task.Store both declare methods named List/Get/Create/
+// Update with different signatures (task.Store's take an extra leading
+// projectID), so no single Go type can implement both interfaces at once —
+// Go has no method overloading. Store is therefore a pair of distinct
+// wrapper types, ProjectStore and TaskStore, sharing one underlying git
+// checkout/mutex/push-worker via the unexported core they both hold a
+// pointer to. This mirrors how internal/api.Server already takes Projects
+// and Tasks as two separate fields (internal/api/router.go), so callers
+// (cmd/server/main.go) wire Store.Projects/Store.Tasks in exactly the same
+// shape FileStore-backed construction used.
 package gitstore
 
 import (
@@ -52,28 +63,57 @@ const originRemoteName = "origin"
 // deployment or e2e test out of this state.
 var ErrAmbiguousWorkspace = errors.New("workspace root is non-empty and is not a matching clone of the configured data repository")
 
-// Store is a git-backed implementation of project.Store, task.Store,
-// api.ProjectStore, and api.TaskStore: every mutating call commits
-// synchronously and locally to the git repository checked out at Root
-// (commit.go), serialized by a single process-wide mutex — every
-// task.yaml/project.yaml create or update becomes a real commit, giving
-// full history/diff/blame. A single process-wide write mutex serializing
-// every commit across every project is a known future scaling risk,
-// accepted for this milestone (docs/milestones/git-backed-storage's own
-// assumptions) rather than mitigated with finer-grained locking.
-type Store struct {
-	root string
-	repo *git.Repository
+// core is the git plumbing shared by ProjectStore and TaskStore: the
+// checked-out repository, the dataRepoURL it tracks as "origin" (kept only
+// for logging — push.go), and the single process-wide mutex serializing
+// every operation that touches repo, whether a local commit (commit.go) or
+// a push (push.go). A single process-wide write mutex serializing every
+// commit across every project is a known future scaling risk, accepted for
+// this milestone (docs/milestones/git-backed-storage's own assumptions)
+// rather than mitigated with finer-grained locking.
+type core struct {
+	root        string
+	dataRepoURL string
+	repo        *git.Repository
 
-	// mu serializes every Create/Update end to end (FileStore write + git
-	// add + git commit), not just the git commit step — two concurrent
-	// writers racing between "write file" and "commit" could otherwise
-	// interleave, attributing one writer's file change to the other's
-	// commit message (or vice versa).
+	// mu serializes every git-touching operation end to end — not just the
+	// `git commit`/`git push` step itself, but (for commits) the FileStore
+	// write that precedes it too: two concurrent writers racing between
+	// "write file" and "commit" could otherwise interleave, attributing one
+	// writer's file change to the other's commit message (or vice versa).
 	mu sync.Mutex
+}
 
-	projects *project.FileStore
-	tasks    *task.FileStore
+// Store bundles the two git-backed stores this package provides — Projects
+// (satisfying project.Store / api.ProjectStore) and Tasks (satisfying
+// task.Store / api.TaskStore) — both backed by the same git checkout. See
+// this package's doc comment for why Store itself implements neither
+// interface directly.
+type Store struct {
+	Projects *ProjectStore
+	Tasks    *TaskStore
+
+	core *core
+}
+
+// ProjectStore is the git-backed half of Store satisfying project.Store /
+// api.ProjectStore: reads delegate straight to the wrapped
+// project.FileStore, writes go through core so they commit synchronously
+// and locally (commit.go).
+type ProjectStore struct {
+	core  *core
+	files *project.FileStore
+}
+
+// TaskStore is the git-backed half of Store satisfying task.Store /
+// api.TaskStore: reads delegate straight to the wrapped task.FileStore,
+// writes go through core so they commit synchronously and locally
+// (commit.go). Like task.FileStore, a single instance serves every
+// project — every method takes an explicit projectID (task.Store's doc
+// comment).
+type TaskStore struct {
+	core  *core
+	files *task.FileStore
 }
 
 // Open resolves workspaceRoot into a working git checkout tracking
@@ -139,11 +179,11 @@ func Open(workspaceRoot, dataRepoURL string) (*Store, error) {
 		return nil, fmt.Errorf("creating projects root %s: %w", projectsRoot, err)
 	}
 
+	c := &core{root: workspaceRoot, dataRepoURL: dataRepoURL, repo: repo}
 	return &Store{
-		root:     workspaceRoot,
-		repo:     repo,
-		projects: project.NewFileStore(projectsRoot),
-		tasks:    task.NewFileStore(projectsRoot),
+		core:     c,
+		Projects: &ProjectStore{core: c, files: project.NewFileStore(projectsRoot)},
+		Tasks:    &TaskStore{core: c, files: task.NewFileStore(projectsRoot)},
 	}, nil
 }
 

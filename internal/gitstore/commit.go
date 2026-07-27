@@ -19,9 +19,9 @@ import (
 // "mechanical safety commit" posture for the same reason.
 var commitAuthor = &object.Signature{Name: "llm-workbench", Email: "llm-workbench@localhost"}
 
-// commit stages every change under Root (`git add -A` via go-git's
+// commit stages every change under root (`git add -A` via go-git's
 // AddOptions{All: true}) and commits it with message, timestamped now.
-// Must only be called with s.mu already held — see Store.mu's doc comment
+// Must only be called with c.mu already held — see core.mu's doc comment
 // for why the whole write (FileStore write + stage + commit), not just
 // this step, needs to be serialized.
 //
@@ -30,8 +30,8 @@ var commitAuthor = &object.Signature{Name: "llm-workbench", Email: "llm-workbenc
 // FileStore write that always changes something, so this path shouldn't
 // normally be reached, but a no-op is strictly safer than either an empty
 // commit or a spurious error.
-func (s *Store) commit(message string) error {
-	wt, err := s.repo.Worktree()
+func (c *core) commit(message string) error {
+	wt, err := c.repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("resolving worktree: %w", err)
 	}
@@ -53,19 +53,19 @@ func (s *Store) commit(message string) error {
 	return nil
 }
 
-// withCommit runs fn (a FileStore write) with s.mu held, then commits
+// withCommit runs fn (a FileStore write) with c.mu held, then commits
 // message if fn succeeded. fn's own error, if any, is returned unchanged
 // without attempting a commit — whatever fn already wrote to disk (if
 // anything) is left uncommitted rather than lost: it's picked up
 // automatically by this store's next successful commit's own `git add
 // -A`, rather than needing its own recovery path.
-func (s *Store) withCommit(message string, fn func() error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (c *core) withCommit(message string, fn func() error) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if err := fn(); err != nil {
 		return err
 	}
-	if err := s.commit(message); err != nil {
+	if err := c.commit(message); err != nil {
 		return fmt.Errorf("committing %q: %w", message, err)
 	}
 	return nil
@@ -75,18 +75,18 @@ func (s *Store) withCommit(message string, fn func() error) error {
 
 // List delegates straight to the wrapped project.FileStore — a read, no
 // git or locking involved.
-func (s *Store) List() (project.ListResult, error) { return s.projects.List() }
+func (s *ProjectStore) List() (project.ListResult, error) { return s.files.List() }
 
 // Get delegates straight to the wrapped project.FileStore.
-func (s *Store) Get(id string) (project.Project, error) { return s.projects.Get(id) }
+func (s *ProjectStore) Get(id string) (project.Project, error) { return s.files.Get(id) }
 
 // Create writes a new project via the wrapped project.FileStore and
 // commits the result synchronously and locally.
-func (s *Store) Create(in project.CreateInput) (project.Project, error) {
+func (s *ProjectStore) Create(in project.CreateInput) (project.Project, error) {
 	var created project.Project
-	err := s.withCommit(fmt.Sprintf("Create project %q", in.Name), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Create project %q", in.Name), func() error {
 		var err error
-		created, err = s.projects.Create(in)
+		created, err = s.files.Create(in)
 		return err
 	})
 	if err != nil {
@@ -97,11 +97,11 @@ func (s *Store) Create(in project.CreateInput) (project.Project, error) {
 
 // Update overwrites an existing project via the wrapped project.FileStore
 // and commits the result synchronously and locally.
-func (s *Store) Update(id string, in project.UpdateInput) (project.Project, error) {
+func (s *ProjectStore) Update(id string, in project.UpdateInput) (project.Project, error) {
 	var updated project.Project
-	err := s.withCommit(fmt.Sprintf("Update project %s", id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Update project %s", id), func() error {
 		var err error
-		updated, err = s.projects.Update(id, in)
+		updated, err = s.files.Update(id, in)
 		return err
 	})
 	if err != nil {
@@ -113,18 +113,18 @@ func (s *Store) Update(id string, in project.UpdateInput) (project.Project, erro
 // --- task.Store / api.TaskStore ---
 
 // List delegates straight to the wrapped task.FileStore.
-func (s *Store) List(projectID string) (task.ListResult, error) { return s.tasks.List(projectID) }
+func (s *TaskStore) List(projectID string) (task.ListResult, error) { return s.files.List(projectID) }
 
 // Get delegates straight to the wrapped task.FileStore.
-func (s *Store) Get(projectID, id string) (task.Task, error) { return s.tasks.Get(projectID, id) }
+func (s *TaskStore) Get(projectID, id string) (task.Task, error) { return s.files.Get(projectID, id) }
 
 // Create writes a new task via the wrapped task.FileStore and commits the
 // result synchronously and locally.
-func (s *Store) Create(projectID string, t task.Task) (task.Task, error) {
+func (s *TaskStore) Create(projectID string, t task.Task) (task.Task, error) {
 	var created task.Task
-	err := s.withCommit(fmt.Sprintf("Create task %s/%s", projectID, t.ID), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Create task %s/%s", projectID, t.ID), func() error {
 		var err error
-		created, err = s.tasks.Create(projectID, t)
+		created, err = s.files.Create(projectID, t)
 		return err
 	})
 	if err != nil {
@@ -135,11 +135,11 @@ func (s *Store) Create(projectID string, t task.Task) (task.Task, error) {
 
 // Update overwrites an existing task via the wrapped task.FileStore and
 // commits the result synchronously and locally.
-func (s *Store) Update(projectID, id string, t task.Task) (task.Task, error) {
+func (s *TaskStore) Update(projectID, id string, t task.Task) (task.Task, error) {
 	var updated task.Task
-	err := s.withCommit(fmt.Sprintf("Update task %s/%s", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Update task %s/%s", projectID, id), func() error {
 		var err error
-		updated, err = s.tasks.Update(projectID, id, t)
+		updated, err = s.files.Update(projectID, id, t)
 		return err
 	})
 	if err != nil {
@@ -149,27 +149,27 @@ func (s *Store) Update(projectID, id string, t task.Task) (task.Task, error) {
 }
 
 // GetContext delegates straight to the wrapped task.FileStore.
-func (s *Store) GetContext(projectID, id string) (task.Context, error) {
-	return s.tasks.GetContext(projectID, id)
+func (s *TaskStore) GetContext(projectID, id string) (task.Context, error) {
+	return s.files.GetContext(projectID, id)
 }
 
 // GetPlan delegates straight to the wrapped task.FileStore.
-func (s *Store) GetPlan(projectID, id string) (task.Plan, error) {
-	return s.tasks.GetPlan(projectID, id)
+func (s *TaskStore) GetPlan(projectID, id string) (task.Plan, error) {
+	return s.files.GetPlan(projectID, id)
 }
 
 // GetConversation delegates straight to the wrapped task.FileStore.
-func (s *Store) GetConversation(projectID, id, stage string) (task.Conversation, error) {
-	return s.tasks.GetConversation(projectID, id, stage)
+func (s *TaskStore) GetConversation(projectID, id, stage string) (task.Conversation, error) {
+	return s.files.GetConversation(projectID, id, stage)
 }
 
 // AppendConversationMessages appends via the wrapped task.FileStore and
 // commits the result synchronously and locally.
-func (s *Store) AppendConversationMessages(projectID, id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error) {
+func (s *TaskStore) AppendConversationMessages(projectID, id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error) {
 	var conv task.Conversation
-	err := s.withCommit(fmt.Sprintf("Append %s conversation messages for %s/%s", stage, projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Append %s conversation messages for %s/%s", stage, projectID, id), func() error {
 		var err error
-		conv, err = s.tasks.AppendConversationMessages(projectID, id, stage, msgs...)
+		conv, err = s.files.AppendConversationMessages(projectID, id, stage, msgs...)
 		return err
 	})
 	if err != nil {
@@ -180,11 +180,11 @@ func (s *Store) AppendConversationMessages(projectID, id, stage string, msgs ...
 
 // ReplaceConversationMessages overwrites via the wrapped task.FileStore and
 // commits the result synchronously and locally.
-func (s *Store) ReplaceConversationMessages(projectID, id, stage string, msgs []task.ConversationMessage) (task.Conversation, error) {
+func (s *TaskStore) ReplaceConversationMessages(projectID, id, stage string, msgs []task.ConversationMessage) (task.Conversation, error) {
 	var conv task.Conversation
-	err := s.withCommit(fmt.Sprintf("Replace %s conversation messages for %s/%s", stage, projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Replace %s conversation messages for %s/%s", stage, projectID, id), func() error {
 		var err error
-		conv, err = s.tasks.ReplaceConversationMessages(projectID, id, stage, msgs)
+		conv, err = s.files.ReplaceConversationMessages(projectID, id, stage, msgs)
 		return err
 	})
 	if err != nil {
@@ -195,11 +195,11 @@ func (s *Store) ReplaceConversationMessages(projectID, id, stage string, msgs []
 
 // FinalizeRequirements persists via the wrapped task.FileStore and commits
 // the result synchronously and locally.
-func (s *Store) FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error) {
+func (s *TaskStore) FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error) {
 	var t task.Task
-	err := s.withCommit(fmt.Sprintf("Finalize requirements for %s/%s", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Finalize requirements for %s/%s", projectID, id), func() error {
 		var err error
-		t, err = s.tasks.FinalizeRequirements(projectID, id, draft)
+		t, err = s.files.FinalizeRequirements(projectID, id, draft)
 		return err
 	})
 	if err != nil {
@@ -210,11 +210,11 @@ func (s *Store) FinalizeRequirements(projectID, id string, draft task.Requiremen
 
 // FinalizePlan persists via the wrapped task.FileStore and commits the
 // result synchronously and locally.
-func (s *Store) FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error) {
+func (s *TaskStore) FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error) {
 	var t task.Task
-	err := s.withCommit(fmt.Sprintf("Finalize plan for %s/%s", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Finalize plan for %s/%s", projectID, id), func() error {
 		var err error
-		t, err = s.tasks.FinalizePlan(projectID, id, plan)
+		t, err = s.files.FinalizePlan(projectID, id, plan)
 		return err
 	})
 	if err != nil {
@@ -225,11 +225,11 @@ func (s *Store) FinalizePlan(projectID, id string, plan task.Plan) (task.Task, e
 
 // FinalizeReview persists via the wrapped task.FileStore and commits the
 // result synchronously and locally.
-func (s *Store) FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error) {
+func (s *TaskStore) FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error) {
 	var t task.Task
-	err := s.withCommit(fmt.Sprintf("Finalize review for %s/%s", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Finalize review for %s/%s", projectID, id), func() error {
 		var err error
-		t, err = s.tasks.FinalizeReview(projectID, id, draft)
+		t, err = s.files.FinalizeReview(projectID, id, draft)
 		return err
 	})
 	if err != nil {
@@ -240,11 +240,11 @@ func (s *Store) FinalizeReview(projectID, id string, draft task.ReviewDraft) (ta
 
 // MarkPRMerged persists via the wrapped task.FileStore and commits the
 // result synchronously and locally.
-func (s *Store) MarkPRMerged(projectID, id string) (task.Task, error) {
+func (s *TaskStore) MarkPRMerged(projectID, id string) (task.Task, error) {
 	var t task.Task
-	err := s.withCommit(fmt.Sprintf("Mark PR merged for %s/%s", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Mark PR merged for %s/%s", projectID, id), func() error {
 		var err error
-		t, err = s.tasks.MarkPRMerged(projectID, id)
+		t, err = s.files.MarkPRMerged(projectID, id)
 		return err
 	})
 	if err != nil {
@@ -255,11 +255,11 @@ func (s *Store) MarkPRMerged(projectID, id string) (task.Task, error) {
 
 // RecordPullRequest persists via the wrapped task.FileStore and commits
 // the result synchronously and locally.
-func (s *Store) RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error) {
+func (s *TaskStore) RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error) {
 	var t task.Task
-	err := s.withCommit(fmt.Sprintf("Record pull request for %s/%s", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Record pull request for %s/%s", projectID, id), func() error {
 		var err error
-		t, err = s.tasks.RecordPullRequest(projectID, id, pr)
+		t, err = s.files.RecordPullRequest(projectID, id, pr)
 		return err
 	})
 	if err != nil {
@@ -270,11 +270,11 @@ func (s *Store) RecordPullRequest(projectID, id string, pr task.PullRequest) (ta
 
 // ReviseToRequirements persists via the wrapped task.FileStore and commits
 // the result synchronously and locally.
-func (s *Store) ReviseToRequirements(projectID, id string) (task.Task, error) {
+func (s *TaskStore) ReviseToRequirements(projectID, id string) (task.Task, error) {
 	var t task.Task
-	err := s.withCommit(fmt.Sprintf("Revise %s/%s to requirements", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Revise %s/%s to requirements", projectID, id), func() error {
 		var err error
-		t, err = s.tasks.ReviseToRequirements(projectID, id)
+		t, err = s.files.ReviseToRequirements(projectID, id)
 		return err
 	})
 	if err != nil {
@@ -285,11 +285,11 @@ func (s *Store) ReviseToRequirements(projectID, id string) (task.Task, error) {
 
 // ReviseToPlanning persists via the wrapped task.FileStore and commits the
 // result synchronously and locally.
-func (s *Store) ReviseToPlanning(projectID, id string) (task.Task, error) {
+func (s *TaskStore) ReviseToPlanning(projectID, id string) (task.Task, error) {
 	var t task.Task
-	err := s.withCommit(fmt.Sprintf("Revise %s/%s to planning", projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Revise %s/%s to planning", projectID, id), func() error {
 		var err error
-		t, err = s.tasks.ReviseToPlanning(projectID, id)
+		t, err = s.files.ReviseToPlanning(projectID, id)
 		return err
 	})
 	if err != nil {
@@ -301,17 +301,17 @@ func (s *Store) ReviseToPlanning(projectID, id string) (task.Task, error) {
 // NextExecutionID delegates straight to the wrapped task.FileStore — it
 // never writes anything (see task.FileStore.NextExecutionID's doc
 // comment), so no commit is needed.
-func (s *Store) NextExecutionID(projectID, id string) (string, error) {
-	return s.tasks.NextExecutionID(projectID, id)
+func (s *TaskStore) NextExecutionID(projectID, id string) (string, error) {
+	return s.files.NextExecutionID(projectID, id)
 }
 
 // RecordExecution persists via the wrapped task.FileStore and commits the
 // result synchronously and locally.
-func (s *Store) RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error) {
+func (s *TaskStore) RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error) {
 	var recorded task.Execution
-	err := s.withCommit(fmt.Sprintf("Record execution %s for %s/%s", exec.ExecutionID, projectID, id), func() error {
+	err := s.core.withCommit(fmt.Sprintf("Record execution %s for %s/%s", exec.ExecutionID, projectID, id), func() error {
 		var err error
-		recorded, err = s.tasks.RecordExecution(projectID, id, exec)
+		recorded, err = s.files.RecordExecution(projectID, id, exec)
 		return err
 	})
 	if err != nil {
@@ -321,11 +321,11 @@ func (s *Store) RecordExecution(projectID, id string, exec task.Execution) (task
 }
 
 // ListExecutions delegates straight to the wrapped task.FileStore.
-func (s *Store) ListExecutions(projectID, id string) ([]task.Execution, error) {
-	return s.tasks.ListExecutions(projectID, id)
+func (s *TaskStore) ListExecutions(projectID, id string) ([]task.Execution, error) {
+	return s.files.ListExecutions(projectID, id)
 }
 
 // ListReviews delegates straight to the wrapped task.FileStore.
-func (s *Store) ListReviews(projectID, id string) ([]task.Review, error) {
-	return s.tasks.ListReviews(projectID, id)
+func (s *TaskStore) ListReviews(projectID, id string) ([]task.Review, error) {
+	return s.files.ListReviews(projectID, id)
 }
