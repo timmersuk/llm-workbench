@@ -29,19 +29,26 @@ here for the same reason.
 
 ## From Milestone 2 — Git-backed task/project storage
 
-Tasks and projects persist as plain files under `data/` (`WORKSPACE_ROOT`),
-read/written directly via `os.ReadFile`/`os.WriteFile` — no version
-history, no `.git/` of their own. Milestone 2 deliberately walked back an
-earlier "git-backed" framing (`docs/project_summary.md`, `CLAUDE.md`) to
-this simpler flat-file `FileStore`, deferring the git-backed version.
+**Resolved.** The `git-backed-storage` task
+(`data/projects/llm-workbench/tasks/git-backed-storage/task.yaml`,
+originally created 2026-07-06 as a `status: draft` backlog stub, never
+scheduled into a milestone) shipped `internal/gitstore.Store`: production
+persistence is `go-git`-backed again (`gitstore.Open`, synchronous local
+commits on every write, a background push worker to `DATA_REPO_URL`),
+restoring the "git-backed" framing this section originally flagged as
+walked back. `docs/project_summary.md` / `CLAUDE.md` reflect this again;
+see `docs/engineering conventions.md`'s Storage & file layout section for
+the implementation. `FileStore` (`internal/project`, `internal/task`)
+still exists — as a test fixture only, wrapped by `gitstore.Store` for its
+actual YAML read/write, no longer constructed directly in production.
 
-Already has a backlog stub:
-`data/projects/llm-workbench/tasks/git-backed-storage/task.yaml`
-(`status: draft`, `stage: requirements`, created 2026-07-06). Never
-scheduled into any milestone or PR since. Confirmed still true in code —
-`internal/task/store.go` and its siblings (`execution.go`, `review.go`,
-`context.go`, `conversation.go`, `plan.go`) are all plain-file I/O; no git
-library anywhere in the repo.
+Out of scope for that task, and still open: migrating any pre-existing
+populated `WORKSPACE_ROOT` onto GitStore, and untangling this repo's own
+`data/` folder from the main code repo's git tracking (it predates GitStore
+and is not itself a `DATA_REPO_URL`-compatible checkout) — both manual/
+deployment concerns, not further tracked here. Also out of scope: any
+in-app git browsing/history/diff/blame UI or API — GitStore only gives the
+underlying commits something to eventually surface.
 
 ## From Milestone 3 — Chat streams don't survive a refresh
 

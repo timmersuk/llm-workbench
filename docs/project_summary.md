@@ -168,6 +168,16 @@ Workspace
 A task belongs to exactly one project permanently — it is stored nested
 under that project and can never move to another.
 
+This workspace is itself a git repository (`GitStore`, built on the
+pure-Go `go-git` library — no `git` binary required at runtime): every
+task/project create or update is a real, synchronous local commit, giving
+full history/diff/blame over every artifact, with a background worker
+periodically pushing accumulated commits to a configured remote
+(`DATA_REPO_URL`). See `docs/engineering conventions.md`'s Storage & file
+layout section for the implementation, and `docs/milestones/milestone-orphans.md`
+for the (now-resolved) history of this framing being walked back and
+restored.
+
 ---
 
 ## 5. Workflow Model

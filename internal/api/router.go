@@ -17,7 +17,10 @@ import (
 )
 
 // ProjectStore lists, retrieves, creates, and updates projects. Satisfied
-// by *project.FileStore.
+// by *project.FileStore (a test fixture; no longer reachable in
+// production) and, in production, *gitstore.ProjectStore
+// (internal/gitstore), which wraps a *project.FileStore for the actual
+// read/write and commits every Create/Update to git.
 type ProjectStore interface {
 	List() (project.ListResult, error)
 	Get(id string) (project.Project, error)
@@ -31,7 +34,10 @@ type ProjectStore interface {
 // derived context.yaml/plan.yaml artifacts, each stage's persisted
 // Conversation, and the Finalize/Revise transitions (CONTEXT.md). A single
 // process-wide singleton, not one instance per project. Satisfied by
-// *task.FileStore.
+// *task.FileStore (a test fixture; no longer reachable in production) and,
+// in production, *gitstore.TaskStore (internal/gitstore), which wraps a
+// *task.FileStore for the actual read/write and commits every mutating
+// call to git.
 type TaskStore interface {
 	List(projectID string) (task.ListResult, error)
 	Get(projectID, id string) (task.Task, error)

@@ -47,6 +47,14 @@ data/                          (WORKSPACE_ROOT)
 
 Code Repositories are external, referenced by projects.
 
+`WORKSPACE_ROOT` itself is a git working directory (`internal/gitstore`,
+built on `go-git` — no `git` binary required at runtime), not plain files:
+every task/project create or update commits synchronously and locally,
+giving full history/diff/blame, and a background worker periodically
+pushes accumulated commits to `DATA_REPO_URL` (a mandatory startup config
+— the server refuses to start without it). See `docs/engineering
+conventions.md`'s Storage & file layout section for the implementation.
+
 ### Workflow Model:
 
 Tasks progress through explicit stages: `Requirements → Architecture → Planning → Implementation → Review → Completion`. Each stage produces artifacts and can be revisited or trigger recovery flows upon failure.

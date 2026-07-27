@@ -39,6 +39,12 @@ doesn't have to be re-derived or re-litigated later.
   fails to parse. Required vars use the `utils.MustGetEnv*` family, which
   calls `logrus.Fatalf` on missing or invalid values. Don't hand-roll
   `os.LookupEnv`/`strconv` calls outside these helpers.
+* `DATA_REPO_URL` (required, `utils.MustGetEnv`) names the git remote
+  `gitstore.Open` clones/resumes `WORKSPACE_ROOT` against (Storage & file
+  layout below) — treated strictly as a local filesystem path this
+  milestone, no network transport or auth. `PUSH_INTERVAL` (optional,
+  default 30s) controls how often the background push worker attempts to
+  push local commits to it.
 
 ## Graceful shutdown
 
@@ -70,23 +76,57 @@ doesn't have to be re-derived or re-litigated later.
 
 ## Storage & file layout
 
-* Project persistence is a `FileStore{Root string}` (`internal/project/store.go`)
-  constructed via `NewFileStore(root)`, laid out on disk as
-  `<root>/<projectId>/project.yaml`. Task persistence
-  (`internal/task/store.go`) is the same `FileStore{Root}` shape, but
-  `internal/task` has zero knowledge of `internal/project` — a task store is
-  always constructed rooted at a single project's tasks directory,
-  resolved dynamically per request via `project.FileStore.TasksRoot(projectID)`
-  (`filepath.Join(s.Root, projectID, "tasks")`). The root defaults to
+* Production persistence is git-backed: `internal/gitstore.Store`
+  (`internal/gitstore/gitstore.go`, `commit.go`, `push.go`), built on the
+  pure-Go `go-git` library rather than shelling out to a `git` binary (this
+  repo's "prefer open standards" invariant, plus this milestone's explicit
+  ban on a running `git` binary as a hard runtime dependency —
+  `internal/gitutil`'s own shell-out is a different, already-installed-by-
+  the-operator dependency for project *code* repositories, not this store's
+  own persistence). `gitstore.Open(workspaceRoot, dataRepoURL)` resolves
+  `WORKSPACE_ROOT` into a working checkout tracking `DATA_REPO_URL` as its
+  `origin` remote — cloning into an empty root, resuming an existing
+  matching checkout, or erroring (`ErrAmbiguousWorkspace`) on anything else
+  — then every `Create`/`Update` commits synchronously and locally,
+  serialized by one process-wide mutex, while a background goroutine
+  (`Store.RunPushWorker`) periodically pushes accumulated commits to
+  `origin`, logging and retrying indefinitely on failure and never pulling
+  after startup. `cmd/server/main.go` requires `DATA_REPO_URL` at startup
+  (`utils.MustGetEnv`) — the server refuses to start without it.
+* `gitstore.Store` doesn't implement `project.Store`/`task.Store` itself —
+  Go has no method overloading, and the two interfaces both declare
+  `List`/`Get`/`Create`/`Update` with different signatures — so it splits
+  into `Store.Projects` (`*gitstore.ProjectStore`) and `Store.Tasks`
+  (`*gitstore.TaskStore`), two types sharing one underlying checkout/mutex,
+  matching how `internal/api.Server` already takes `Projects`/`Tasks` as
+  two separate fields (`internal/api/router.go`). Both wrap a
+  `FileStore` (below) for the actual YAML read/write, adding git plumbing
+  around it; read-only methods bypass git entirely and delegate straight
+  through.
+* Underneath GitStore, the on-disk layout and the actual YAML read/write
+  is unchanged from the pre-GitStore `FileStore{Root string}` shape:
+  project persistence (`internal/project/store.go`, `NewFileStore(root)`)
+  lays out `<root>/<projectId>/project.yaml`. Task persistence
+  (`internal/task/store.go`) is the same `FileStore{Root}` shape, but a
+  single process-wide instance serves *every* project — every method takes
+  an explicit `projectID` (`internal/task.Store`'s doc comment) rather than
+  the store itself being constructed per-project — `internal/task` still
+  has zero knowledge of `internal/project`; `projectID` is just a path
+  segment its `FileStore` joins under the shared root. The root defaults to
   `WORKSPACE_ROOT` (`data/`, see Configuration above) — the workspace layout
   described in `CLAUDE.md` / `project_summary.md` (`data/projects/<id>/project.yaml`,
   `data/projects/<id>/tasks/<taskId>/task.yaml`) — this section is about how
   the Go code reads/writes that layout, not the domain model itself.
+  `FileStore` itself is no longer reachable in production (`cmd/server/main.go`
+  only ever constructs `gitstore.Store`) — it survives purely as a test
+  fixture, used directly (no git) across `internal/project`'s,
+  `internal/task`'s, and `internal/api`'s own test suites, and indirectly
+  inside every `gitstore.ProjectStore`/`gitstore.TaskStore`.
   `knowledge/`'s on-disk format is an OKF bundle, not
   `<root>/<ID>/<kind>.yaml` — `internal/knowledge.FileStore` (also a
   `Root string`, matching this same `FileStore` naming/shape convention)
-  implements `Get`/`List`/`Put` over it (Milestone 9 PR 1) — see
-  `docs/knowledge schema v0.md`.
+  implements `Get`/`List`/`Put` over it (Milestone 9 PR 1), and is not
+  git-backed by this milestone — see `docs/knowledge schema v0.md`.
 * Both `FileStore`s support `Create`/`Update` as well as `List`/`Get` —
   persistence is not read-only.
 * Structs carry matching `yaml:` and `json:` tags so the same type
