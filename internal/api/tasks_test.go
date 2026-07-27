@@ -31,15 +31,14 @@ func newTaskRequest(t *testing.T, method, path string, body any) *http.Request {
 func TestHandleListProjectTasks_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("List").Return(task.ListResult{Tasks: []task.Task{{ID: "TASK-0001"}}}, nil)
+	tasks.On("List", "demo-project").Return(task.ListResult{Tasks: []task.Task{{ID: "TASK-0001"}}}, nil)
 
 	req := newTaskRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks", nil)
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleListProjectTasks()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleListProjectTasks()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.ListResult
@@ -60,7 +59,7 @@ func TestHandleListProjectTasks_ProjectNotFound(t *testing.T) {
 	// tasks has no "List" expectation registered, so if the handler wrongly
 	// reached the task store despite the missing project, the mock would
 	// panic on the unexpected call and fail this test.
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleListProjectTasks()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleListProjectTasks()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -68,16 +67,15 @@ func TestHandleListProjectTasks_ProjectNotFound(t *testing.T) {
 func TestHandleGetProjectTask_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-0001").Return(task.Task{ID: "TASK-0001", Title: "Do it"}, nil)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Title: "Do it"}, nil)
 
 	req := newTaskRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetProjectTask()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -88,16 +86,15 @@ func TestHandleGetProjectTask_OK(t *testing.T) {
 func TestHandleGetProjectTask_NotFound(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "TASK-9999").Return(nil, fs.ErrNotExist)
+	tasks.On("Get", "demo-project", "TASK-9999").Return(nil, fs.ErrNotExist)
 
 	req := newTaskRequest(t, http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-9999", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-9999")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleGetProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleGetProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -105,16 +102,15 @@ func TestHandleGetProjectTask_NotFound(t *testing.T) {
 func TestHandleCreateProjectTask_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Create", task.Task{ID: "fix-login-bug", Title: "Fix it", Project: "demo-project"}).
+	tasks.On("Create", "demo-project", task.Task{ID: "fix-login-bug", Title: "Fix it", Project: "demo-project"}).
 		Return(task.Task{ID: "fix-login-bug", Title: "Fix it", Project: "demo-project"}, nil)
 
 	req := newTaskRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks", task.Task{ID: "fix-login-bug", Title: "Fix it"})
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleCreateProjectTask()(w, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	var got task.Task
@@ -135,7 +131,7 @@ func TestHandleCreateProjectTask_ProjectNotFound(t *testing.T) {
 	// tasks has no "Create" expectation registered, so if the handler
 	// wrongly reached the task store despite the missing project, the mock
 	// would panic on the unexpected call and fail this test.
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleCreateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -143,14 +139,13 @@ func TestHandleCreateProjectTask_ProjectNotFound(t *testing.T) {
 func TestHandleCreateProjectTask_InvalidBody(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/demo-project/tasks", bytes.NewReader([]byte("not json")))
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleCreateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -158,16 +153,15 @@ func TestHandleCreateProjectTask_InvalidBody(t *testing.T) {
 func TestHandleCreateProjectTask_AlreadyExists(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Create", task.Task{ID: "dup", Title: "Dup", Project: "demo-project"}).
+	tasks.On("Create", "demo-project", task.Task{ID: "dup", Title: "Dup", Project: "demo-project"}).
 		Return(nil, task.ErrAlreadyExists)
 
 	req := newTaskRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks", task.Task{ID: "dup", Title: "Dup"})
 	req.SetPathValue("projectId", "demo-project")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleCreateProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleCreateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -175,17 +169,16 @@ func TestHandleCreateProjectTask_AlreadyExists(t *testing.T) {
 func TestHandleUpdateProjectTask_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Update", "TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Project: "demo-project"}).
+	tasks.On("Update", "demo-project", "TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Project: "demo-project"}).
 		Return(task.Task{ID: "TASK-0001", Title: "Updated", Project: "demo-project"}, nil)
 
 	req := newTaskRequest(t, http.MethodPut, "/api/v1/projects/demo-project/tasks/TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleUpdateProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleUpdateProjectTask()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -196,17 +189,16 @@ func TestHandleUpdateProjectTask_OK(t *testing.T) {
 func TestHandleUpdateProjectTask_IDMismatch(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Update", "TASK-0001", task.Task{ID: "TASK-9999", Title: "Updated", Project: "demo-project"}).
+	tasks.On("Update", "demo-project", "TASK-0001", task.Task{ID: "TASK-9999", Title: "Updated", Project: "demo-project"}).
 		Return(nil, task.ErrIDMismatch)
 
 	req := newTaskRequest(t, http.MethodPut, "/api/v1/projects/demo-project/tasks/TASK-0001", task.Task{ID: "TASK-9999", Title: "Updated"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleUpdateProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleUpdateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -214,17 +206,16 @@ func TestHandleUpdateProjectTask_IDMismatch(t *testing.T) {
 func TestHandleUpdateProjectTask_NotFound(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Update", "TASK-9999", task.Task{ID: "TASK-9999", Title: "Updated", Project: "demo-project"}).
+	tasks.On("Update", "demo-project", "TASK-9999", task.Task{ID: "TASK-9999", Title: "Updated", Project: "demo-project"}).
 		Return(nil, fs.ErrNotExist)
 
 	req := newTaskRequest(t, http.MethodPut, "/api/v1/projects/demo-project/tasks/TASK-9999", task.Task{ID: "TASK-9999", Title: "Updated"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-9999")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleUpdateProjectTask()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleUpdateProjectTask()(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

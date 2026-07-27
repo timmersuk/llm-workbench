@@ -77,19 +77,19 @@ func initBareRemoteForPush(t *testing.T, root, dir string) string {
 // initReviewRepo's worktree created, so PushAndOpenPR has a real ref to push.
 func seedPRReviewTask(t *testing.T, store *task.FileStore, id, reviewNotes string) {
 	t.Helper()
-	_, err := store.Create(task.Task{ID: id, Title: "A"})
+	_, err := store.Create("demo-project", task.Task{ID: id, Title: "A"})
 	require.NoError(t, err)
-	_, err = store.FinalizeRequirements(id, task.RequirementsDraft{Objective: "ship it"})
+	_, err = store.FinalizeRequirements("demo-project", id, task.RequirementsDraft{Objective: "ship it"})
 	require.NoError(t, err)
-	_, err = store.FinalizePlan(id, task.Plan{Approach: "do it"})
+	_, err = store.FinalizePlan("demo-project", id, task.Plan{Approach: "do it"})
 	require.NoError(t, err)
-	_, err = store.RecordExecution(id, task.Execution{
+	_, err = store.RecordExecution("demo-project", id, task.Execution{
 		ExecutionID: "exec-001",
 		Status:      task.ExecutionStatusSuccess,
 		Output:      task.ExecutionOutput{GitBranch: agentrunner.ExecutionBranchName(id, "exec-001")},
 	})
 	require.NoError(t, err)
-	_, err = store.FinalizeReview(id, task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: reviewNotes})
+	_, err = store.FinalizeReview("demo-project", id, task.ReviewDraft{Decision: task.ReviewDecisionApproved, Notes: reviewNotes})
 	require.NoError(t, err)
 }
 
@@ -103,7 +103,6 @@ func TestHandlePushPR_NoExistingPR_PushesAndRecords(t *testing.T) {
 
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}}, nil)
-	projects.On("TasksRoot", "demo-project").Return("unused", nil)
 
 	client := &fakeGitHubPRClient{createURL: "https://github.com/org/repo/pull/7"}
 
@@ -111,7 +110,7 @@ func TestHandlePushPR_NoExistingPR_PushesAndRecords(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
+	(&Server{Projects: projects, Tasks: store, ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var got task.Task
@@ -134,12 +133,11 @@ func TestHandlePushPR_WrongStageRejectedBeforeAnyGitActivity(t *testing.T) {
 	initBareRemoteForPush(t, reposRoot, filepath.Join(reposRoot, "myrepo"))
 
 	store := task.NewFileStore(t.TempDir())
-	_, err := store.Create(task.Task{ID: "task-a", Title: "A"})
+	_, err := store.Create("demo-project", task.Task{ID: "task-a", Title: "A"})
 	require.NoError(t, err) // stays at requirements, nowhere near pr_review
 
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}}, nil)
-	projects.On("TasksRoot", "demo-project").Return("unused", nil)
 
 	client := &fakeGitHubPRClient{}
 
@@ -147,7 +145,7 @@ func TestHandlePushPR_WrongStageRejectedBeforeAnyGitActivity(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
+	(&Server{Projects: projects, Tasks: store, ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Equal(t, 0, client.createCalls, "no PR should be opened for a task not at pr_review")
@@ -163,7 +161,6 @@ func TestHandlePushPR_GitHubClientErrorMapsTo500(t *testing.T) {
 
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}}, nil)
-	projects.On("TasksRoot", "demo-project").Return("unused", nil)
 
 	client := &fakeGitHubPRClient{createErr: fmt.Errorf("gh: not authenticated")}
 
@@ -171,7 +168,7 @@ func TestHandlePushPR_GitHubClientErrorMapsTo500(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(store), ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
+	(&Server{Projects: projects, Tasks: store, ReposRoot: reposRoot, PRClient: client}).handlePushPR()(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
@@ -179,17 +176,16 @@ func TestHandlePushPR_GitHubClientErrorMapsTo500(t *testing.T) {
 func TestHandleMarkPRMerged_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	updated := task.Task{ID: "task-a", Stage: task.StageMerged, PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7}}
 	tasks := new(mockTaskStore)
-	tasks.On("MarkPRMerged", "task-a").Return(updated, nil)
+	tasks.On("MarkPRMerged", "demo-project", "task-a").Return(updated, nil)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/task-a/pr/merged", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleMarkPRMerged()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleMarkPRMerged()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
@@ -200,16 +196,15 @@ func TestHandleMarkPRMerged_OK(t *testing.T) {
 func TestHandleMarkPRMerged_WrongStageRejected(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("MarkPRMerged", "task-a").Return(nil, task.ErrWrongStage)
+	tasks.On("MarkPRMerged", "demo-project", "task-a").Return(nil, task.ErrWrongStage)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/task-a/pr/merged", nil)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "task-a")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleMarkPRMerged()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleMarkPRMerged()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }

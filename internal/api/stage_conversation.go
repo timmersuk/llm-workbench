@@ -201,13 +201,14 @@ func (s *Server) handleGetStageConversation() http.HandlerFunc {
 			return
 		}
 
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
 		taskId := r.PathValue("taskId")
-		t, err := store.Get(taskId)
+		t, err := store.Get(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -217,7 +218,7 @@ func (s *Server) handleGetStageConversation() http.HandlerFunc {
 			return
 		}
 
-		conv, err := store.GetConversation(taskId, stage)
+		conv, err := store.GetConversation(projectId, taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -232,10 +233,11 @@ func (s *Server) handleGetStageConversation() http.HandlerFunc {
 // The three streaming handlers all consult these, resolved once here so each
 // handler is left with only its distinct pre-stream logic.
 type stageStreamTarget struct {
-	runner agentrunner.AgentRunner
-	proj   project.Project
-	store  TaskStore
-	task   task.Task
+	runner    agentrunner.AgentRunner
+	proj      project.Project
+	store     TaskStore
+	projectId string
+	task      task.Task
 }
 
 // resolveStageStreamTarget selects the executor's runner (defaulting to
@@ -262,20 +264,15 @@ func (s *Server) resolveStageStreamTarget(w http.ResponseWriter, executorKey, pr
 		writeGetError(w, err)
 		return stageStreamTarget{}, false
 	}
-	root, err := s.Projects.TasksRoot(projectId)
-	if err != nil {
-		writeGetError(w, err)
-		return stageStreamTarget{}, false
-	}
-	store := s.TaskStores(root)
+	store := s.Tasks
 
-	t, err := store.Get(taskId)
+	t, err := store.Get(projectId, taskId)
 	if err != nil {
 		writeGetError(w, err)
 		return stageStreamTarget{}, false
 	}
 
-	return stageStreamTarget{runner: runner, proj: proj, store: store, task: t}, true
+	return stageStreamTarget{runner: runner, proj: proj, store: store, projectId: projectId, task: t}, true
 }
 
 // beginStageStream confirms the ResponseWriter can stream, writes the SSE
@@ -376,10 +373,10 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		// configured repository is tolerated for Requirements/Planning (an
 		// empty workspace, a text-only turn); any other resolution failure
 		// aborts the turn as an SSE error, since headers are already sent.
-		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.task, stage)
+		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage)
 		if runErr != nil {
 			streamErr = runErr
-		} else if history, convErr := target.store.GetConversation(taskId, stage); convErr != nil {
+		} else if history, convErr := target.store.GetConversation(target.projectId, taskId, stage); convErr != nil {
 			streamErr = fmt.Errorf("loading conversation history: %w", convErr)
 		} else {
 			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
@@ -402,7 +399,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 
 		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
 
-		if _, err := target.store.AppendConversationMessages(taskId, stage,
+		if _, err := target.store.AppendConversationMessages(target.projectId, taskId, stage,
 			task.ConversationMessage{Role: "user", Content: req.Content},
 			assistantMsg,
 		); err != nil {
@@ -447,7 +444,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 			return
 		}
 
-		existing, err := target.store.GetConversation(taskId, stage)
+		existing, err := target.store.GetConversation(target.projectId, taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -467,7 +464,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		var activity []task.ConversationToolActivity
 		var streamErr error
 
-		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.task, stage)
+		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -487,7 +484,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 
 		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
 
-		if _, err := target.store.AppendConversationMessages(taskId, stage, assistantMsg); err != nil {
+		if _, err := target.store.AppendConversationMessages(target.projectId, taskId, stage, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting stage conversation kickoff message")
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
@@ -515,13 +512,14 @@ func (s *Server) handleDeleteStageMessage() http.HandlerFunc {
 			return
 		}
 
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
 		taskId := r.PathValue("taskId")
-		t, err := store.Get(taskId)
+		t, err := store.Get(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -531,7 +529,7 @@ func (s *Server) handleDeleteStageMessage() http.HandlerFunc {
 			return
 		}
 
-		existing, err := store.GetConversation(taskId, stage)
+		existing, err := store.GetConversation(projectId, taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -542,7 +540,7 @@ func (s *Server) handleDeleteStageMessage() http.HandlerFunc {
 		}
 
 		updated := append(append([]task.ConversationMessage{}, existing.Messages[:index]...), existing.Messages[index+1:]...)
-		conv, err := store.ReplaceConversationMessages(taskId, stage, updated)
+		conv, err := store.ReplaceConversationMessages(projectId, taskId, stage, updated)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -601,7 +599,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 			return
 		}
 
-		existing, err := target.store.GetConversation(taskId, stage)
+		existing, err := target.store.GetConversation(target.projectId, taskId, stage)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -630,7 +628,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		var activity []task.ConversationToolActivity
 		var streamErr error
 
-		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.task, stage)
+		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -656,7 +654,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		assistantMsg.CreatedAt = now
 
 		newMessages := append(historyPrefix, userMsg, assistantMsg)
-		if _, err := target.store.ReplaceConversationMessages(taskId, stage, newMessages); err != nil {
+		if _, err := target.store.ReplaceConversationMessages(target.projectId, taskId, stage, newMessages); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting regenerated stage conversation messages")
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
@@ -870,7 +868,7 @@ func (s *Server) appendWorkspaceAdvisories(ctx context.Context, systemPrompt str
 // against the execution's isolated worktree with bash enabled and the
 // execution's diff + verification steps appended to the prompt — so the agent
 // can actually run the tests and check the real change (Milestone 6).
-func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, store TaskStore, t task.Task, stage string) (stageRun, error) {
+func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, store TaskStore, projectId string, t task.Task, stage string) (stageRun, error) {
 	systemPrompt := s.buildStagePrompt(t, proj, stage)
 	systemPrompt = s.appendWorkspaceAdvisories(ctx, systemPrompt, proj.Repositories)
 
@@ -880,7 +878,7 @@ func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, stor
 			return stageRun{}, fmt.Errorf("resolving workspace: %w", err)
 		}
 		if stage == task.StageRequirements {
-			addendum, err := s.buildRejectedReviewContext(ctx, store, t, ws)
+			addendum, err := s.buildRejectedReviewContext(ctx, store, projectId, t, ws)
 			if err != nil {
 				return stageRun{}, err
 			}
@@ -893,7 +891,7 @@ func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, stor
 	if err != nil {
 		return stageRun{}, fmt.Errorf("determining default branch: %w", err)
 	}
-	addendum, workspace, err := s.buildReviewContext(ctx, proj, store, t.ID, defaultBranch)
+	addendum, workspace, err := s.buildReviewContext(ctx, proj, store, projectId, t.ID, defaultBranch)
 	if err != nil {
 		return stageRun{}, err
 	}
@@ -928,8 +926,8 @@ func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, stor
 // review/execution lookups already take (decision 6, M6 PR 5) — accepted for
 // an external dependency for now; revisit toward graceful degradation only if
 // GitHub's reliability proves a recurring practical problem.
-func (s *Server) buildRejectedReviewContext(ctx context.Context, store TaskStore, t task.Task, workspace string) (string, error) {
-	reviews, err := store.ListReviews(t.ID)
+func (s *Server) buildRejectedReviewContext(ctx context.Context, store TaskStore, projectId string, t task.Task, workspace string) (string, error) {
+	reviews, err := store.ListReviews(projectId, t.ID)
 	if err != nil {
 		return "", fmt.Errorf("listing reviews for %s: %w", t.ID, err)
 	}
@@ -941,7 +939,7 @@ func (s *Server) buildRejectedReviewContext(ctx context.Context, store TaskStore
 		return "", nil
 	}
 
-	executions, err := store.ListExecutions(t.ID)
+	executions, err := store.ListExecutions(projectId, t.ID)
 	if err != nil {
 		return "", fmt.Errorf("listing executions for %s: %w", t.ID, err)
 	}
@@ -989,8 +987,8 @@ func (s *Server) buildRejectedReviewContext(ctx context.Context, store TaskStore
 // blow. Commits/artifacts come from latest.Output (recorded by
 // agentrunner.CollectExecutionOutput when the execution completed,
 // internal/api/execution.go) rather than a fresh git call here.
-func (s *Server) buildReviewContext(ctx context.Context, proj project.Project, store TaskStore, taskID, defaultBranch string) (addendum, workspace string, err error) {
-	executions, err := store.ListExecutions(taskID)
+func (s *Server) buildReviewContext(ctx context.Context, proj project.Project, store TaskStore, projectId, taskID, defaultBranch string) (addendum, workspace string, err error) {
+	executions, err := store.ListExecutions(projectId, taskID)
 	if err != nil {
 		return "", "", fmt.Errorf("listing executions for review: %w", err)
 	}
@@ -1020,7 +1018,7 @@ func (s *Server) buildReviewContext(ctx context.Context, proj project.Project, s
 	// The structured verification steps are the checklist phase 3 walks. A
 	// missing/unreadable context.yaml just omits them rather than failing the
 	// whole review.
-	if c, ctxErr := store.GetContext(taskID); ctxErr != nil {
+	if c, ctxErr := store.GetContext(projectId, taskID); ctxErr != nil {
 		logrus.WithError(ctxErr).WithField("task", taskID).Warn("review: skipping verification steps (context unavailable)")
 	} else if len(c.Verification) > 0 {
 		b.WriteString("\n### Verification steps to confirm\n")

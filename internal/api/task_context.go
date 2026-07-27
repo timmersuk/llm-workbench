@@ -7,12 +7,13 @@ import "net/http"
 // case) if requirements haven't been finalized yet.
 func (s *Server) handleGetTaskContext() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
-		ctx, err := store.GetContext(r.PathValue("taskId"))
+		ctx, err := store.GetContext(projectId, r.PathValue("taskId"))
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -26,12 +27,13 @@ func (s *Server) handleGetTaskContext() http.HandlerFunc {
 // yet.
 func (s *Server) handleGetTaskPlan() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
-		plan, err := store.GetPlan(r.PathValue("taskId"))
+		plan, err := store.GetPlan(projectId, r.PathValue("taskId"))
 		if err != nil {
 			writeGetError(w, err)
 			return

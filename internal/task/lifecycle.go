@@ -23,8 +23,8 @@ var ErrWrongStage = errors.New("task is not in the expected stage for this actio
 // observably changed; if it succeeds but the task.yaml write then fails,
 // Context is present but Stage hasn't advanced yet, a safely-retriable
 // state (Finalize can just be called again).
-func (s *FileStore) FinalizeRequirements(id string, draft RequirementsDraft) (Task, error) {
-	t, err := s.Get(id)
+func (s *FileStore) FinalizeRequirements(projectID, id string, draft RequirementsDraft) (Task, error) {
+	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -38,7 +38,7 @@ func (s *FileStore) FinalizeRequirements(id string, draft RequirementsDraft) (Ta
 	draft.Context.Files = trimmedList(draft.Context.Files)
 	draft.Context.Verification = trimmedVerification(draft.Context.Verification)
 	draft.Context.OpenQuestions = trimmedList(draft.Context.OpenQuestions)
-	if err := s.writeContext(id, draft.Context); err != nil {
+	if err := s.writeContext(projectID, id, draft.Context); err != nil {
 		return Task{}, err
 	}
 
@@ -49,7 +49,7 @@ func (s *FileStore) FinalizeRequirements(id string, draft RequirementsDraft) (Ta
 	t.Stage = StagePlanning
 	t.UpdatedAt = time.Now().UTC()
 
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -58,8 +58,8 @@ func (s *FileStore) FinalizeRequirements(id string, draft RequirementsDraft) (Ta
 // FinalizePlan is the human "Finalize" action for Planning Mode: it
 // persists plan.yaml and advances Stage from "planning" to
 // "implementation". The task must currently be in "planning" stage.
-func (s *FileStore) FinalizePlan(id string, plan Plan) (Task, error) {
-	t, err := s.Get(id)
+func (s *FileStore) FinalizePlan(projectID, id string, plan Plan) (Task, error) {
+	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -71,14 +71,14 @@ func (s *FileStore) FinalizePlan(id string, plan Plan) (Task, error) {
 	plan.RecommendedExecutor = strings.TrimSpace(plan.RecommendedExecutor)
 	plan.Steps = trimmedList(plan.Steps)
 	plan.Risks = trimmedList(plan.Risks)
-	if err := s.writePlan(id, plan); err != nil {
+	if err := s.writePlan(projectID, id, plan); err != nil {
 		return Task{}, err
 	}
 
 	t.Stage = StageImplementation
 	t.UpdatedAt = time.Now().UTC()
 
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -112,8 +112,8 @@ func (s *FileStore) FinalizePlan(id string, plan Plan) (Task, error) {
 // but the task.yaml write then fails, the verdict is on disk but Stage hasn't
 // moved yet — a safely-retriable state (the append-only store means a retry
 // records a fresh verdict rather than corrupting the prior one).
-func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
-	t, err := s.Get(id)
+func (s *FileStore) FinalizeReview(projectID, id string, draft ReviewDraft) (Task, error) {
+	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -145,7 +145,7 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 	// again requires passing back through a fresh FinalizePlan first.
 	// Capturing that link now (Review.ExecutionID) is safer than
 	// reconstructing it later after further stage transitions/retries.
-	executions, err := s.ListExecutions(id)
+	executions, err := s.ListExecutions(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -154,11 +154,11 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 		executionID = executions[len(executions)-1].ExecutionID
 	}
 
-	reviewID, err := s.NextReviewID(id)
+	reviewID, err := s.NextReviewID(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
-	if _, err := s.RecordReview(id, Review{
+	if _, err := s.RecordReview(projectID, id, Review{
 		ReviewID:    reviewID,
 		ExecutionID: executionID,
 		Decision:    draft.Decision,
@@ -169,7 +169,7 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 
 	t.Stage = nextStage
 	t.UpdatedAt = time.Now().UTC()
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -186,8 +186,8 @@ func (s *FileStore) FinalizeReview(id string, draft ReviewDraft) (Task, error) {
 // — the task isn't in a state this action can be taken from either way, so
 // both should map to the same 409, not one 409ing and the other falling
 // through to a 500 as "no pull_request recorded" originally did.
-func (s *FileStore) MarkPRMerged(id string) (Task, error) {
-	t, err := s.Get(id)
+func (s *FileStore) MarkPRMerged(projectID, id string) (Task, error) {
+	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -200,7 +200,7 @@ func (s *FileStore) MarkPRMerged(id string) (Task, error) {
 
 	t.Stage = StageMerged
 	t.UpdatedAt = time.Now().UTC()
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -215,8 +215,8 @@ func (s *FileStore) MarkPRMerged(id string) (Task, error) {
 // refspec-push continuing an existing one (see PushAndOpenPR's doc
 // comment): the persisted shape is the same either way, so there's no
 // special-casing at this layer.
-func (s *FileStore) RecordPullRequest(id string, pr PullRequest) (Task, error) {
-	t, err := s.Get(id)
+func (s *FileStore) RecordPullRequest(projectID, id string, pr PullRequest) (Task, error) {
+	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -226,7 +226,7 @@ func (s *FileStore) RecordPullRequest(id string, pr PullRequest) (Task, error) {
 
 	t.PullRequest = &pr
 	t.UpdatedAt = time.Now().UTC()
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -237,8 +237,8 @@ func (s *FileStore) RecordPullRequest(id string, pr PullRequest) (Task, error) {
 // the requirements Conversation (GetConversation/AppendConversationMessages
 // already resume the same file — no separate action needed for that part).
 // Only valid from "planning".
-func (s *FileStore) ReviseToRequirements(id string) (Task, error) {
-	t, err := s.Get(id)
+func (s *FileStore) ReviseToRequirements(projectID, id string) (Task, error) {
+	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -249,7 +249,7 @@ func (s *FileStore) ReviseToRequirements(id string) (Task, error) {
 	t.Stage = StageRequirements
 	t.UpdatedAt = time.Now().UTC()
 
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -261,8 +261,8 @@ func (s *FileStore) ReviseToRequirements(id string) (Task, error) {
 // boundary won't be exercised in practice until then, but the transition
 // is still valid structurally per CLAUDE.md ("each stage... can be
 // revisited").
-func (s *FileStore) ReviseToPlanning(id string) (Task, error) {
-	t, err := s.Get(id)
+func (s *FileStore) ReviseToPlanning(projectID, id string) (Task, error) {
+	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -273,7 +273,7 @@ func (s *FileStore) ReviseToPlanning(id string) (Task, error) {
 	t.Stage = StagePlanning
 	t.UpdatedAt = time.Now().UTC()
 
-	if err := s.writeTask(t); err != nil {
+	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
 	return t, nil

@@ -29,14 +29,9 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 			writeGetError(w, err)
 			return
 		}
-		root, err := s.Projects.TasksRoot(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		store := s.TaskStores(root)
+		store := s.Tasks
 
-		t, err := store.Get(taskId)
+		t, err := store.Get(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -46,7 +41,7 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 			return
 		}
 
-		executions, err := store.ListExecutions(taskId)
+		executions, err := store.ListExecutions(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -66,7 +61,7 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 		// task away from pr_review entirely — so as long as t.Stage is
 		// still pr_review, the latest recorded review is guaranteed to be
 		// the approval that landed the task here.
-		reviews, err := store.ListReviews(taskId)
+		reviews, err := store.ListReviews(projectId, taskId)
 		if err != nil {
 			writeGetError(w, err)
 			return
@@ -99,7 +94,7 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 			return
 		}
 
-		updated, err := store.RecordPullRequest(taskId, task.PullRequest{URL: url, Number: number, Branch: branch})
+		updated, err := store.RecordPullRequest(projectId, taskId, task.PullRequest{URL: url, Number: number, Branch: branch})
 		if err != nil {
 			writeMutationError(w, err)
 			return
@@ -135,12 +130,13 @@ func prBody(t task.Task, reviewNotes string) string {
 // pr_review, or if it has no pull_request recorded yet.
 func (s *Server) handleMarkPRMerged() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
-		updated, err := store.MarkPRMerged(r.PathValue("taskId"))
+		updated, err := store.MarkPRMerged(projectId, r.PathValue("taskId"))
 		if err != nil {
 			writeMutationError(w, err)
 			return

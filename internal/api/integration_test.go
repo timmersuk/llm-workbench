@@ -87,13 +87,14 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	reposRoot := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(reposRoot, "demo"), 0o755))
 
-	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
-	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
+	projectsRoot := filepath.Join(root, "projects")
+	projectStore := project.NewFileStore(projectsRoot)
+	taskStore := task.NewFileStore(projectsRoot)
 	chatClient = chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient, nil)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStore, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -194,11 +195,12 @@ func TestIntegration_TasksListSkipsMalformedEntryWithErrorSignal(t *testing.T) {
 	require.NoError(t, os.MkdirAll(brokenDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(brokenDir, "task.yaml"), []byte("id: [not valid yaml"), 0o644))
 
-	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
-	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
+	projectsRoot := filepath.Join(root, "projects")
+	projectStore := project.NewFileStore(projectsRoot)
+	taskStore := task.NewFileStore(projectsRoot)
 	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
 
-	router := NewRouter(projectStore, taskStores, knowledgeStore, nil, "", nil, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStore, knowledgeStore, nil, "", nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -253,10 +255,11 @@ func TestIntegration_CreateTaskWithSameIDAcrossTwoProjectsBothSucceed(t *testing
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "project.yaml"), []byte(integrationProjectYAML), 0o644))
 	}
 
-	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
-	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
+	projectsRoot := filepath.Join(root, "projects")
+	projectStore := project.NewFileStore(projectsRoot)
+	taskStore := task.NewFileStore(projectsRoot)
 	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
-	router := NewRouter(projectStore, taskStores, knowledgeStore, nil, "", nil, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStore, knowledgeStore, nil, "", nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -559,8 +562,7 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	// buildReviewContext has real commits/changed files to report.
 	commits, artifacts, err := agentrunner.CollectExecutionOutput(context.Background(), ws, "")
 	require.NoError(t, err)
-	tasksRoot := filepath.Join(projectRoot, "tasks")
-	seedReviewableTaskWithOutput(t, task.NewFileStore(tasksRoot), "TASK-0001", task.ExecutionOutput{Commits: commits, Artifacts: artifacts})
+	seedReviewableTaskWithOutput(t, task.NewFileStore(filepath.Join(root, "projects")), "TASK-0001", task.ExecutionOutput{Commits: commits, Artifacts: artifacts})
 
 	// A capturing fake upstream: record the request the model saw, then answer
 	// with a propose_review tool call (the loop's stop condition).
@@ -599,13 +601,14 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	}))
 	defer upstream.Close()
 
-	projectStore := project.NewFileStore(filepath.Join(root, "projects"))
-	taskStores := func(root string) TaskStore { return task.NewFileStore(root) }
+	projectsRoot := filepath.Join(root, "projects")
+	projectStore := project.NewFileStore(projectsRoot)
+	taskStore := task.NewFileStore(projectsRoot)
 	chatClient := chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
 	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient, nil)}
 
-	router := NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
+	router := NewRouter(projectStore, taskStore, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
 	defer server.Close()
 

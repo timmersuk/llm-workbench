@@ -12,10 +12,10 @@ import (
 func TestFileStore_GetContext_NotFinalized(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
-	_, err := store.Create(Task{ID: "task-a", Title: "A"})
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
 	require.NoError(t, err)
 
-	_, err = store.GetContext("task-a")
+	_, err = store.GetContext("demo-project", "task-a")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, fs.ErrNotExist))
 }
@@ -23,7 +23,7 @@ func TestFileStore_GetContext_NotFinalized(t *testing.T) {
 func TestFileStore_GetContext_RoundTrip(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
-	_, err := store.Create(Task{ID: "task-a", Title: "A"})
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
 	require.NoError(t, err)
 
 	want := Context{
@@ -34,9 +34,9 @@ func TestFileStore_GetContext_RoundTrip(t *testing.T) {
 		Verification:  []VerificationStep{{Description: "run tests", Kind: VerificationKindAgentExecutable}},
 		OpenQuestions: []string{"what about x?"},
 	}
-	require.NoError(t, store.writeContext("task-a", want))
+	require.NoError(t, store.writeContext("demo-project", "task-a", want))
 
-	got, err := store.GetContext("task-a")
+	got, err := store.GetContext("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 }
@@ -45,7 +45,7 @@ func TestFileStore_GetContext_RejectsPathTraversal(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 
-	_, err := store.GetContext("../escape")
+	_, err := store.GetContext("demo-project", "../escape")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidID)
 }

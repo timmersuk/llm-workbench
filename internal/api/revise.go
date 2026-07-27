@@ -8,12 +8,13 @@ import "net/http"
 // in planning stage.
 func (s *Server) handleReviseRequirements() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
-		updated, err := store.ReviseToRequirements(r.PathValue("taskId"))
+		updated, err := store.ReviseToRequirements(projectId, r.PathValue("taskId"))
 		if err != nil {
 			writeMutationError(w, err)
 			return
@@ -27,12 +28,13 @@ func (s *Server) handleReviseRequirements() http.HandlerFunc {
 // implementation or review stage.
 func (s *Server) handleRevisePlan() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := s.resolveTaskStore(w, r.PathValue("projectId"))
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
 		if !ok {
 			return
 		}
 
-		updated, err := store.ReviseToPlanning(r.PathValue("taskId"))
+		updated, err := store.ReviseToPlanning(projectId, r.PathValue("taskId"))
 		if err != nil {
 			writeMutationError(w, err)
 			return

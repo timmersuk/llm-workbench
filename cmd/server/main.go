@@ -114,7 +114,15 @@ func main() {
 func run(ctx context.Context, cfg config) error {
 	configureLogging(cfg.logLevel, cfg.logFormat)
 
-	projectStore := project.NewFileStore(filepath.Join(cfg.workspaceRoot, "projects"))
+	projectsRoot := filepath.Join(cfg.workspaceRoot, "projects")
+	projectStore := project.NewFileStore(projectsRoot)
+	// One process-wide task store, not one per project: every task.Store
+	// method takes an explicit projectID, and this FileStore's Root is the
+	// same shared projects directory project.FileStore uses (tasks nest
+	// under <projectsRoot>/<projectID>/tasks/), so a single instance serves
+	// every project's task routes (internal/api/tasks.go's
+	// resolveTaskStore).
+	taskStore := task.NewFileStore(projectsRoot)
 	knowledgeRoot := filepath.Join(cfg.workspaceRoot, "knowledge")
 	knowledgeStore := knowledge.NewFileStore(knowledgeRoot)
 
@@ -141,8 +149,7 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("mounting embedded frontend: %w", err)
 	}
 
-	taskStores := func(root string) api.TaskStore { return task.NewFileStore(root) }
-	router := api.NewRouter(projectStore, taskStores, knowledgeStore, agentRunners, cfg.agentReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
+	router := api.NewRouter(projectStore, taskStore, knowledgeStore, agentRunners, cfg.agentReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, BuildID)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":           cfg.httpAddr,

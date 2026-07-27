@@ -132,12 +132,12 @@ type Execution struct {
 // sort order simple and predictable.
 var executionIDPattern = regexp.MustCompile(`^exec-(\d{3,})$`)
 
-func executionsDir(root, id string) string {
-	return filepath.Join(root, id, "executions")
+func executionsDir(dir string) string {
+	return filepath.Join(dir, "executions")
 }
 
-func executionPath(root, id, executionID string) string {
-	return filepath.Join(executionsDir(root, id), executionID+".yaml")
+func executionPath(dir, executionID string) string {
+	return filepath.Join(executionsDir(dir), executionID+".yaml")
 }
 
 // NextExecutionID returns the next sequential "exec-NNN" id for id's task,
@@ -147,12 +147,15 @@ func executionPath(root, id, executionID string) string {
 // recording an execution (e.g. the run failed before producing any result
 // at all) simply leaves a gap in the sequence, which is fine — ids only
 // need to be unique and increasing, not contiguous.
-func (s *FileStore) NextExecutionID(id string) (string, error) {
+func (s *FileStore) NextExecutionID(projectID, id string) (string, error) {
+	if err := validateID(projectID); err != nil {
+		return "", err
+	}
 	if err := validateID(id); err != nil {
 		return "", err
 	}
 
-	entries, err := os.ReadDir(executionsDir(s.Root, id))
+	entries, err := os.ReadDir(executionsDir(s.taskDir(projectID, id)))
 	if os.IsNotExist(err) {
 		return "exec-001", nil
 	}
@@ -198,7 +201,10 @@ func (s *FileStore) NextExecutionID(id string) (string, error) {
 // wrong-stage success attempt never leaves an orphaned record with no
 // corresponding stage advance. A "failure"/"partial" execution is recorded
 // unconditionally and never touches Stage.
-func (s *FileStore) RecordExecution(id string, exec Execution) (Execution, error) {
+func (s *FileStore) RecordExecution(projectID, id string, exec Execution) (Execution, error) {
+	if err := validateID(projectID); err != nil {
+		return Execution{}, err
+	}
 	if err := validateID(id); err != nil {
 		return Execution{}, err
 	}
@@ -206,10 +212,12 @@ func (s *FileStore) RecordExecution(id string, exec Execution) (Execution, error
 		return Execution{}, err
 	}
 
+	dir := s.taskDir(projectID, id)
+
 	var t Task
 	if exec.Status == ExecutionStatusSuccess {
 		var err error
-		t, err = s.Get(id)
+		t, err = s.Get(projectID, id)
 		if err != nil {
 			return Execution{}, err
 		}
@@ -218,7 +226,7 @@ func (s *FileStore) RecordExecution(id string, exec Execution) (Execution, error
 		}
 	}
 
-	path := executionPath(s.Root, id, exec.ExecutionID)
+	path := executionPath(dir, exec.ExecutionID)
 	if _, err := os.Stat(path); err == nil {
 		return Execution{}, fmt.Errorf("recording execution %s for %s: %w", exec.ExecutionID, id, ErrExecutionAlreadyExists)
 	} else if !os.IsNotExist(err) {
@@ -228,9 +236,9 @@ func (s *FileStore) RecordExecution(id string, exec Execution) (Execution, error
 	exec.TaskID = id
 	exec.CreatedAt = time.Now().UTC()
 
-	dir := executionsDir(s.Root, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return Execution{}, fmt.Errorf("creating executions directory %s: %w", dir, err)
+	execDir := executionsDir(dir)
+	if err := os.MkdirAll(execDir, 0o755); err != nil {
+		return Execution{}, fmt.Errorf("creating executions directory %s: %w", execDir, err)
 	}
 
 	data, err := yaml.Marshal(exec)
@@ -244,7 +252,7 @@ func (s *FileStore) RecordExecution(id string, exec Execution) (Execution, error
 	if exec.Status == ExecutionStatusSuccess {
 		t.Stage = StageReview
 		t.UpdatedAt = time.Now().UTC()
-		if err := s.writeTask(t); err != nil {
+		if err := s.writeTask(projectID, t); err != nil {
 			return Execution{}, err
 		}
 	}
@@ -258,12 +266,15 @@ func (s *FileStore) RecordExecution(id string, exec Execution) (Execution, error
 // recorded) returns an empty slice, not an error — the same "missing file
 // means normal starting state" treatment GetConversation gives a
 // not-yet-started stage.
-func (s *FileStore) ListExecutions(id string) ([]Execution, error) {
+func (s *FileStore) ListExecutions(projectID, id string) ([]Execution, error) {
+	if err := validateID(projectID); err != nil {
+		return nil, err
+	}
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
 
-	dir := executionsDir(s.Root, id)
+	dir := executionsDir(s.taskDir(projectID, id))
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil

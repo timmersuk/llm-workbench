@@ -12,10 +12,13 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
+// mockTaskStore is a process-wide TaskStore double: every method takes an
+// explicit projectID (mirroring the real singleton FileStore/GitStore),
+// which tests assert on via .On/.AssertCalled like any other argument.
 type mockTaskStore struct{ mock.Mock }
 
-func (m *mockTaskStore) List() (task.ListResult, error) {
-	args := m.Called()
+func (m *mockTaskStore) List(projectID string) (task.ListResult, error) {
+	args := m.Called(projectID)
 	var result task.ListResult
 	if v := args.Get(0); v != nil {
 		result = v.(task.ListResult)
@@ -23,8 +26,8 @@ func (m *mockTaskStore) List() (task.ListResult, error) {
 	return result, args.Error(1)
 }
 
-func (m *mockTaskStore) Get(id string) (task.Task, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) Get(projectID, id string) (task.Task, error) {
+	args := m.Called(projectID, id)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -32,8 +35,8 @@ func (m *mockTaskStore) Get(id string) (task.Task, error) {
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) Create(t task.Task) (task.Task, error) {
-	args := m.Called(t)
+func (m *mockTaskStore) Create(projectID string, t task.Task) (task.Task, error) {
+	args := m.Called(projectID, t)
 	var created task.Task
 	if v := args.Get(0); v != nil {
 		created = v.(task.Task)
@@ -41,8 +44,8 @@ func (m *mockTaskStore) Create(t task.Task) (task.Task, error) {
 	return created, args.Error(1)
 }
 
-func (m *mockTaskStore) Update(id string, t task.Task) (task.Task, error) {
-	args := m.Called(id, t)
+func (m *mockTaskStore) Update(projectID, id string, t task.Task) (task.Task, error) {
+	args := m.Called(projectID, id, t)
 	var updated task.Task
 	if v := args.Get(0); v != nil {
 		updated = v.(task.Task)
@@ -50,8 +53,8 @@ func (m *mockTaskStore) Update(id string, t task.Task) (task.Task, error) {
 	return updated, args.Error(1)
 }
 
-func (m *mockTaskStore) GetContext(id string) (task.Context, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) GetContext(projectID, id string) (task.Context, error) {
+	args := m.Called(projectID, id)
 	var c task.Context
 	if v := args.Get(0); v != nil {
 		c = v.(task.Context)
@@ -59,8 +62,8 @@ func (m *mockTaskStore) GetContext(id string) (task.Context, error) {
 	return c, args.Error(1)
 }
 
-func (m *mockTaskStore) GetPlan(id string) (task.Plan, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) GetPlan(projectID, id string) (task.Plan, error) {
+	args := m.Called(projectID, id)
 	var p task.Plan
 	if v := args.Get(0); v != nil {
 		p = v.(task.Plan)
@@ -68,8 +71,8 @@ func (m *mockTaskStore) GetPlan(id string) (task.Plan, error) {
 	return p, args.Error(1)
 }
 
-func (m *mockTaskStore) GetConversation(id, stage string) (task.Conversation, error) {
-	args := m.Called(id, stage)
+func (m *mockTaskStore) GetConversation(projectID, id, stage string) (task.Conversation, error) {
+	args := m.Called(projectID, id, stage)
 	var c task.Conversation
 	if v := args.Get(0); v != nil {
 		c = v.(task.Conversation)
@@ -77,8 +80,8 @@ func (m *mockTaskStore) GetConversation(id, stage string) (task.Conversation, er
 	return c, args.Error(1)
 }
 
-func (m *mockTaskStore) AppendConversationMessages(id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error) {
-	args := m.Called(id, stage, msgs)
+func (m *mockTaskStore) AppendConversationMessages(projectID, id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error) {
+	args := m.Called(projectID, id, stage, msgs)
 	var c task.Conversation
 	if v := args.Get(0); v != nil {
 		c = v.(task.Conversation)
@@ -86,8 +89,8 @@ func (m *mockTaskStore) AppendConversationMessages(id, stage string, msgs ...tas
 	return c, args.Error(1)
 }
 
-func (m *mockTaskStore) ReplaceConversationMessages(id, stage string, msgs []task.ConversationMessage) (task.Conversation, error) {
-	args := m.Called(id, stage, msgs)
+func (m *mockTaskStore) ReplaceConversationMessages(projectID, id, stage string, msgs []task.ConversationMessage) (task.Conversation, error) {
+	args := m.Called(projectID, id, stage, msgs)
 	var c task.Conversation
 	if v := args.Get(0); v != nil {
 		c = v.(task.Conversation)
@@ -95,8 +98,8 @@ func (m *mockTaskStore) ReplaceConversationMessages(id, stage string, msgs []tas
 	return c, args.Error(1)
 }
 
-func (m *mockTaskStore) FinalizeRequirements(id string, draft task.RequirementsDraft) (task.Task, error) {
-	args := m.Called(id, draft)
+func (m *mockTaskStore) FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error) {
+	args := m.Called(projectID, id, draft)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -104,8 +107,8 @@ func (m *mockTaskStore) FinalizeRequirements(id string, draft task.RequirementsD
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) FinalizePlan(id string, plan task.Plan) (task.Task, error) {
-	args := m.Called(id, plan)
+func (m *mockTaskStore) FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error) {
+	args := m.Called(projectID, id, plan)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -113,8 +116,8 @@ func (m *mockTaskStore) FinalizePlan(id string, plan task.Plan) (task.Task, erro
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) ReviseToRequirements(id string) (task.Task, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) ReviseToRequirements(projectID, id string) (task.Task, error) {
+	args := m.Called(projectID, id)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -122,8 +125,8 @@ func (m *mockTaskStore) ReviseToRequirements(id string) (task.Task, error) {
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) ReviseToPlanning(id string) (task.Task, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) ReviseToPlanning(projectID, id string) (task.Task, error) {
+	args := m.Called(projectID, id)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -131,13 +134,13 @@ func (m *mockTaskStore) ReviseToPlanning(id string) (task.Task, error) {
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) NextExecutionID(id string) (string, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) NextExecutionID(projectID, id string) (string, error) {
+	args := m.Called(projectID, id)
 	return args.String(0), args.Error(1)
 }
 
-func (m *mockTaskStore) RecordExecution(id string, exec task.Execution) (task.Execution, error) {
-	args := m.Called(id, exec)
+func (m *mockTaskStore) RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error) {
+	args := m.Called(projectID, id, exec)
 	var recorded task.Execution
 	if v := args.Get(0); v != nil {
 		recorded = v.(task.Execution)
@@ -145,8 +148,8 @@ func (m *mockTaskStore) RecordExecution(id string, exec task.Execution) (task.Ex
 	return recorded, args.Error(1)
 }
 
-func (m *mockTaskStore) ListExecutions(id string) ([]task.Execution, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) ListExecutions(projectID, id string) ([]task.Execution, error) {
+	args := m.Called(projectID, id)
 	var executions []task.Execution
 	if v := args.Get(0); v != nil {
 		executions = v.([]task.Execution)
@@ -154,8 +157,8 @@ func (m *mockTaskStore) ListExecutions(id string) ([]task.Execution, error) {
 	return executions, args.Error(1)
 }
 
-func (m *mockTaskStore) FinalizeReview(id string, draft task.ReviewDraft) (task.Task, error) {
-	args := m.Called(id, draft)
+func (m *mockTaskStore) FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error) {
+	args := m.Called(projectID, id, draft)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -163,8 +166,8 @@ func (m *mockTaskStore) FinalizeReview(id string, draft task.ReviewDraft) (task.
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) ListReviews(id string) ([]task.Review, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) ListReviews(projectID, id string) ([]task.Review, error) {
+	args := m.Called(projectID, id)
 	var reviews []task.Review
 	if v := args.Get(0); v != nil {
 		reviews = v.([]task.Review)
@@ -172,8 +175,8 @@ func (m *mockTaskStore) ListReviews(id string) ([]task.Review, error) {
 	return reviews, args.Error(1)
 }
 
-func (m *mockTaskStore) MarkPRMerged(id string) (task.Task, error) {
-	args := m.Called(id)
+func (m *mockTaskStore) MarkPRMerged(projectID, id string) (task.Task, error) {
+	args := m.Called(projectID, id)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -181,8 +184,8 @@ func (m *mockTaskStore) MarkPRMerged(id string) (task.Task, error) {
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) RecordPullRequest(id string, pr task.PullRequest) (task.Task, error) {
-	args := m.Called(id, pr)
+func (m *mockTaskStore) RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error) {
+	args := m.Called(projectID, id, pr)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -213,14 +216,6 @@ func (m *mockKnowledgeStore) List() ([]knowledge.ConceptSummary, error) {
 func (m *mockKnowledgeStore) Put(conceptID string, c knowledge.Concept) error {
 	args := m.Called(conceptID, c)
 	return args.Error(0)
-}
-
-// fixedTaskStoreFactory adapts an already-constructed TaskStore (typically
-// a mock) into a TaskStoreFactory that ignores the resolved root and always
-// returns the same store — used by tests that don't care about the actual
-// per-project root path.
-func fixedTaskStoreFactory(store TaskStore) TaskStoreFactory {
-	return func(root string) TaskStore { return store }
 }
 
 type mockProjectStore struct{ mock.Mock }
@@ -259,11 +254,6 @@ func (m *mockProjectStore) Update(id string, in project.UpdateInput) (project.Pr
 		p = v.(project.Project)
 	}
 	return p, args.Error(1)
-}
-
-func (m *mockProjectStore) TasksRoot(id string) (string, error) {
-	args := m.Called(id)
-	return args.String(0), args.Error(1)
 }
 
 type mockAgentRunner struct{ mock.Mock }

@@ -21,20 +21,19 @@ import (
 func TestHandleFinalizeRequirements_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.RequirementsDraft{Objective: "ship login", Context: task.Context{Summary: "adds login"}}
 	updated := task.Task{ID: "TASK-0001", Stage: task.StagePlanning, Objective: "ship login"}
 
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(updated, nil)
-	tasks.On("GetContext", "TASK-0001").Return(draft.Context, nil)
+	tasks.On("FinalizeRequirements", "demo-project", "TASK-0001", draft).Return(updated, nil)
+	tasks.On("GetContext", "demo-project", "TASK-0001").Return(draft.Context, nil)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/requirements/finalize", draft)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeRequirements()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizeRequirements()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizeRequirementsResponse
@@ -46,17 +45,16 @@ func TestHandleFinalizeRequirements_OK(t *testing.T) {
 func TestHandleFinalizeRequirements_WrongStage(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.RequirementsDraft{}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
+	tasks.On("FinalizeRequirements", "demo-project", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/requirements/finalize", draft)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeRequirements()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizeRequirements()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -64,7 +62,6 @@ func TestHandleFinalizeRequirements_WrongStage(t *testing.T) {
 func TestHandleFinalizeRequirements_InvalidBody(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	tasks := new(mockTaskStore)
 
@@ -72,7 +69,7 @@ func TestHandleFinalizeRequirements_InvalidBody(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizeRequirements()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizeRequirements()(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -92,19 +89,18 @@ func TestHandleFinalizeRequirements_RemovesPRCommentsScratchFileOnSuccess(t *tes
 
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: repositories}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.RequirementsDraft{Objective: "ship login"}
 	updated := task.Task{ID: "TASK-0001", Stage: task.StagePlanning}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(updated, nil)
-	tasks.On("GetContext", "TASK-0001").Return(task.Context{}, nil)
+	tasks.On("FinalizeRequirements", "demo-project", "TASK-0001", draft).Return(updated, nil)
+	tasks.On("GetContext", "demo-project", "TASK-0001").Return(task.Context{}, nil)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/requirements/finalize", draft)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), ReposRoot: reposRoot}).handleFinalizeRequirements()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, ReposRoot: reposRoot}).handleFinalizeRequirements()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.NoFileExists(t, scratchPath)
@@ -113,20 +109,19 @@ func TestHandleFinalizeRequirements_RemovesPRCommentsScratchFileOnSuccess(t *tes
 func TestHandleFinalizePlan_OK(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	plan := task.Plan{Approach: "incremental", EstimatedComplexity: "low"}
 	updated := task.Task{ID: "TASK-0001", Stage: task.StageImplementation}
 
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizePlan", "TASK-0001", plan).Return(updated, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(plan, nil)
+	tasks.On("FinalizePlan", "demo-project", "TASK-0001", plan).Return(updated, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(plan, nil)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/plan/finalize", plan)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizePlan()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizePlan()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got finalizePlanResponse
@@ -138,17 +133,16 @@ func TestHandleFinalizePlan_OK(t *testing.T) {
 func TestHandleFinalizePlan_WrongStage(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	plan := task.Plan{}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizePlan", "TASK-0001", plan).Return(nil, task.ErrWrongStage)
+	tasks.On("FinalizePlan", "demo-project", "TASK-0001", plan).Return(nil, task.ErrWrongStage)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/plan/finalize", plan)
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks)}).handleFinalizePlan()(w, req)
+	(&Server{Projects: projects, Tasks: tasks}).handleFinalizePlan()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -156,13 +150,12 @@ func TestHandleFinalizePlan_WrongStage(t *testing.T) {
 func TestHandleFinalizeRequirements_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.RequirementsDraft{}
 	updated := task.Task{ID: "TASK-0001", Stage: task.StagePlanning}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(updated, nil)
-	tasks.On("GetContext", "TASK-0001").Return(task.Context{}, nil)
+	tasks.On("FinalizeRequirements", "demo-project", "TASK-0001", draft).Return(updated, nil)
+	tasks.On("GetContext", "demo-project", "TASK-0001").Return(task.Context{}, nil)
 
 	runner := new(mockAgentRunner)
 	runner.On("CloseSession", "TASK-0001:"+task.StageRequirements)
@@ -171,7 +164,7 @@ func TestHandleFinalizeRequirements_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeRequirements()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeRequirements()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	runner.AssertCalled(t, "CloseSession", "TASK-0001:"+task.StageRequirements)
@@ -180,11 +173,10 @@ func TestHandleFinalizeRequirements_ClosesAgentSessionsOnSuccess(t *testing.T) {
 func TestHandleFinalizeRequirements_DoesNotCloseSessionsWhenFinalizeFails(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	draft := task.RequirementsDraft{}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizeRequirements", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
+	tasks.On("FinalizeRequirements", "demo-project", "TASK-0001", draft).Return(nil, task.ErrWrongStage)
 
 	runner := new(mockAgentRunner)
 
@@ -192,7 +184,7 @@ func TestHandleFinalizeRequirements_DoesNotCloseSessionsWhenFinalizeFails(t *tes
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeRequirements()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizeRequirements()(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	runner.AssertNotCalled(t, "CloseSession", mock.Anything)
@@ -201,13 +193,12 @@ func TestHandleFinalizeRequirements_DoesNotCloseSessionsWhenFinalizeFails(t *tes
 func TestHandleFinalizePlan_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
-	projects.On("TasksRoot", "demo-project").Return("/data/projects/demo-project/tasks", nil)
 
 	plan := task.Plan{}
 	updated := task.Task{ID: "TASK-0001", Stage: task.StageImplementation}
 	tasks := new(mockTaskStore)
-	tasks.On("FinalizePlan", "TASK-0001", plan).Return(updated, nil)
-	tasks.On("GetPlan", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("FinalizePlan", "demo-project", "TASK-0001", plan).Return(updated, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
 
 	runner := new(mockAgentRunner)
 	runner.On("CloseSession", "TASK-0001:"+task.StagePlanning)
@@ -216,7 +207,7 @@ func TestHandleFinalizePlan_ClosesAgentSessionsOnSuccess(t *testing.T) {
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()
-	(&Server{Projects: projects, TaskStores: fixedTaskStoreFactory(tasks), AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizePlan()(w, req)
+	(&Server{Projects: projects, Tasks: tasks, AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}}).handleFinalizePlan()(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	runner.AssertCalled(t, "CloseSession", "TASK-0001:"+task.StagePlanning)
