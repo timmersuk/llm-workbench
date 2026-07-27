@@ -67,11 +67,7 @@ func (s *Store) push(staleThreshold time.Duration) {
 		return
 	}
 
-	// A checkout with no commit at all yet (freshly cloned from an empty
-	// remote, nothing created since) has no HEAD to push — `git push`
-	// would fail with a confusing "src refspec HEAD does not match any".
-	// That's not a failure worth logging, just "nothing to push yet".
-	if _, err := runGit(s.core.root, "rev-parse", "--verify", "HEAD"); err != nil {
+	if !aheadOfUpstream(s.core.root) {
 		return
 	}
 
@@ -203,6 +199,30 @@ func (c *core) sweepOrphans(staleThreshold time.Duration) error {
 
 	message := fmt.Sprintf("Sweep: recover %d unqueued change(s), likely from a prior restart", len(stale))
 	return c.addAndCommit(stale, message)
+}
+
+// aheadOfUpstream reports whether the current branch has any commit not
+// yet reflected in its upstream tracking ref (`@{u}`) — updated locally by
+// this package's own last successful push, so checking it is a purely
+// local ref comparison, no network call needed to ask "is there anything
+// to push". Two states read as "nothing to push, don't bother": no commit
+// exists yet (`rev-parse HEAD` fails — a fresh clone of an empty remote
+// with nothing created since) and HEAD already matches `@{u}` (the
+// steady-state idle case this exists to short-circuit, avoiding a
+// `git push` subprocess and network round-trip on every tick for no
+// reason). No upstream configured yet (`rev-parse @{u}` fails — before
+// this checkout's very first successful push) reads as "try" — that's the
+// only way to find out.
+func aheadOfUpstream(root string) bool {
+	head, err := runGit(root, "rev-parse", "HEAD")
+	if err != nil {
+		return false
+	}
+	upstream, err := runGit(root, "rev-parse", "@{u}")
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(head) != strings.TrimSpace(upstream)
 }
 
 // hasStagedChanges reports whether the git index currently has any staged

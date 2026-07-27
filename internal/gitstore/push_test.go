@@ -171,3 +171,39 @@ func TestCommitPending_LeavesFreshUnqueuedChangesAlone(t *testing.T) {
 	commits := logMessages(t, workspaceRoot)
 	require.Len(t, commits, 1, "a fresh unqueued change must not be swept before staleThreshold elapses")
 }
+
+// TestAheadOfUpstream_FalseOnceSteadyState covers the actual fix behind
+// this check's existence: once a commit has been pushed and nothing new
+// has happened since, aheadOfUpstream must read false — so push() skips
+// invoking `git push` entirely on an idle tick, rather than spawning a
+// subprocess and network round-trip for a guaranteed no-op every interval
+// forever.
+func TestAheadOfUpstream_FalseOnceSteadyState(t *testing.T) {
+	remote := newBareRemote(t)
+	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
+	store, err := Open(workspaceRoot, remote)
+	require.NoError(t, err)
+
+	// No commit at all yet: nothing to push.
+	assert.False(t, aheadOfUpstream(workspaceRoot))
+
+	p, err := store.Projects.Create(newProjectCreateInput("Demo Project"))
+	require.NoError(t, err)
+	require.NoError(t, store.core.commitPending(time.Hour))
+
+	// Committed locally but never pushed: there's something to push.
+	assert.True(t, aheadOfUpstream(workspaceRoot))
+
+	_, err = runGit(workspaceRoot, "push", "-u", originRemoteName, "HEAD")
+	require.NoError(t, err)
+
+	// Just pushed, nothing changed since: steady state, nothing to push.
+	assert.False(t, aheadOfUpstream(workspaceRoot))
+
+	_, err = store.Projects.Update(p.ID, newProjectUpdateInput("Renamed Project"))
+	require.NoError(t, err)
+	require.NoError(t, store.core.commitPending(time.Hour))
+
+	// A new local commit since the last push: ahead again.
+	assert.True(t, aheadOfUpstream(workspaceRoot))
+}
