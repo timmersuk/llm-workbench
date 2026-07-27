@@ -154,12 +154,13 @@ interface StageConversationPanelProps<D, S = never> {
   // (both on the streamed tool_call event and on rehydration from a saved
   // conversation) — the one seam to repair a shape the model got wrong
   // despite the tool's JSON Schema (e.g. propose_context's `files` is
-  // schema'd as string[], but a model has been observed emitting
-  // {path, role} objects there instead). Left undefined, the parsed draft
-  // is used as-is. Backend Finalize decodes into a fixed Go struct, so an
-  // unrepaired shape mismatch there surfaces only as an opaque "invalid
-  // request body" 400 — normalizing here, before the human ever sees the
-  // draft, fixes both that and the editable form rendering it correctly.
+  // schema'd as {path, role}[] (docs/adr/0021), but a model has been
+  // observed emitting bare path strings there instead). Left undefined,
+  // the parsed draft is used as-is. Backend Finalize decodes into a fixed
+  // Go struct, so an unrepaired shape mismatch there surfaces only as an
+  // opaque "invalid request body" 400 — normalizing here, before the human
+  // ever sees the draft, fixes both that and the editable form rendering
+  // it correctly.
   normalizeDraft?: (draft: D) => D
   // autoStart controls whether the panel fires its opening turn the moment
   // it mounts on an empty conversation, or waits for an explicit Start

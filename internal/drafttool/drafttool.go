@@ -46,7 +46,17 @@ var proposeContextSchema = json.RawMessage(`{
       "properties": {
         "summary": {"type": "string"},
         "background": {"type": "string"},
-        "files": {"type": "array", "items": {"type": "string"}},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {"type": "string"},
+              "role": {"type": "string"}
+            },
+            "required": ["path"]
+          }
+        },
         "detail": {"type": "string"},
         "verification": {
           "type": "array",

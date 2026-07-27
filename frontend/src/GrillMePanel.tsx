@@ -1,7 +1,7 @@
 import { finalizeRequirements } from './api'
 import { RequirementsDraftForm } from './RequirementsDraftForm'
 import { StageConversationPanel } from './StageConversationPanel'
-import type { RequirementsDraft, Task, TaskContext } from './types'
+import type { ContextFile, RequirementsDraft, Task, TaskContext } from './types'
 
 const EMPTY_DRAFT: RequirementsDraft = {
   objective: '',
@@ -24,16 +24,17 @@ interface GrillMePanelProps {
   onFinalized: (task: Task, context: TaskContext) => void
 }
 
-// normalizeRequirementsDraft repairs context.files entries a model
-// proposed as {path, role} objects instead of the plain path strings the
+// normalizeRequirementsDraft upgrades context.files entries a model
+// proposed as bare path strings into the {path, role} objects the
 // propose_context tool schema (drafttool.go's proposeContextSchema) and
-// task.Context.Files ([]string) both require — observed from a Claude Code
-// executor turn despite the schema, and otherwise silently corrupts the
-// Files field in the form and 400s on Finalize (Go's json.Decode rejects
-// the whole body when a string field gets an object instead).
+// task.Context.Files ([]ContextFile) both require as of docs/adr/0021 —
+// some executors still emit a plain string despite the schema, which
+// otherwise renders wrong in the form and 400s on Finalize (Go's
+// json.Decode rejects the whole body when an object field gets a string
+// instead).
 function normalizeRequirementsDraft(draft: RequirementsDraft): RequirementsDraft {
   const files = draft.context.files.map((file) =>
-    typeof file === 'string' ? file : String((file as { path?: unknown })?.path ?? file),
+    typeof file === 'string' ? { path: file, role: '' } : (file as ContextFile),
   )
   return { ...draft, context: { ...draft.context, files } }
 }

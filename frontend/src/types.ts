@@ -175,13 +175,21 @@ export interface VerificationStep {
   kind: VerificationKind
 }
 
+// ContextFile mirrors task.ContextFile (internal/task/context.go) — one
+// entry in context.yaml's files list: a repo-relative path plus an
+// optional note on why it matters to this task (docs/adr/0021).
+export interface ContextFile {
+  path: string
+  role: string
+}
+
 // TaskContext mirrors task.Context (internal/task/context.go) —
 // context.yaml, GrillMe's Finalize output alongside the requirements
 // fields on Task itself.
 export interface TaskContext {
   summary: string
   background: string
-  files: string[]
+  files: ContextFile[]
   detail: string
   verification: VerificationStep[]
   open_questions: string[]

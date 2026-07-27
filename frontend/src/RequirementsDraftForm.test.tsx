@@ -12,7 +12,7 @@ const draft: RequirementsDraft = {
   context: {
     summary: 'Adds a login page',
     background: 'Users currently cannot log in',
-    files: ['LoginPage.tsx'],
+    files: [{ path: 'LoginPage.tsx', role: 'the new page component' }],
     detail: 'Some detail',
     verification: [{ description: 'Manually log in', kind: 'human_judgment' }],
     open_questions: ['What about SSO?'],
@@ -25,7 +25,8 @@ describe('RequirementsDraftForm', () => {
     expect(screen.getByLabelText('Objective')).toHaveValue('Ship the login page')
     expect(screen.getByLabelText('Constraints (one per line)')).toHaveValue('No new deps')
     expect(screen.getByLabelText('Summary')).toHaveValue('Adds a login page')
-    expect(screen.getByLabelText('Files (one per line)')).toHaveValue('LoginPage.tsx')
+    expect(screen.getByLabelText('File 1 path')).toHaveValue('LoginPage.tsx')
+    expect(screen.getByLabelText('File 1 role')).toHaveValue('the new page component')
   })
 
   it('editing the objective calls onChange with only that field changed', () => {
@@ -107,6 +108,49 @@ describe('RequirementsDraftForm', () => {
     expect(onChange).toHaveBeenCalledWith({
       ...draft,
       context: { ...draft.context, verification: [] },
+    })
+  })
+
+  it('editing a file path changes only that file', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.change(screen.getByLabelText('File 1 path'), { target: { value: 'LoginForm.tsx' } })
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: { ...draft.context, files: [{ path: 'LoginForm.tsx', role: 'the new page component' }] },
+    })
+  })
+
+  it('editing a file role changes only that file', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.change(screen.getByLabelText('File 1 role'), { target: { value: 'updated role' } })
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: { ...draft.context, files: [{ path: 'LoginPage.tsx', role: 'updated role' }] },
+    })
+  })
+
+  it('adding a file appends an empty entry', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.click(screen.getByText('Add file'))
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: {
+        ...draft.context,
+        files: [{ path: 'LoginPage.tsx', role: 'the new page component' }, { path: '', role: '' }],
+      },
+    })
+  })
+
+  it('removing a file drops it', () => {
+    const onChange = vi.fn()
+    render(<RequirementsDraftForm draft={draft} onChange={onChange} />)
+    fireEvent.click(screen.getByLabelText('Remove file 1'))
+    expect(onChange).toHaveBeenCalledWith({
+      ...draft,
+      context: { ...draft.context, files: [] },
     })
   })
 })

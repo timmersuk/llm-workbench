@@ -35,7 +35,7 @@ func (s *FileStore) FinalizeRequirements(projectID, id string, draft Requirement
 	draft.Context.Summary = strings.TrimSpace(draft.Context.Summary)
 	draft.Context.Background = strings.TrimSpace(draft.Context.Background)
 	draft.Context.Detail = strings.TrimSpace(draft.Context.Detail)
-	draft.Context.Files = trimmedList(draft.Context.Files)
+	draft.Context.Files = trimmedContextFiles(draft.Context.Files)
 	draft.Context.Verification = trimmedVerification(draft.Context.Verification)
 	draft.Context.OpenQuestions = trimmedList(draft.Context.OpenQuestions)
 	if err := s.writeContext(projectID, id, draft.Context); err != nil {

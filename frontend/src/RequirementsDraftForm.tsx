@@ -1,4 +1,4 @@
-import type { RequirementsDraft, VerificationKind, VerificationStep } from './types'
+import type { ContextFile, RequirementsDraft, VerificationKind, VerificationStep } from './types'
 import { linesToList, listToLines } from './listFields'
 
 const VERIFICATION_KINDS: { value: VerificationKind; label: string }[] = [
@@ -27,6 +27,17 @@ export function RequirementsDraftForm({ draft, onChange }: RequirementsDraftForm
 
   const addStep = () =>
     setVerification([...verification, { description: '', kind: 'agent_executable' }])
+
+  const files = draft.context.files
+
+  const setFiles = (files: ContextFile[]) => onChange({ ...draft, context: { ...draft.context, files } })
+
+  const updateFile = (index: number, patch: Partial<ContextFile>) =>
+    setFiles(files.map((file, i) => (i === index ? { ...file, ...patch } : file)))
+
+  const removeFile = (index: number) => setFiles(files.filter((_, i) => i !== index))
+
+  const addFile = () => setFiles([...files, { path: '', role: '' }])
 
   return (
     <div className="draft-form">
@@ -87,13 +98,34 @@ export function RequirementsDraftForm({ draft, onChange }: RequirementsDraftForm
         />
       </div>
       <div className="form-row">
-        <label htmlFor="draft-context-files">Files (one per line)</label>
-        <textarea
-          id="draft-context-files"
-          value={listToLines(draft.context.files)}
-          onChange={(e) => onChange({ ...draft, context: { ...draft.context, files: linesToList(e.target.value) } })}
-          rows={2}
-        />
+        <span className="form-label">Files</span>
+        <div className="verification-steps">
+          {files.length === 0 && <p className="verification-empty">No files yet.</p>}
+          {files.map((file, index) => (
+            <div className="verification-step" key={index}>
+              <input
+                type="text"
+                aria-label={`File ${index + 1} path`}
+                placeholder="path"
+                value={file.path}
+                onChange={(e) => updateFile(index, { path: e.target.value })}
+              />
+              <input
+                type="text"
+                aria-label={`File ${index + 1} role`}
+                placeholder="role (optional)"
+                value={file.role}
+                onChange={(e) => updateFile(index, { role: e.target.value })}
+              />
+              <button type="button" aria-label={`Remove file ${index + 1}`} onClick={() => removeFile(index)}>
+                Remove
+              </button>
+            </div>
+          ))}
+          <button type="button" onClick={addFile}>
+            Add file
+          </button>
+        </div>
       </div>
       <div className="form-row">
         <label htmlFor="draft-context-detail">Detail</label>

@@ -75,7 +75,9 @@ references, alternatives considered, verification steps).
 ```yaml
 summary: ""
 background: ""
-files: []
+files:
+  - path: ""
+    role: ""  # optional — why this file matters here, not just that it does
 detail: |
   ""
 verification:
@@ -83,6 +85,13 @@ verification:
     kind: agent_executable | human_judgment
 open_questions: []
 ```
+
+Each `files` entry is a repo-relative `path` plus an optional `role`
+explaining why it matters to this task — widened from a bare path string
+for the same reason `verification` was widened from `[]string` (see
+`docs/adr/0021-structure-context-files-as-path-role-pairs.md`): both a live
+GrillMe turn and independently-authored `context.yaml` files kept reaching
+for a place to record *why* a file was listed, not just its path.
 
 Each `verification` entry is a structured step, not a bare string: a
 human-readable `description` plus a `kind` classifying who performs it —

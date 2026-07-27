@@ -29,7 +29,7 @@ func TestFileStore_GetContext_RoundTrip(t *testing.T) {
 	want := Context{
 		Summary:       "does the thing",
 		Background:    "some background",
-		Files:         []string{"a.go"},
+		Files:         []ContextFile{{Path: "a.go", Role: "where the thing lives"}},
 		Detail:        "detail text",
 		Verification:  []VerificationStep{{Description: "run tests", Kind: VerificationKindAgentExecutable}},
 		OpenQuestions: []string{"what about x?"},

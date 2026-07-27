@@ -36,3 +36,19 @@ func trimmedVerification(items []VerificationStep) []VerificationStep {
 	}
 	return trimmed
 }
+
+// trimmedContextFiles trims each ContextFile's Path/Role (same yaml.v3
+// leading-newline hazard trimmedList guards against, since both are
+// LLM-authored Draft free text) and drops any entry whose Path is empty
+// after trimming — a file entry with no path carries no meaning.
+func trimmedContextFiles(items []ContextFile) []ContextFile {
+	trimmed := make([]ContextFile, 0, len(items))
+	for _, f := range items {
+		path := strings.TrimSpace(f.Path)
+		if path == "" {
+			continue
+		}
+		trimmed = append(trimmed, ContextFile{Path: path, Role: strings.TrimSpace(f.Role)})
+	}
+	return trimmed
+}

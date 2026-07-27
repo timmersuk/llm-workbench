@@ -30,6 +30,16 @@ type VerificationStep struct {
 	Kind        string `yaml:"kind" json:"kind"` // agent_executable | human_judgment
 }
 
+// ContextFile is one entry in context.yaml's files list — a repo-relative
+// path plus an optional short note on why it matters to this task. Widened
+// from a bare path string per docs/adr/0021: both live GrillMe turns and
+// hand-authored context.yaml files kept independently reaching for a
+// {path, role} shape to explain each file, not just name it.
+type ContextFile struct {
+	Path string `yaml:"path" json:"path"`
+	Role string `yaml:"role,omitempty" json:"role,omitempty"`
+}
+
 // Context is the optional, derived narrative context behind a task, stored
 // as <task root>/<id>/context.yaml. Field-for-field mirror of
 // docs/task schema v0.md §3 ("context.yaml"). Produced by GrillMe via
@@ -37,7 +47,7 @@ type VerificationStep struct {
 type Context struct {
 	Summary       string             `yaml:"summary" json:"summary"`
 	Background    string             `yaml:"background" json:"background"`
-	Files         []string           `yaml:"files" json:"files"`
+	Files         []ContextFile      `yaml:"files" json:"files"`
 	Detail        string             `yaml:"detail" json:"detail"`
 	Verification  []VerificationStep `yaml:"verification" json:"verification"`
 	OpenQuestions []string           `yaml:"open_questions" json:"open_questions"`
