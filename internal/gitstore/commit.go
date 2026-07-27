@@ -2,72 +2,54 @@ package gitstore
 
 import (
 	"fmt"
-	"time"
-
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"path/filepath"
 
 	"github.com/timmersuk/llm-workbench/internal/project"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
 
-// commitAuthor identifies every commit this store makes — a fixed,
-// workbench-owned identity rather than any real human's, since these
-// commits are mechanical persistence writes (the human decision already
-// happened at the API layer that called Create/Update), not authored
-// changes attributable to a person. Mirrors gitutil.CommitAll's own
-// "mechanical safety commit" posture for the same reason.
-var commitAuthor = &object.Signature{Name: "llm-workbench", Email: "llm-workbench@localhost"}
-
-// commit stages every change under root (`git add -A` via go-git's
-// AddOptions{All: true}) and commits it with message, timestamped now.
-// Must only be called with c.mu already held — see core.mu's doc comment
-// for why the whole write (FileStore write + stage + commit), not just
-// this step, needs to be serialized.
-//
-// If nothing actually changed (Status().IsClean()), this is a no-op rather
-// than an empty commit — defensive only: every caller here follows a
-// FileStore write that always changes something, so this path shouldn't
-// normally be reached, but a no-op is strictly safer than either an empty
-// commit or a spurious error.
-func (c *core) commit(message string) error {
-	wt, err := c.repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("resolving worktree: %w", err)
-	}
-	if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return fmt.Errorf("staging changes: %w", err)
-	}
-	status, err := wt.Status()
-	if err != nil {
-		return fmt.Errorf("checking worktree status: %w", err)
-	}
-	if status.IsClean() {
-		return nil
-	}
-	author := *commitAuthor
-	author.When = time.Now().UTC()
-	if _, err := wt.Commit(message, &git.CommitOptions{Author: &author}); err != nil {
-		return fmt.Errorf("committing: %w", err)
-	}
-	return nil
+// projectDir returns the directory holding a project's project.yaml —
+// mirroring project.FileStore's own `filepath.Join(Root, id)` layout
+// (internal/project/store.go). gitstore needs this so a pending change can
+// be committed by `git add`-ing just this directory (push.go's
+// commitPending) rather than the whole working tree, keeping one commit
+// per operation even when several are queued up between push ticks.
+func (c *core) projectDir(id string) string {
+	return filepath.Join(c.root, "projects", id)
 }
 
-// withCommit runs fn (a FileStore write) with c.mu held, then commits
-// message if fn succeeded. fn's own error, if any, is returned unchanged
-// without attempting a commit — whatever fn already wrote to disk (if
-// anything) is left uncommitted rather than lost: it's picked up
-// automatically by this store's next successful commit's own `git add
-// -A`, rather than needing its own recovery path.
-func (c *core) withCommit(message string, fn func() error) error {
+// taskDir returns the directory holding a task's task.yaml and every
+// sibling artifact (context.yaml, plan.yaml, conversations, executions/,
+// reviews/) — mirroring task.FileStore's own taskDir layout
+// (internal/task/store.go). Every task mutation, whatever it touches,
+// lives under this one directory, so `git add`-ing it is always exactly
+// the scope of that one operation's change.
+func (c *core) taskDir(projectID, id string) string {
+	return filepath.Join(c.root, "projects", projectID, "tasks", id)
+}
+
+// withPending runs fn (a FileStore write) with c.mu held, then — if fn
+// succeeded — enqueues a pending change for the push worker's next tick to
+// actually commit (push.go's commitPending), rather than committing
+// immediately. dirFn is called after fn returns (not before) since some
+// operations (Create, which slugifies an id from a human-supplied name)
+// only know the affected entity's directory once the write itself has
+// produced it; others (Update, which already have the id as a parameter)
+// could compute it upfront, but using the same after-the-fact shape
+// everywhere keeps every call site identical.
+//
+// Deferring the actual `git add`/`git commit` out of the request path is
+// what makes shelling out to the `git` binary (rather than the pure-Go
+// go-git library this package used before) viable without adding a `git`
+// subprocess spawn to every API request's latency — see push.go's
+// commitPending and this package's doc comment.
+func (c *core) withPending(message string, dirFn func() string, fn func() error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := fn(); err != nil {
 		return err
 	}
-	if err := c.commit(message); err != nil {
-		return fmt.Errorf("committing %q: %w", message, err)
-	}
+	c.pending = append(c.pending, pendingChange{dir: dirFn(), message: message})
 	return nil
 }
 
@@ -81,14 +63,18 @@ func (s *ProjectStore) List() (project.ListResult, error) { return s.files.List(
 func (s *ProjectStore) Get(id string) (project.Project, error) { return s.files.Get(id) }
 
 // Create writes a new project via the wrapped project.FileStore and
-// commits the result synchronously and locally.
+// enqueues the result to be committed on the push worker's next tick.
 func (s *ProjectStore) Create(in project.CreateInput) (project.Project, error) {
 	var created project.Project
-	err := s.core.withCommit(fmt.Sprintf("Create project %q", in.Name), func() error {
-		var err error
-		created, err = s.files.Create(in)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Create project %q", in.Name),
+		func() string { return s.core.projectDir(created.ID) },
+		func() error {
+			var err error
+			created, err = s.files.Create(in)
+			return err
+		},
+	)
 	if err != nil {
 		return project.Project{}, err
 	}
@@ -96,14 +82,18 @@ func (s *ProjectStore) Create(in project.CreateInput) (project.Project, error) {
 }
 
 // Update overwrites an existing project via the wrapped project.FileStore
-// and commits the result synchronously and locally.
+// and enqueues the result to be committed on the push worker's next tick.
 func (s *ProjectStore) Update(id string, in project.UpdateInput) (project.Project, error) {
 	var updated project.Project
-	err := s.core.withCommit(fmt.Sprintf("Update project %s", id), func() error {
-		var err error
-		updated, err = s.files.Update(id, in)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Update project %s", id),
+		func() string { return s.core.projectDir(id) },
+		func() error {
+			var err error
+			updated, err = s.files.Update(id, in)
+			return err
+		},
+	)
 	if err != nil {
 		return project.Project{}, err
 	}
@@ -118,15 +108,19 @@ func (s *TaskStore) List(projectID string) (task.ListResult, error) { return s.f
 // Get delegates straight to the wrapped task.FileStore.
 func (s *TaskStore) Get(projectID, id string) (task.Task, error) { return s.files.Get(projectID, id) }
 
-// Create writes a new task via the wrapped task.FileStore and commits the
-// result synchronously and locally.
+// Create writes a new task via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
 func (s *TaskStore) Create(projectID string, t task.Task) (task.Task, error) {
 	var created task.Task
-	err := s.core.withCommit(fmt.Sprintf("Create task %s/%s", projectID, t.ID), func() error {
-		var err error
-		created, err = s.files.Create(projectID, t)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Create task %s/%s", projectID, t.ID),
+		func() string { return s.core.taskDir(projectID, t.ID) },
+		func() error {
+			var err error
+			created, err = s.files.Create(projectID, t)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
@@ -134,14 +128,18 @@ func (s *TaskStore) Create(projectID string, t task.Task) (task.Task, error) {
 }
 
 // Update overwrites an existing task via the wrapped task.FileStore and
-// commits the result synchronously and locally.
+// enqueues the result to be committed on the push worker's next tick.
 func (s *TaskStore) Update(projectID, id string, t task.Task) (task.Task, error) {
 	var updated task.Task
-	err := s.core.withCommit(fmt.Sprintf("Update task %s/%s", projectID, id), func() error {
-		var err error
-		updated, err = s.files.Update(projectID, id, t)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Update task %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			updated, err = s.files.Update(projectID, id, t)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
@@ -164,14 +162,18 @@ func (s *TaskStore) GetConversation(projectID, id, stage string) (task.Conversat
 }
 
 // AppendConversationMessages appends via the wrapped task.FileStore and
-// commits the result synchronously and locally.
+// enqueues the result to be committed on the push worker's next tick.
 func (s *TaskStore) AppendConversationMessages(projectID, id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error) {
 	var conv task.Conversation
-	err := s.core.withCommit(fmt.Sprintf("Append %s conversation messages for %s/%s", stage, projectID, id), func() error {
-		var err error
-		conv, err = s.files.AppendConversationMessages(projectID, id, stage, msgs...)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Append %s conversation messages for %s/%s", stage, projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			conv, err = s.files.AppendConversationMessages(projectID, id, stage, msgs...)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Conversation{}, err
 	}
@@ -179,119 +181,151 @@ func (s *TaskStore) AppendConversationMessages(projectID, id, stage string, msgs
 }
 
 // ReplaceConversationMessages overwrites via the wrapped task.FileStore and
-// commits the result synchronously and locally.
+// enqueues the result to be committed on the push worker's next tick.
 func (s *TaskStore) ReplaceConversationMessages(projectID, id, stage string, msgs []task.ConversationMessage) (task.Conversation, error) {
 	var conv task.Conversation
-	err := s.core.withCommit(fmt.Sprintf("Replace %s conversation messages for %s/%s", stage, projectID, id), func() error {
-		var err error
-		conv, err = s.files.ReplaceConversationMessages(projectID, id, stage, msgs)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Replace %s conversation messages for %s/%s", stage, projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			conv, err = s.files.ReplaceConversationMessages(projectID, id, stage, msgs)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Conversation{}, err
 	}
 	return conv, nil
 }
 
-// FinalizeRequirements persists via the wrapped task.FileStore and commits
-// the result synchronously and locally.
+// FinalizeRequirements persists via the wrapped task.FileStore and enqueues
+// the result to be committed on the push worker's next tick.
 func (s *TaskStore) FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error) {
 	var t task.Task
-	err := s.core.withCommit(fmt.Sprintf("Finalize requirements for %s/%s", projectID, id), func() error {
-		var err error
-		t, err = s.files.FinalizeRequirements(projectID, id, draft)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Finalize requirements for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.FinalizeRequirements(projectID, id, draft)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
 	return t, nil
 }
 
-// FinalizePlan persists via the wrapped task.FileStore and commits the
-// result synchronously and locally.
+// FinalizePlan persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
 func (s *TaskStore) FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error) {
 	var t task.Task
-	err := s.core.withCommit(fmt.Sprintf("Finalize plan for %s/%s", projectID, id), func() error {
-		var err error
-		t, err = s.files.FinalizePlan(projectID, id, plan)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Finalize plan for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.FinalizePlan(projectID, id, plan)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
 	return t, nil
 }
 
-// FinalizeReview persists via the wrapped task.FileStore and commits the
-// result synchronously and locally.
+// FinalizeReview persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
 func (s *TaskStore) FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error) {
 	var t task.Task
-	err := s.core.withCommit(fmt.Sprintf("Finalize review for %s/%s", projectID, id), func() error {
-		var err error
-		t, err = s.files.FinalizeReview(projectID, id, draft)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Finalize review for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.FinalizeReview(projectID, id, draft)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
 	return t, nil
 }
 
-// MarkPRMerged persists via the wrapped task.FileStore and commits the
-// result synchronously and locally.
+// MarkPRMerged persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
 func (s *TaskStore) MarkPRMerged(projectID, id string) (task.Task, error) {
 	var t task.Task
-	err := s.core.withCommit(fmt.Sprintf("Mark PR merged for %s/%s", projectID, id), func() error {
-		var err error
-		t, err = s.files.MarkPRMerged(projectID, id)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Mark PR merged for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.MarkPRMerged(projectID, id)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
 	return t, nil
 }
 
-// RecordPullRequest persists via the wrapped task.FileStore and commits
-// the result synchronously and locally.
+// RecordPullRequest persists via the wrapped task.FileStore and enqueues
+// the result to be committed on the push worker's next tick.
 func (s *TaskStore) RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error) {
 	var t task.Task
-	err := s.core.withCommit(fmt.Sprintf("Record pull request for %s/%s", projectID, id), func() error {
-		var err error
-		t, err = s.files.RecordPullRequest(projectID, id, pr)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Record pull request for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.RecordPullRequest(projectID, id, pr)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
 	return t, nil
 }
 
-// ReviseToRequirements persists via the wrapped task.FileStore and commits
-// the result synchronously and locally.
+// ReviseToRequirements persists via the wrapped task.FileStore and enqueues
+// the result to be committed on the push worker's next tick.
 func (s *TaskStore) ReviseToRequirements(projectID, id string) (task.Task, error) {
 	var t task.Task
-	err := s.core.withCommit(fmt.Sprintf("Revise %s/%s to requirements", projectID, id), func() error {
-		var err error
-		t, err = s.files.ReviseToRequirements(projectID, id)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Revise %s/%s to requirements", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.ReviseToRequirements(projectID, id)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
 	return t, nil
 }
 
-// ReviseToPlanning persists via the wrapped task.FileStore and commits the
-// result synchronously and locally.
+// ReviseToPlanning persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
 func (s *TaskStore) ReviseToPlanning(projectID, id string) (task.Task, error) {
 	var t task.Task
-	err := s.core.withCommit(fmt.Sprintf("Revise %s/%s to planning", projectID, id), func() error {
-		var err error
-		t, err = s.files.ReviseToPlanning(projectID, id)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Revise %s/%s to planning", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.ReviseToPlanning(projectID, id)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Task{}, err
 	}
@@ -300,20 +334,24 @@ func (s *TaskStore) ReviseToPlanning(projectID, id string) (task.Task, error) {
 
 // NextExecutionID delegates straight to the wrapped task.FileStore — it
 // never writes anything (see task.FileStore.NextExecutionID's doc
-// comment), so no commit is needed.
+// comment), so nothing is enqueued.
 func (s *TaskStore) NextExecutionID(projectID, id string) (string, error) {
 	return s.files.NextExecutionID(projectID, id)
 }
 
-// RecordExecution persists via the wrapped task.FileStore and commits the
-// result synchronously and locally.
+// RecordExecution persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
 func (s *TaskStore) RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error) {
 	var recorded task.Execution
-	err := s.core.withCommit(fmt.Sprintf("Record execution %s for %s/%s", exec.ExecutionID, projectID, id), func() error {
-		var err error
-		recorded, err = s.files.RecordExecution(projectID, id, exec)
-		return err
-	})
+	err := s.core.withPending(
+		fmt.Sprintf("Record execution %s for %s/%s", exec.ExecutionID, projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			recorded, err = s.files.RecordExecution(projectID, id, exec)
+			return err
+		},
+	)
 	if err != nil {
 		return task.Execution{}, err
 	}
