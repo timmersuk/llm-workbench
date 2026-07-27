@@ -1,9 +1,9 @@
 id: git-backed-storage
 title: Migrate task/project storage to a real git-backed repository
 project: llm-workbench
-stage: implementation
+stage: pr_review
 created_at: 2026-07-06T00:00:00Z
-updated_at: 2026-07-24T21:20:41.6289595Z
+updated_at: 2026-07-27T15:38:01.7241795Z
 objective: Replace the flat-file FileStore for tasks and projects with a real git-backed store (GitStore) built on go-git, so every task.yaml/project.yaml create or update is a commit, giving full history/diff/blame — restoring the "git-backed" framing docs/project_summary.md and CLAUDE.md used before Milestone 2 walked it back to plain on-disk persistence. This task delivers the working GitStore implementation itself, not just a decision document; a PR-by-PR milestone plan is written during this same task's later planning stage.
 constraints:
     - No in-app git operations, browsing, history/diff/blame UI or API is in scope for this milestone — storage-layer swap only; surfacing history is deferred to a later milestone.
@@ -32,3 +32,7 @@ references:
         - docs/engineering conventions.md
         - docs/milestones/done/milestone2.md
     repo: []
+pull_request:
+    url: https://github.com/timmersuk/llm-workbench/pull/56
+    number: 56
+    branch: task-exec/git-backed-storage/exec-002

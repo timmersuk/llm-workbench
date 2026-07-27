@@ -1,0 +1,73 @@
+execution_id: exec-001
+task_id: git-backed-storage
+executor:
+    type: claude-code
+    version: ""
+input:
+    plan_ref: plan.yaml
+    context_refs: []
+    review_feedback: ""
+    continued_from_execution_id: ""
+output:
+    artifacts:
+        - cmd/server/main.go
+        - go.mod
+        - go.sum
+        - internal/api/execution.go
+        - internal/api/execution_test.go
+        - internal/api/finalize.go
+        - internal/api/finalize_test.go
+        - internal/api/integration_test.go
+        - internal/api/knowledge_draft.go
+        - internal/api/knowledge_draft_test.go
+        - internal/api/mocks_test.go
+        - internal/api/pr.go
+        - internal/api/pr_test.go
+        - internal/api/review.go
+        - internal/api/review_conversation_test.go
+        - internal/api/review_test.go
+        - internal/api/revise.go
+        - internal/api/revise_test.go
+        - internal/api/router.go
+        - internal/api/router_test.go
+        - internal/api/stage_conversation.go
+        - internal/api/stage_conversation_test.go
+        - internal/api/task_context.go
+        - internal/api/task_context_test.go
+        - internal/api/tasks.go
+        - internal/api/tasks_test.go
+        - internal/gitstore/commit.go
+        - internal/gitstore/gitstore.go
+        - internal/project/store.go
+        - internal/project/store_test.go
+        - internal/task/context.go
+        - internal/task/context_test.go
+        - internal/task/conversation.go
+        - internal/task/conversation_test.go
+        - internal/task/execution.go
+        - internal/task/execution_test.go
+        - internal/task/lifecycle.go
+        - internal/task/lifecycle_test.go
+        - internal/task/plan.go
+        - internal/task/plan_test.go
+        - internal/task/review.go
+        - internal/task/review_test.go
+        - internal/task/store.go
+        - internal/task/store_test.go
+        - internal/task/task.go
+        - internal/web/dist/.gitkeep
+    git_branch: task-exec/git-backed-storage/exec-001
+    commits:
+        - 514525550c81da239b682c574e39cc486e5573f4
+        - b9ac847f9c65b1b2649ebe39e66ef174ab386bfd
+    forked_from_branch: ""
+    workspace_dirty: false
+metrics:
+    duration_seconds: 1800.3920984
+    tokens_used: 0
+    cost_estimate: 0
+status: failure
+failure:
+    type: execution
+    message: context deadline exceeded
+created_at: 2026-07-27T13:46:00.6064183Z
