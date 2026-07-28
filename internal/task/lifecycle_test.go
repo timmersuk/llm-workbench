@@ -156,11 +156,13 @@ func TestFileStore_ReviseToPlanning_FromImplementationOrReview(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StagePlanning, updated.Stage)
 
-	// Also valid from "review".
+	// Also valid from "review". Stage only moves there for real via a
+	// successful RecordExecution, which is more machinery than this test
+	// needs — write the fixture stage directly (writeTask, not the
+	// guarded Update, which rightly refuses to change Stage at all).
 	reviewTask := updated
 	reviewTask.Stage = StageReview
-	updated, err = store.Update("demo-project", "task-a", reviewTask)
-	require.NoError(t, err)
+	require.NoError(t, store.writeTask("demo-project", reviewTask))
 	updated, err = store.ReviseToPlanning("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StagePlanning, updated.Stage)

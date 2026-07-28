@@ -29,6 +29,23 @@ type ConversationToolCall struct {
 	Arguments string `yaml:"arguments" json:"arguments"` // raw JSON string of the proposed Draft's fields
 }
 
+// MarshalYAML forces Arguments to double-quoted style — same workaround
+// and rationale as ConversationToolActivity.MarshalYAML below: Arguments
+// is a raw JSON string of the proposed Draft's fields (e.g. a long
+// "detail" field), which can contain embedded newlines or indented
+// content that would otherwise risk yaml.v3's block-literal corruption
+// bug. ID/Name are short, controlled-vocabulary values with no such risk,
+// left in yaml.v3's default style.
+func (c ConversationToolCall) MarshalYAML() (interface{}, error) {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: "id"}, &yaml.Node{Kind: yaml.ScalarNode, Value: c.ID},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: "name"}, &yaml.Node{Kind: yaml.ScalarNode, Value: c.Name},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: "arguments"}, &yaml.Node{Kind: yaml.ScalarNode, Value: c.Arguments, Style: yaml.DoubleQuotedStyle},
+	)
+	return node, nil
+}
+
 // ConversationToolActivity records one intermediate tool call and its
 // result an agent made while producing a Conversation turn (CONTEXT.md's
 // "Tool Activity") — distinct from ConversationToolCall, which is the
@@ -126,6 +143,58 @@ type ConversationMessage struct {
 	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
 }
 
+// MarshalYAML forces Content/Error to double-quoted style — same
+// workaround and rationale as ConversationToolActivity.MarshalYAML.
+// Unlike that type's tool output, Content isn't a rare edge case: it's
+// ordinary LLM prose, and any reply that quotes something already-indented
+// (a git diff --stat, an ls -l, a fenced code block) has lines starting
+// with a leading space, which is exactly the shape that trips yaml.v3's
+// block-literal encoding bug and corrupts the whole Conversation on the
+// next read. Role/ToolCallID/CreatedAt are short, controlled-vocabulary
+// values with no such risk, left in yaml.v3's default style; ToolCall and
+// ToolActivity carry their own MarshalYAML and are encoded through it
+// unchanged by nesting them via yaml.Node.Encode.
+func (m ConversationMessage) MarshalYAML() (interface{}, error) {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	appendScalar := func(key, value string, forceDoubleQuoted, omitEmpty bool) {
+		if omitEmpty && value == "" {
+			return
+		}
+		valueNode := &yaml.Node{Kind: yaml.ScalarNode, Value: value}
+		if forceDoubleQuoted {
+			valueNode.Style = yaml.DoubleQuotedStyle
+		}
+		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, valueNode)
+	}
+	appendNode := func(key string, v interface{}) error {
+		n := &yaml.Node{}
+		if err := n.Encode(v); err != nil {
+			return err
+		}
+		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, n)
+		return nil
+	}
+
+	appendScalar("role", m.Role, false, false)
+	appendScalar("content", m.Content, true, false)
+	if m.ToolCall != nil {
+		if err := appendNode("tool_call", m.ToolCall); err != nil {
+			return nil, err
+		}
+	}
+	appendScalar("tool_call_id", m.ToolCallID, false, true)
+	if len(m.ToolActivity) > 0 {
+		if err := appendNode("tool_activity", m.ToolActivity); err != nil {
+			return nil, err
+		}
+	}
+	appendScalar("error", m.Error, true, true)
+	if err := appendNode("created_at", m.CreatedAt); err != nil {
+		return nil, err
+	}
+	return node, nil
+}
+
 // Conversation is one stage's full, append-only message history, stored as
 // <task root>/<id>/conversation-<stage>.yaml — one file per stage
 // (requirements, planning, review), not one file for the task's whole life,
@@ -180,14 +249,25 @@ func (s *FileStore) GetConversation(projectID, id, stage string) (Conversation, 
 }
 
 // AppendConversationMessages appends msgs to the stage's Conversation for
-// id and rewrites the file, stamping each message's CreatedAt server-side
-// (ignoring any client-supplied value, same "server always wins" treatment
+// id, stamping each message's CreatedAt server-side (ignoring any
+// client-supplied value, same "server always wins" treatment
 // Task.CreatedAt/UpdatedAt get). "Append-only" here is an enforced policy —
 // this is the only method that adds messages, and it never edits or
-// removes prior ones — rather than a mechanical single-writer-append file
-// format; these are small conversational logs, not execution.yaml's
-// cross-process ledger, so read-modify-rewrite is the right complexity
-// level.
+// removes prior ones.
+//
+// Writes via a raw O_APPEND, one message at a time, the same
+// crash-safety shape as AppendExecutionLogEvent — never a read-modify-
+// rewrite of the whole file: a crash mid-write can only ever tear the
+// newest message being appended, never touch anything written by an
+// earlier call, and gitstore's commit-time validation (repairTornYAML)
+// repairs exactly that shape. Creating the file on its very first message
+// (CreateExecutionLog's equivalent step) is folded in here rather than a
+// separate call, since — unlike an execution, which always has an
+// explicit start — a Conversation's first message *is* its start.
+//
+// Returns the full up-to-date Conversation by reading it back after
+// writing, matching GetConversation's shape; the append itself never
+// reads anything first.
 func (s *FileStore) AppendConversationMessages(projectID, id, stage string, msgs ...ConversationMessage) (Conversation, error) {
 	if err := validateID(projectID); err != nil {
 		return Conversation{}, err
@@ -198,11 +278,35 @@ func (s *FileStore) AppendConversationMessages(projectID, id, stage string, msgs
 	if err := validateConversationStage(stage); err != nil {
 		return Conversation{}, err
 	}
-
-	existing, err := s.GetConversation(projectID, id, stage)
-	if err != nil {
-		return Conversation{}, err
+	if len(msgs) == 0 {
+		return s.GetConversation(projectID, id, stage)
 	}
+
+	dir := s.taskDir(projectID, id)
+	path := conversationPath(dir, stage)
+
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return Conversation{}, fmt.Errorf("creating task directory %s: %w", dir, err)
+		}
+		header, err := yaml.Marshal(struct {
+			Stage string `yaml:"stage"`
+		}{stage})
+		if err != nil {
+			return Conversation{}, fmt.Errorf("encoding conversation header for %s/%s: %w", id, stage, err)
+		}
+		if err := os.WriteFile(path, append(header, []byte("messages:\n")...), 0o644); err != nil {
+			return Conversation{}, fmt.Errorf("writing %s: %w", path, err)
+		}
+	} else if statErr != nil {
+		return Conversation{}, fmt.Errorf("checking existing conversation %s: %w", path, statErr)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return Conversation{}, fmt.Errorf("opening conversation %s: %w", path, err)
+	}
+	defer f.Close()
 
 	now := time.Now().UTC()
 	for _, m := range msgs {
@@ -214,11 +318,17 @@ func (s *FileStore) AppendConversationMessages(projectID, id, stage string, msgs
 		// line, so trim before persisting rather than writing a file this
 		// same package can't read back.
 		m.Content = strings.TrimSpace(m.Content)
-		existing.Messages = append(existing.Messages, m)
-	}
-	existing.Stage = stage
 
-	return existing, writeConversation(s.taskDir(projectID, id), stage, existing)
+		data, err := yaml.Marshal([]ConversationMessage{m})
+		if err != nil {
+			return Conversation{}, fmt.Errorf("encoding conversation message for %s/%s: %w", id, stage, err)
+		}
+		if _, err := f.Write(indentBlock(data, "    ")); err != nil {
+			return Conversation{}, fmt.Errorf("appending to conversation %s: %w", path, err)
+		}
+	}
+
+	return s.GetConversation(projectID, id, stage)
 }
 
 // ReplaceConversationMessages overwrites the stage's Conversation for id

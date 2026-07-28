@@ -89,6 +89,23 @@ func executeEventToWire(ev agentrunner.ExecuteEvent) executeStreamEvent {
 	}
 }
 
+// executeEventToLogEvent maps one agentrunner.ExecuteEvent onto the
+// execution log's persisted shape, reporting ok=false for Kind ==
+// "reasoning" — reasoning content is excluded from every persisted record
+// in this codebase (task.ExecutionLogEvent's doc comment) and the
+// execution log is no exception, even though it's otherwise kept in full,
+// untruncated.
+func executeEventToLogEvent(ev agentrunner.ExecuteEvent) (task.ExecutionLogEvent, bool) {
+	if ev.Kind == "reasoning" {
+		return task.ExecutionLogEvent{}, false
+	}
+	return task.ExecutionLogEvent{
+		Kind: ev.Kind, Text: ev.Text,
+		ToolName: ev.ToolName, ToolInput: ev.ToolInput,
+		ToolResult: ev.ToolResult, IsError: ev.IsError,
+	}, true
+}
+
 // handleStartExecution runs one autonomous Implementation-stage execution
 // attempt to completion: resolves an isolated git worktree
 // (agentrunner.ResolveExecutionWorkspace) so the run can never touch the
@@ -188,6 +205,17 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			return
 		}
 
+		// Created now, before anything below can fail — including the
+		// workspace resolution and Execute call themselves — so even a
+		// crash or failure in the first second of this attempt leaves a
+		// file on disk proving it began, rather than nothing at all
+		// (RecordExecution below refuses to record any outcome, success or
+		// not, without a matching log).
+		if err := store.CreateExecutionLog(projectId, taskId, executionID); err != nil {
+			http.Error(w, fmt.Sprintf("creating execution log: %v", err), http.StatusInternalServerError)
+			return
+		}
+
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -238,6 +266,18 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			MaxTurns:     executionMaxTurns,
 		}, func(ev agentrunner.ExecuteEvent) error {
 			writeEvent(executeEventToWire(ev))
+			if logEv, ok := executeEventToLogEvent(ev); ok {
+				// Best-effort, same posture as every other post-hoc
+				// inspection step in this handler (workspace dirty check,
+				// CollectExecutionOutput below): a transient append
+				// failure is logged loudly, not treated as aborting an
+				// otherwise-working execution. CreateExecutionLog already
+				// guaranteed the file itself exists before this run
+				// started.
+				if appendErr := store.AppendExecutionLogEvent(projectId, taskId, executionID, logEv); appendErr != nil {
+					logrus.WithError(appendErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Error("appending execution log event")
+				}
+			}
 			return nil
 		})
 
@@ -295,6 +335,11 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 					MaxTurns:     executionMaxTurns,
 				}, func(ev agentrunner.ExecuteEvent) error {
 					writeEvent(executeEventToWire(ev))
+					if logEv, ok := executeEventToLogEvent(ev); ok {
+						if appendErr := store.AppendExecutionLogEvent(projectId, taskId, executionID, logEv); appendErr != nil {
+							logrus.WithError(appendErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Error("appending execution log event (cleanup turn)")
+						}
+					}
 					return nil
 				})
 				if cleanupErr != nil {

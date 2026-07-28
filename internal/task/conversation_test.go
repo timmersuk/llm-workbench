@@ -1,6 +1,7 @@
 package task
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -199,6 +200,66 @@ func TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesR
 	require.Len(t, reloaded.Messages, 1)
 	require.Len(t, reloaded.Messages[0].ToolActivity, 1)
 	assert.Equal(t, diffStatOutput, reloaded.Messages[0].ToolActivity[0].Result)
+}
+
+// TestFileStore_AppendConversationMessages_ContentWithLeadingSpaceLinesRoundTrips
+// locks in ConversationMessage.MarshalYAML's fix for the same yaml.v3
+// round-trip bug TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips
+// covers for ToolActivity — except this is ordinary LLM prose, not tool
+// output: any reply that quotes something already-indented (a git diff
+// --stat, an ls -l, a fenced code block) has lines starting with a
+// leading space, tripping the same encoder bug and corrupting the whole
+// Conversation on the next read, with no crash or torn write involved at
+// all — this was a live, un-guarded bug in Content's encoding before
+// MarshalYAML forced double-quoted style for it too.
+func TestFileStore_AppendConversationMessages_ContentWithLeadingSpaceLinesRoundTrips(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	quotedDiffStat := "Here's what changed:\n\n" +
+		" internal/api/foo.go | 2 +-\n" +
+		" internal/api/bar.go | 4 ++--"
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StageReview,
+		ConversationMessage{Role: "assistant", Content: quotedDiffStat + "\n"})
+	require.NoError(t, err)
+
+	reloaded, err := store.GetConversation("demo-project", "task-a", StageReview)
+	require.NoError(t, err, "the persisted file must itself be readable back")
+	require.Len(t, reloaded.Messages, 1)
+	assert.Equal(t, quotedDiffStat, reloaded.Messages[0].Content, "trailing whitespace is trimmed by design (existing TrimSpace behavior); the leading-space content lines must still round-trip intact")
+}
+
+// TestFileStore_AppendConversationMessages_DoesNotRewritePriorMessages proves
+// the append is genuinely append-only at the byte level (no read-modify-
+// rewrite of the whole file): bytes already on disk from an earlier call
+// are untouched by a later one, the same property
+// AppendExecutionLogEvent's tests lock in — a crash mid-write can only
+// ever risk the newest message, never anything written before it.
+func TestFileStore_AppendConversationMessages_DoesNotRewritePriorMessages(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StageRequirements,
+		ConversationMessage{Role: "user", Content: "first"})
+	require.NoError(t, err)
+
+	path := conversationPath(store.taskDir("demo-project", "task-a"), StageRequirements)
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StageRequirements,
+		ConversationMessage{Role: "assistant", Content: "second"})
+	require.NoError(t, err)
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.True(t, len(after) > len(before))
+	assert.Equal(t, before, after[:len(before)], "bytes written by the first append must be untouched by the second")
 }
 
 func TestFileStore_AppendConversationMessages_RejectsInvalidStage(t *testing.T) {

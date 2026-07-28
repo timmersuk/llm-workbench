@@ -188,6 +188,17 @@ func (s *FileStore) NextExecutionID(projectID, id string) (string, error) {
 	return fmt.Sprintf("exec-%03d", max+1), nil
 }
 
+// ErrExecutionLogMissing is returned by RecordExecution when no
+// exec-NNN.log.yaml exists for the execution being recorded. This is
+// unconditional — success, failure, and partial all require it — because
+// the log is the only durable evidence of what an unattended run actually
+// did, and a crash is exactly the case that evidence matters most for
+// (architectural invariants.md, "no hidden state"). Every real caller
+// (handleStartExecution) creates the log via CreateExecutionLog before
+// the run it covers even starts, so this only ever fires for a caller
+// that skipped that step entirely, not a run that produced zero events.
+var ErrExecutionLogMissing = errors.New("execution log missing for this execution_id")
+
 // RecordExecution persists exec under id's executions/ directory —
 // ErrExecutionAlreadyExists if that execution_id was already recorded
 // (append-only, never overwritten). TaskID and CreatedAt are always
@@ -201,6 +212,15 @@ func (s *FileStore) NextExecutionID(projectID, id string) (string, error) {
 // wrong-stage success attempt never leaves an orphaned record with no
 // corresponding stage advance. A "failure"/"partial" execution is recorded
 // unconditionally and never touches Stage.
+//
+// Every status also requires a matching exec-NNN.log.yaml to already exist
+// (ErrExecutionLogMissing otherwise) — unconditional, unlike the stage
+// check above, since the log is the only durable evidence of what an
+// unattended run actually did and a crash is exactly the case that
+// evidence matters most for (architectural invariants.md, "no hidden
+// state"). Checked after the stage guard, not before, so a wrong-stage
+// call still reports ErrWrongStage rather than being masked by a missing
+// log the caller had no reason to create yet.
 func (s *FileStore) RecordExecution(projectID, id string, exec Execution) (Execution, error) {
 	if err := validateID(projectID); err != nil {
 		return Execution{}, err
@@ -224,6 +244,12 @@ func (s *FileStore) RecordExecution(projectID, id string, exec Execution) (Execu
 		if t.Stage != StageImplementation {
 			return Execution{}, fmt.Errorf("recording execution for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
 		}
+	}
+
+	if logExists, err := s.ExecutionLogExists(projectID, id, exec.ExecutionID); err != nil {
+		return Execution{}, err
+	} else if !logExists {
+		return Execution{}, fmt.Errorf("recording execution %s for %s: %w", exec.ExecutionID, id, ErrExecutionLogMissing)
 	}
 
 	path := executionPath(dir, exec.ExecutionID)
@@ -285,7 +311,20 @@ func (s *FileStore) ListExecutions(projectID, id string) ([]Execution, error) {
 
 	var executions []Execution
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+		if entry.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(entry.Name())
+		if ext != ".yaml" {
+			continue
+		}
+		// Match execution.yaml records by the same executionIDPattern
+		// NextExecutionID already scans by, not just "any .yaml file" —
+		// otherwise a sibling file that also happens to end in .yaml
+		// (e.g. an execution's exec-NNN.log.yaml event log, which has its
+		// own execution_id field) would parse as a second, bogus,
+		// mostly-empty Execution record.
+		if executionIDPattern.FindStringSubmatch(entry.Name()[:len(entry.Name())-len(ext)]) == nil {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())

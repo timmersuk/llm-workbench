@@ -61,6 +61,9 @@ type TaskStore interface {
 	RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error)
 	ListExecutions(projectID, id string) ([]task.Execution, error)
 	ListReviews(projectID, id string) ([]task.Review, error)
+
+	CreateExecutionLog(projectID, id, executionID string) error
+	AppendExecutionLogEvent(projectID, id, executionID string, ev task.ExecutionLogEvent) error
 }
 
 // KnowledgeStore resolves, lists, and writes OKF concept documents under

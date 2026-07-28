@@ -98,6 +98,30 @@ func splitLines(s string) []string {
 	return lines
 }
 
+func TestExecuteEventToLogEvent_ExcludesReasoning(t *testing.T) {
+	_, ok := executeEventToLogEvent(agentrunner.ExecuteEvent{Kind: "reasoning", Text: "thinking..."})
+	assert.False(t, ok, "reasoning events must never be persisted to the execution log")
+}
+
+func TestExecuteEventToLogEvent_MapsOtherKindsInFull(t *testing.T) {
+	cases := []agentrunner.ExecuteEvent{
+		{Kind: "text", Text: "hello"},
+		{Kind: "tool_call", ToolName: "Bash", ToolInput: "go test ./..."},
+		{Kind: "tool_result", ToolResult: "ok", IsError: false},
+		{Kind: "tool_result", ToolResult: "boom", IsError: true},
+	}
+	for _, ev := range cases {
+		got, ok := executeEventToLogEvent(ev)
+		require.True(t, ok)
+		assert.Equal(t, ev.Kind, got.Kind)
+		assert.Equal(t, ev.Text, got.Text)
+		assert.Equal(t, ev.ToolName, got.ToolName)
+		assert.Equal(t, ev.ToolInput, got.ToolInput)
+		assert.Equal(t, ev.ToolResult, got.ToolResult)
+		assert.Equal(t, ev.IsError, got.IsError)
+	}
+}
+
 func TestHandleStartExecution_UnknownExecutor(t *testing.T) {
 	req := newExecutionRequest(t, executionStartRequest{Executor: "does-not-exist"})
 	w := httptest.NewRecorder()
@@ -136,6 +160,8 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-001", mock.Anything).Return(nil)
 
 	var recorded task.Execution
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
@@ -185,6 +211,53 @@ func TestHandleStartExecution_SuccessStreamsAndRecords(t *testing.T) {
 	assert.Equal(t, 1.5, recorded.Metrics.DurationSeconds)
 }
 
+// TestHandleStartExecution_LogsEveryEventExceptReasoning proves the
+// execution-log wiring end to end: every ExecuteEvent still streams over
+// SSE (reasoning included — that stream is unrelated), but only the
+// non-reasoning events are appended to the persisted execution log.
+func TestHandleStartExecution_LogsEveryEventExceptReasoning(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation, Objective: "ship it"}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{Approach: "do it"}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+	var loggedKinds []string
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-001", mock.MatchedBy(func(ev task.ExecutionLogEvent) bool {
+		loggedKinds = append(loggedKinds, ev.Kind)
+		return true
+	})).Return(nil)
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.Anything).
+		Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
+
+	events := []agentrunner.ExecuteEvent{
+		{Kind: "reasoning", Text: "thinking about it"},
+		{Kind: "text", Text: "starting"},
+		{Kind: "reasoning", Text: "more thinking"},
+		{Kind: "tool_call", ToolName: "Write"},
+		{Kind: "tool_result", ToolResult: "ok"},
+	}
+	runner := new(mockAgentRunner)
+	runner.On("Execute", mock.Anything, mock.Anything, mock.Anything).
+		Return(events, agentrunner.ExecuteOutput{Content: "done"}, nil)
+
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	sseEvents := decodeSSEEvents(t, w.Body.String())
+	require.Len(t, sseEvents, 6, "reasoning events still stream over SSE")
+	assert.Equal(t, "reasoning", sseEvents[0].Type)
+
+	assert.Equal(t, []string{"text", "tool_call", "tool_result"}, loggedKinds, "reasoning must never reach the execution log")
+}
+
 // TestHandleStartExecution_ExecuteErrorRecordsFailure locks in the
 // deterministic failure classification: a non-context error from Execute
 // becomes failure.type "execution", still recorded (never silently
@@ -197,6 +270,8 @@ func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-001", mock.Anything).Return(nil)
 
 	var recorded task.Execution
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
@@ -364,6 +439,8 @@ func TestHandleStartExecution_NeedsChangesForksFromPriorBranch(t *testing.T) {
 		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: priorBranch}},
 	}, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-002", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-002").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-002", mock.Anything).Return(nil)
 
 	var recorded task.Execution
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
@@ -433,6 +510,8 @@ func TestHandleStartExecution_NeedsChangesWithOpenPR_WritesAndCleansUpPRComments
 		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: priorBranch}},
 	}, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-002", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-002").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-002", mock.Anything).Return(nil)
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusSuccess}, nil)
 
 	prClient := &fakeGitHubPRClient{comments: "- kind: review\n  author: alice\n  state: CHANGES_REQUESTED\n  body: fix it\n"}
@@ -588,6 +667,8 @@ func TestHandleStartExecution_ContinueFromFailureForksFromPriorBranch(t *testing
 		}, Failure: &task.ExecutionFailure{Type: task.FailureTypeExecution, Message: "Reached maximum number of turns (100)"}},
 	}, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-002", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-002").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-002", mock.Anything).Return(nil)
 
 	var recorded task.Execution
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
@@ -655,6 +736,8 @@ func TestHandleStartExecution_SafetyCommitsUncommittedWorkOnFailure(t *testing.T
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-001", mock.Anything).Return(nil)
 
 	var recorded task.Execution
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
@@ -767,6 +850,8 @@ func TestHandleStartExecution_CleanupTurnResolvesDirtyWorkspace(t *testing.T) {
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-001", mock.Anything).Return(nil)
 
 	var recorded task.Execution
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
@@ -822,6 +907,8 @@ func TestHandleStartExecution_CleanupTurnLeavesWorkspaceDirty(t *testing.T) {
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-001", mock.Anything).Return(nil)
 
 	var recorded task.Execution
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
@@ -864,6 +951,8 @@ func TestHandleStartExecution_CleanWorkspaceSkipsCleanupTurn(t *testing.T) {
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
 	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+	tasks.On("AppendExecutionLogEvent", "demo-project", "TASK-0001", "exec-001", mock.Anything).Return(nil)
 	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.Anything).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess}, nil)
 
 	runner := new(mockAgentRunner)
