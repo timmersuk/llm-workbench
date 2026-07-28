@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
+
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // ErrInvalidID is returned when an id is empty or contains path
@@ -229,7 +230,7 @@ func (s *FileStore) writeTask(projectID string, t Task) error {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(t)
+	data, err := yamlutil.Marshal(t)
 	if err != nil {
 		return fmt.Errorf("encoding task %s: %w", t.ID, err)
 	}
@@ -249,7 +250,7 @@ func (s *FileStore) readTask(projectID, id string) (Task, error) {
 	}
 
 	var t Task
-	if err := yaml.Unmarshal(data, &t); err != nil {
+	if err := yamlutil.Unmarshal(data, &t); err != nil {
 		return Task{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return t, nil

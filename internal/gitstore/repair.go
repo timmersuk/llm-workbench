@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
+
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // repairTornYAMLFiles walks each of paths (always absolute — a mix of
@@ -82,7 +83,7 @@ func repairTornYAMLFile(path string) bool {
 	}
 
 	var probe interface{}
-	if yaml.Unmarshal(data, &probe) == nil {
+	if yamlutil.Unmarshal(data, &probe) == nil {
 		return true
 	}
 
@@ -103,8 +104,9 @@ func repairTornYAMLFile(path string) bool {
 
 // repairTornYAML trims data back to its last complete top-level list entry
 // and reports whether the result parses as valid YAML. Candidate cut
-// points are lines that open a new top-level list entry at yaml.v3's own
-// default block-sequence indent ("    - ", four spaces then a dash) —
+// points are lines that open a new top-level list entry at yamlutil's
+// configured block-sequence indent ("    - ", four spaces then a dash,
+// internal/yamlutil.Marshal's Indent(4)+IndentSequence(true) options) —
 // task.FileStore's append-only writers only ever add whole entries at
 // that exact indent, so a torn write can only ever leave a partial entry
 // starting at one of these boundaries, never break content earlier in the
@@ -126,7 +128,7 @@ func repairTornYAML(data []byte) (repaired []byte, droppedLines int, ok bool) {
 	for i := len(cuts) - 1; i >= 0; i-- {
 		candidate := strings.Join(lines[:cuts[i]], "\n") + "\n"
 		var probe interface{}
-		if yaml.Unmarshal([]byte(candidate), &probe) == nil {
+		if yamlutil.Unmarshal([]byte(candidate), &probe) == nil {
 			return []byte(candidate), len(lines) - cuts[i], true
 		}
 	}

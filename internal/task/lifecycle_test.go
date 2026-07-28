@@ -61,9 +61,10 @@ func TestFileStore_FinalizeRequirements_TrimsFieldsToAvoidYAMLRoundTripBug(t *te
 	assert.Equal(t, "ship login", updated.Objective)
 	assert.Equal(t, []string{"no new deps"}, updated.Constraints)
 
-	// The persisted task.yaml/context.yaml must themselves be readable back
-	// (gopkg.in/yaml.v3 fails to round-trip a string starting with a
-	// newline) — re-fetching from disk is the real assertion here.
+	// The persisted task.yaml/context.yaml must themselves be readable
+	// back (originally a regression guard for a gopkg.in/yaml.v3
+	// round-trip bug, fixed by the migration to yamlutil/goccy) —
+	// re-fetching from disk is the real assertion here.
 	fetched, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, "ship login", fetched.Objective)

@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"gopkg.in/yaml.v3"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // Verification step kinds, per docs/adr/0008-structure-context-verification-entries.md
@@ -86,7 +86,7 @@ func (s *FileStore) GetContext(projectID, id string) (Context, error) {
 	}
 
 	var c Context
-	if err := yaml.Unmarshal(data, &c); err != nil {
+	if err := yamlutil.Unmarshal(data, &c); err != nil {
 		return Context{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return c, nil
@@ -102,7 +102,7 @@ func (s *FileStore) writeContext(projectID, id string, c Context) error {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(c)
+	data, err := yamlutil.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("encoding context for %s: %w", id, err)
 	}

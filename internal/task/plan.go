@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"gopkg.in/yaml.v3"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // Plan is the optional generated execution plan, stored as
@@ -40,7 +40,7 @@ func (s *FileStore) GetPlan(projectID, id string) (Plan, error) {
 	}
 
 	var p Plan
-	if err := yaml.Unmarshal(data, &p); err != nil {
+	if err := yamlutil.Unmarshal(data, &p); err != nil {
 		return Plan{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return p, nil
@@ -53,7 +53,7 @@ func (s *FileStore) writePlan(projectID, id string, p Plan) error {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(p)
+	data, err := yamlutil.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("encoding plan for %s: %w", id, err)
 	}

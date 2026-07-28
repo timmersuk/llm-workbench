@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // ErrInvalidStage is returned when a stage name isn't one of the stages
@@ -29,21 +29,18 @@ type ConversationToolCall struct {
 	Arguments string `yaml:"arguments" json:"arguments"` // raw JSON string of the proposed Draft's fields
 }
 
-// MarshalYAML forces Arguments to double-quoted style — same workaround
-// and rationale as ConversationToolActivity.MarshalYAML below: Arguments
-// is a raw JSON string of the proposed Draft's fields (e.g. a long
-// "detail" field), which can contain embedded newlines or indented
-// content that would otherwise risk yaml.v3's block-literal corruption
-// bug. ID/Name are short, controlled-vocabulary values with no such risk,
-// left in yaml.v3's default style.
+// MarshalYAML forces Arguments through yamlutil.Quoted — Arguments is a
+// raw JSON string of the proposed Draft's fields (e.g. a long "detail"
+// field), which can contain characters goccy's own default plain-style
+// heuristic doesn't safely handle (see yamlutil.Quoted's doc comment).
+// ID/Name are short, controlled-vocabulary values with no such risk, left
+// as plain strings.
 func (c ConversationToolCall) MarshalYAML() (interface{}, error) {
-	node := &yaml.Node{Kind: yaml.MappingNode}
-	node.Content = append(node.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: "id"}, &yaml.Node{Kind: yaml.ScalarNode, Value: c.ID},
-		&yaml.Node{Kind: yaml.ScalarNode, Value: "name"}, &yaml.Node{Kind: yaml.ScalarNode, Value: c.Name},
-		&yaml.Node{Kind: yaml.ScalarNode, Value: "arguments"}, &yaml.Node{Kind: yaml.ScalarNode, Value: c.Arguments, Style: yaml.DoubleQuotedStyle},
-	)
-	return node, nil
+	return struct {
+		ID        string          `yaml:"id"`
+		Name      string          `yaml:"name"`
+		Arguments yamlutil.Quoted `yaml:"arguments"`
+	}{c.ID, c.Name, yamlutil.Quoted(c.Arguments)}, nil
 }
 
 // ConversationToolActivity records one intermediate tool call and its
@@ -62,43 +59,20 @@ type ConversationToolActivity struct {
 	IsError   bool   `yaml:"is_error,omitempty" json:"is_error,omitempty"`
 }
 
-// MarshalYAML forces Arguments/Result to the double-quoted scalar style,
-// overriding yaml.v3's own style choice for this type. Raw tool output
-// (git diff --stat, test runner summaries, ls -l, ...) commonly has lines
-// that themselves start with a leading space, which forces yaml.v3's
-// block-literal encoder to add an explicit indentation indicator (e.g.
-// "|4-") to disambiguate structural indent from the content's own leading
-// space — and a yaml.v3 encoder bug (still v3.0.1, no fix available)
-// writes the body one space short of what that indicator requires,
-// producing a self-inconsistent file that fails to parse back ("did not
-// find expected key"), corrupting the whole Conversation on the next read.
-// Double-quoted style has no such indentation ambiguity — newlines are
-// escaped explicitly — so it round-trips safely regardless of the
-// content's own leading whitespace. Name is left in yaml.v3's default
-// style since it's always a short, plain tool identifier.
+// MarshalYAML forces Arguments/Result through yamlutil.Quoted — raw tool
+// output (git diff --stat, test runner summaries, ls -l, ...) can contain
+// characters goccy's own default plain-style heuristic doesn't safely
+// handle (see yamlutil.Quoted's doc comment; a literal tab, exactly what
+// `go test`'s own summary lines contain, silently corrupts on round-trip
+// otherwise). Name is left as a plain string since it's always a short,
+// controlled tool identifier.
 func (a ConversationToolActivity) MarshalYAML() (interface{}, error) {
-	node := &yaml.Node{Kind: yaml.MappingNode}
-	appendField := func(key, value string, forceDoubleQuoted, omitEmpty bool) {
-		if omitEmpty && value == "" {
-			return
-		}
-		valueNode := &yaml.Node{Kind: yaml.ScalarNode, Value: value}
-		if forceDoubleQuoted {
-			valueNode.Style = yaml.DoubleQuotedStyle
-		}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, valueNode)
-	}
-	appendField("name", a.Name, false, false)
-	appendField("arguments", a.Arguments, true, true)
-	appendField("result", a.Result, true, true)
-	if a.IsError {
-		isErrorNode := &yaml.Node{}
-		if err := isErrorNode.Encode(a.IsError); err != nil {
-			return nil, err
-		}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "is_error"}, isErrorNode)
-	}
-	return node, nil
+	return struct {
+		Name      string          `yaml:"name"`
+		Arguments yamlutil.Quoted `yaml:"arguments,omitempty"`
+		Result    yamlutil.Quoted `yaml:"result,omitempty"`
+		IsError   bool            `yaml:"is_error,omitempty"`
+	}{a.Name, yamlutil.Quoted(a.Arguments), yamlutil.Quoted(a.Result), a.IsError}, nil
 }
 
 // maxPersistedToolActivityBytes caps each persisted
@@ -143,56 +117,24 @@ type ConversationMessage struct {
 	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
 }
 
-// MarshalYAML forces Content/Error to double-quoted style — same
-// workaround and rationale as ConversationToolActivity.MarshalYAML.
-// Unlike that type's tool output, Content isn't a rare edge case: it's
-// ordinary LLM prose, and any reply that quotes something already-indented
-// (a git diff --stat, an ls -l, a fenced code block) has lines starting
-// with a leading space, which is exactly the shape that trips yaml.v3's
-// block-literal encoding bug and corrupts the whole Conversation on the
-// next read. Role/ToolCallID/CreatedAt are short, controlled-vocabulary
-// values with no such risk, left in yaml.v3's default style; ToolCall and
-// ToolActivity carry their own MarshalYAML and are encoded through it
-// unchanged by nesting them via yaml.Node.Encode.
+// MarshalYAML forces Content/Error through yamlutil.Quoted. Unlike
+// ConversationToolActivity's tool output, Content isn't a rare edge case:
+// it's ordinary LLM prose, and goccy's default plain-style heuristic
+// doesn't safely handle every character that can appear in it (see
+// yamlutil.Quoted's doc comment). Role/ToolCallID/CreatedAt are short,
+// controlled-vocabulary values with no such risk, left as plain
+// types; ToolCall/ToolActivity carry their own MarshalYAML and are
+// applied automatically since they're passed through unchanged.
 func (m ConversationMessage) MarshalYAML() (interface{}, error) {
-	node := &yaml.Node{Kind: yaml.MappingNode}
-	appendScalar := func(key, value string, forceDoubleQuoted, omitEmpty bool) {
-		if omitEmpty && value == "" {
-			return
-		}
-		valueNode := &yaml.Node{Kind: yaml.ScalarNode, Value: value}
-		if forceDoubleQuoted {
-			valueNode.Style = yaml.DoubleQuotedStyle
-		}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, valueNode)
-	}
-	appendNode := func(key string, v interface{}) error {
-		n := &yaml.Node{}
-		if err := n.Encode(v); err != nil {
-			return err
-		}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, n)
-		return nil
-	}
-
-	appendScalar("role", m.Role, false, false)
-	appendScalar("content", m.Content, true, false)
-	if m.ToolCall != nil {
-		if err := appendNode("tool_call", m.ToolCall); err != nil {
-			return nil, err
-		}
-	}
-	appendScalar("tool_call_id", m.ToolCallID, false, true)
-	if len(m.ToolActivity) > 0 {
-		if err := appendNode("tool_activity", m.ToolActivity); err != nil {
-			return nil, err
-		}
-	}
-	appendScalar("error", m.Error, true, true)
-	if err := appendNode("created_at", m.CreatedAt); err != nil {
-		return nil, err
-	}
-	return node, nil
+	return struct {
+		Role         string                     `yaml:"role"`
+		Content      yamlutil.Quoted            `yaml:"content"`
+		ToolCall     *ConversationToolCall      `yaml:"tool_call,omitempty"`
+		ToolCallID   string                     `yaml:"tool_call_id,omitempty"`
+		ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty"`
+		Error        yamlutil.Quoted            `yaml:"error,omitempty"`
+		CreatedAt    time.Time                  `yaml:"created_at"`
+	}{m.Role, yamlutil.Quoted(m.Content), m.ToolCall, m.ToolCallID, m.ToolActivity, yamlutil.Quoted(m.Error), m.CreatedAt}, nil
 }
 
 // Conversation is one stage's full, append-only message history, stored as
@@ -242,7 +184,7 @@ func (s *FileStore) GetConversation(projectID, id, stage string) (Conversation, 
 	}
 
 	var c Conversation
-	if err := yaml.Unmarshal(data, &c); err != nil {
+	if err := yamlutil.Unmarshal(data, &c); err != nil {
 		return Conversation{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return c, nil
@@ -289,7 +231,7 @@ func (s *FileStore) AppendConversationMessages(projectID, id, stage string, msgs
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return Conversation{}, fmt.Errorf("creating task directory %s: %w", dir, err)
 		}
-		header, err := yaml.Marshal(struct {
+		header, err := yamlutil.Marshal(struct {
 			Stage string `yaml:"stage"`
 		}{stage})
 		if err != nil {
@@ -311,15 +253,16 @@ func (s *FileStore) AppendConversationMessages(projectID, id, stage string, msgs
 	now := time.Now().UTC()
 	for _, m := range msgs {
 		m.CreatedAt = now
-		// gopkg.in/yaml.v3 (still v3.0.1 as of writing, no fix available)
-		// fails to round-trip a block-scalar string whose first character
-		// is a newline: it marshals fine but errors on Unmarshal ("did not
-		// find expected key"). Raw LLM output commonly starts with a blank
-		// line, so trim before persisting rather than writing a file this
-		// same package can't read back.
+		// Originally required to work around a gopkg.in/yaml.v3 bug (fixed
+		// by the migration to yamlutil/goccy): a block-scalar string whose
+		// first character was a newline marshaled fine but errored on
+		// Unmarshal ("did not find expected key"), and raw LLM output
+		// commonly starts with a blank line. Kept now as deliberate
+		// hygiene, not correctness (task/sanitize.go's trimmedList etc.
+		// carry the same story for Draft fields).
 		m.Content = strings.TrimSpace(m.Content)
 
-		data, err := yaml.Marshal([]ConversationMessage{m})
+		data, err := yamlutil.Marshal([]ConversationMessage{m})
 		if err != nil {
 			return Conversation{}, fmt.Errorf("encoding conversation message for %s/%s: %w", id, stage, err)
 		}
@@ -364,7 +307,7 @@ func writeConversation(dir, stage string, conv Conversation) error {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(conv)
+	data, err := yamlutil.Marshal(conv)
 	if err != nil {
 		return fmt.Errorf("encoding conversation for %s/%s: %w", dir, stage, err)
 	}

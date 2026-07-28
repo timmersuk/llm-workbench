@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 
 	"github.com/timmersuk/llm-workbench/internal/task"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 func TestRepairTornYAML_TrimsTornTrailingEntry(t *testing.T) {
@@ -27,10 +27,10 @@ func TestRepairTornYAML_TrimsTornTrailingEntry(t *testing.T) {
 	assert.Greater(t, dropped, 0)
 
 	var probe interface{}
-	require.NoError(t, yaml.Unmarshal(repaired, &probe))
+	require.NoError(t, yamlutil.Unmarshal(repaired, &probe))
 
 	var log task.ExecutionLog
-	require.NoError(t, yaml.Unmarshal(repaired, &log))
+	require.NoError(t, yamlutil.Unmarshal(repaired, &log))
 	require.Len(t, log.Events, 1, "the torn second entry must be dropped, the complete first entry kept")
 	assert.Equal(t, "first", log.Events[0].Text)
 }
@@ -73,7 +73,7 @@ func TestRepairTornYAML_EmptyEventsListCannotBeFurtherTrimmed(t *testing.T) {
 	assert.Greater(t, dropped, 0)
 
 	var log task.ExecutionLog
-	require.NoError(t, yaml.Unmarshal(repaired, &log))
+	require.NoError(t, yamlutil.Unmarshal(repaired, &log))
 	assert.Empty(t, log.Events)
 }
 
@@ -138,7 +138,7 @@ func TestAddAndCommit_RepairsTornExecutionLogBeforeCommitting(t *testing.T) {
 	require.NoError(t, err)
 
 	var log task.ExecutionLog
-	require.NoError(t, yaml.Unmarshal(after, &log), "the committed file must be valid YAML after repair")
+	require.NoError(t, yamlutil.Unmarshal(after, &log), "the committed file must be valid YAML after repair")
 	require.Len(t, log.Events, 2, "the torn third event must be dropped, the first two kept")
 	assert.Equal(t, "first", log.Events[0].Text)
 	assert.Equal(t, "second", log.Events[1].Text)
@@ -200,7 +200,7 @@ func TestAddAndCommit_RepairsTornConversationBeforeCommitting(t *testing.T) {
 	require.NoError(t, err)
 
 	var conv task.Conversation
-	require.NoError(t, yaml.Unmarshal(after, &conv), "the committed conversation file must be valid YAML after repair")
+	require.NoError(t, yamlutil.Unmarshal(after, &conv), "the committed conversation file must be valid YAML after repair")
 	require.Len(t, conv.Messages, 2, "the torn third message must be dropped, the first two kept")
 	assert.Equal(t, "first", conv.Messages[0].Content)
 	assert.Equal(t, "second", conv.Messages[1].Content)

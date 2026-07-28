@@ -3,12 +3,12 @@ module github.com/timmersuk/llm-workbench
 go 1.26.4
 
 require (
+	github.com/goccy/go-yaml v1.19.2
 	github.com/hishamkaram/codex-agent-sdk-go v0.5.1
 	github.com/openai/openai-go v1.12.0
 	github.com/severity1/claude-agent-sdk-go v0.6.22
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -25,4 +25,5 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

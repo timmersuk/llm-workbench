@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // Execution log event kinds, mirroring agentrunner.ExecuteEvent's Kind
@@ -44,44 +44,25 @@ type ExecutionLogEvent struct {
 	CreatedAt  time.Time `yaml:"created_at"`
 }
 
-// MarshalYAML forces Text/ToolInput/ToolResult to double-quoted style —
-// the same workaround ConversationToolActivity.MarshalYAML uses, for the
-// same reason: yaml.v3 (still v3.0.1, no fix available) corrupts a
-// block-literal encoding of content with leading-space lines or a leading
-// newline, exactly the shape of raw tool output (git diff, test summaries,
-// command stdout) this log is full of — at a size, since it's never
-// truncated, where hitting that bug would be far more costly than in the
-// capped conversation logs it was first found in.
+// MarshalYAML forces Text/ToolInput/ToolResult through yamlutil.Quoted —
+// this is raw tool/build/test output, the exact shape goccy's own default
+// plain-style heuristic doesn't safely handle (see yamlutil.Quoted's doc
+// comment; a literal tab, exactly what `go test`'s own summary lines
+// contain, silently corrupts on round-trip otherwise) — at a size, since
+// this log is never truncated, where hitting that gap would be far more
+// costly than in the capped conversation logs it was first found in. Kind
+// is a short, controlled-vocabulary value with no such risk, left as a
+// plain string.
 func (e ExecutionLogEvent) MarshalYAML() (interface{}, error) {
-	node := &yaml.Node{Kind: yaml.MappingNode}
-	appendField := func(key, value string, forceDoubleQuoted, omitEmpty bool) {
-		if omitEmpty && value == "" {
-			return
-		}
-		valueNode := &yaml.Node{Kind: yaml.ScalarNode, Value: value}
-		if forceDoubleQuoted {
-			valueNode.Style = yaml.DoubleQuotedStyle
-		}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, valueNode)
-	}
-	appendField("kind", e.Kind, true, false)
-	appendField("text", e.Text, true, true)
-	appendField("tool_name", e.ToolName, true, true)
-	appendField("tool_input", e.ToolInput, true, true)
-	appendField("tool_result", e.ToolResult, true, true)
-	if e.IsError {
-		isErrorNode := &yaml.Node{}
-		if err := isErrorNode.Encode(e.IsError); err != nil {
-			return nil, err
-		}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "is_error"}, isErrorNode)
-	}
-	createdAtNode := &yaml.Node{}
-	if err := createdAtNode.Encode(e.CreatedAt); err != nil {
-		return nil, err
-	}
-	node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "created_at"}, createdAtNode)
-	return node, nil
+	return struct {
+		Kind       string          `yaml:"kind"`
+		Text       yamlutil.Quoted `yaml:"text,omitempty"`
+		ToolName   string          `yaml:"tool_name,omitempty"`
+		ToolInput  yamlutil.Quoted `yaml:"tool_input,omitempty"`
+		ToolResult yamlutil.Quoted `yaml:"tool_result,omitempty"`
+		IsError    bool            `yaml:"is_error,omitempty"`
+		CreatedAt  time.Time       `yaml:"created_at"`
+	}{e.Kind, yamlutil.Quoted(e.Text), e.ToolName, yamlutil.Quoted(e.ToolInput), yamlutil.Quoted(e.ToolResult), e.IsError, e.CreatedAt}, nil
 }
 
 // ExecutionLog is the decoded shape of executions/exec-NNN.log.yaml: the
@@ -91,8 +72,8 @@ func (e ExecutionLogEvent) MarshalYAML() (interface{}, error) {
 // they happened. Unlike Conversation, there is no Role/turn concept: an
 // execution runs unattended, so nothing here is ever "from a human."
 type ExecutionLog struct {
-	ExecutionID string               `yaml:"execution_id"`
-	Events      []ExecutionLogEvent  `yaml:"events"`
+	ExecutionID string              `yaml:"execution_id"`
+	Events      []ExecutionLogEvent `yaml:"events"`
 }
 
 func executionLogPath(dir, executionID string) string {
@@ -127,7 +108,7 @@ func (s *FileStore) CreateExecutionLog(projectID, id, executionID string) error 
 		return fmt.Errorf("checking existing execution log %s for %s: %w", executionID, id, err)
 	}
 
-	header, err := yaml.Marshal(struct {
+	header, err := yamlutil.Marshal(struct {
 		ExecutionID string `yaml:"execution_id"`
 	}{executionID})
 	if err != nil {
@@ -159,13 +140,13 @@ func (s *FileStore) AppendExecutionLogEvent(projectID, id, executionID string, e
 
 	ev.CreatedAt = time.Now().UTC()
 
-	// Marshal as a one-element slice, not the bare struct: yaml.v3 renders
-	// that as a ready-to-append block-sequence item ("- kind: ...\n  ...")
-	// with continuation lines already correctly indented to align under
-	// the leading "- ", so no manual bookkeeping is needed for the item's
-	// own internal structure — only a uniform prefix nesting it under the
-	// file's top-level "events:" key.
-	data, err := yaml.Marshal([]ExecutionLogEvent{ev})
+	// Marshal as a one-element slice, not the bare struct: the encoder
+	// renders that as a ready-to-append block-sequence item
+	// ("- kind: ...\n  ...") with continuation lines already correctly
+	// indented to align under the leading "- ", so no manual bookkeeping
+	// is needed for the item's own internal structure — only a uniform
+	// prefix nesting it under the file's top-level "events:" key.
+	data, err := yamlutil.Marshal([]ExecutionLogEvent{ev})
 	if err != nil {
 		return fmt.Errorf("encoding execution log event for %s/%s: %w", id, executionID, err)
 	}
@@ -177,11 +158,10 @@ func (s *FileStore) AppendExecutionLogEvent(projectID, id, executionID string, e
 	}
 	defer f.Close()
 
-	// Four spaces, not two: matches yaml.v3's own default indent for a
-	// block sequence nested under a mapping key (confirmed empirically —
-	// it's not configurable via the public Marshal API), so this file
-	// reads identically to every conversation-*.yaml's messages: list
-	// instead of introducing a second indent convention.
+	// Four spaces, not two: matches yamlutil.Marshal's configured indent
+	// (internal/yamlutil), so this file reads identically to every
+	// conversation-*.yaml's messages: list instead of introducing a
+	// second indent convention.
 	if _, err := f.Write(indentBlock(data, "    ")); err != nil {
 		return fmt.Errorf("appending to execution log %s for %s: %w", executionID, id, err)
 	}
@@ -225,7 +205,7 @@ func (s *FileStore) GetExecutionLog(projectID, id, executionID string) (Executio
 	}
 
 	var log ExecutionLog
-	if err := yaml.Unmarshal(data, &log); err != nil {
+	if err := yamlutil.Unmarshal(data, &log); err != nil {
 		return ExecutionLog{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return log, nil

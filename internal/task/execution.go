@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // Execution status values, per docs/task schema v0.md's execution.yaml.
@@ -267,7 +267,7 @@ func (s *FileStore) RecordExecution(projectID, id string, exec Execution) (Execu
 		return Execution{}, fmt.Errorf("creating executions directory %s: %w", execDir, err)
 	}
 
-	data, err := yaml.Marshal(exec)
+	data, err := yamlutil.Marshal(exec)
 	if err != nil {
 		return Execution{}, fmt.Errorf("encoding execution %s for %s: %w", exec.ExecutionID, id, err)
 	}
@@ -333,7 +333,7 @@ func (s *FileStore) ListExecutions(projectID, id string) ([]Execution, error) {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 		var exec Execution
-		if err := yaml.Unmarshal(data, &exec); err != nil {
+		if err := yamlutil.Unmarshal(data, &exec); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
 		}
 		executions = append(executions, exec)

@@ -146,10 +146,12 @@ func TestFileStore_AppendConversationMessages_SeparateFilesPerStage(t *testing.T
 	assert.Equal(t, "planning chat", planConv.Messages[0].Content)
 }
 
-// gopkg.in/yaml.v3 (v3.0.1, no fix available) fails to round-trip a string
-// whose first character is a newline: it marshals without error but the
-// resulting file errors on Unmarshal. Raw LLM output commonly starts with
-// a blank line, so content must be trimmed before it's persisted.
+// Originally a regression test for a gopkg.in/yaml.v3 bug (fixed by the
+// migration to yamlutil/goccy, internal/yamlutil): a string whose first
+// character is a newline used to marshal without error but fail on
+// Unmarshal. The trim itself is kept as deliberate hygiene now (Raw LLM
+// output commonly starts with a blank line), and this still locks in that
+// trimmed content round-trips correctly.
 func TestFileStore_AppendConversationMessages_TrimsContentToAvoidYAMLRoundTripBug(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
@@ -167,15 +169,13 @@ func TestFileStore_AppendConversationMessages_TrimsContentToAvoidYAMLRoundTripBu
 }
 
 // TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips
-// locks in ConversationToolActivity.MarshalYAML's fix for a second, distinct
-// yaml.v3 round-trip bug from the one above: raw tool output whose lines
-// themselves start with a leading space (git diff --stat, test runner
-// summaries, ls -l, ...) forces yaml.v3's block-literal encoder to add an
-// explicit indentation indicator (e.g. "|4-"), and yaml.v3 (still v3.0.1,
-// no fix available) writes the body one space short of what that indicator
-// requires — producing a file that fails to parse back with "did not find
-// expected key". Forcing Arguments/Result to double-quoted style sidesteps
-// the ambiguity entirely.
+// was originally a regression test for a second, distinct gopkg.in/yaml.v3
+// round-trip bug from the one above (fixed by the migration to
+// yamlutil/goccy): raw tool output whose lines themselves start with a
+// leading space (git diff --stat, test runner summaries, ls -l, ...) used
+// to force yaml.v3's block-literal encoder into a self-inconsistent
+// encoding that failed to parse back. Kept as a permanent regression
+// guard on this exact content shape.
 func TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
@@ -203,15 +203,15 @@ func TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesR
 }
 
 // TestFileStore_AppendConversationMessages_ContentWithLeadingSpaceLinesRoundTrips
-// locks in ConversationMessage.MarshalYAML's fix for the same yaml.v3
-// round-trip bug TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips
-// covers for ToolActivity — except this is ordinary LLM prose, not tool
-// output: any reply that quotes something already-indented (a git diff
-// --stat, an ls -l, a fenced code block) has lines starting with a
-// leading space, tripping the same encoder bug and corrupting the whole
-// Conversation on the next read, with no crash or torn write involved at
-// all — this was a live, un-guarded bug in Content's encoding before
-// MarshalYAML forced double-quoted style for it too.
+// covers the same leading-space-lines shape as
+// TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips,
+// except this is ordinary LLM prose, not tool output: any reply that
+// quotes something already-indented (a git diff --stat, an ls -l, a
+// fenced code block) has lines starting with a leading space. Under
+// yaml.v3 this was a live, un-guarded bug in Content's encoding — unlike
+// ToolActivity, Content had no double-quoted-style workaround at the
+// time. The migration to yamlutil/goccy fixes it at the encoder level;
+// this test is the permanent regression guard.
 func TestFileStore_AppendConversationMessages_ContentWithLeadingSpaceLinesRoundTrips(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
