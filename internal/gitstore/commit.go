@@ -363,6 +363,31 @@ func (s *TaskStore) ListExecutions(projectID, id string) ([]task.Execution, erro
 	return s.files.ListExecutions(projectID, id)
 }
 
+// CreateExecutionLog writes via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick — same treatment
+// RecordExecution gets, so the log's existence is itself durable/pushed
+// git history, not just a local file.
+func (s *TaskStore) CreateExecutionLog(projectID, id, executionID string) error {
+	return s.core.withPending(
+		fmt.Sprintf("Start execution log %s for %s/%s", executionID, projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error { return s.files.CreateExecutionLog(projectID, id, executionID) },
+	)
+}
+
+// AppendExecutionLogEvent writes via the wrapped task.FileStore and
+// enqueues the result to be committed on the push worker's next tick, same
+// as every other task mutation — including the log's own append writes,
+// so every event an execution attempt produces ends up in durable, pushed
+// git history, not just a local file that could vanish with the machine.
+func (s *TaskStore) AppendExecutionLogEvent(projectID, id, executionID string, ev task.ExecutionLogEvent) error {
+	return s.core.withPending(
+		fmt.Sprintf("Append execution log event for %s/%s execution %s", projectID, id, executionID),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error { return s.files.AppendExecutionLogEvent(projectID, id, executionID, ev) },
+	)
+}
+
 // ListReviews delegates straight to the wrapped task.FileStore.
 func (s *TaskStore) ListReviews(projectID, id string) ([]task.Review, error) {
 	return s.files.ListReviews(projectID, id)

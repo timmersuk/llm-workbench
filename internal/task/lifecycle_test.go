@@ -61,9 +61,10 @@ func TestFileStore_FinalizeRequirements_TrimsFieldsToAvoidYAMLRoundTripBug(t *te
 	assert.Equal(t, "ship login", updated.Objective)
 	assert.Equal(t, []string{"no new deps"}, updated.Constraints)
 
-	// The persisted task.yaml/context.yaml must themselves be readable back
-	// (gopkg.in/yaml.v3 fails to round-trip a string starting with a
-	// newline) — re-fetching from disk is the real assertion here.
+	// The persisted task.yaml/context.yaml must themselves be readable
+	// back (originally a regression guard for a gopkg.in/yaml.v3
+	// round-trip bug, fixed by the migration to yamlutil/goccy) —
+	// re-fetching from disk is the real assertion here.
 	fetched, err := store.Get("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, "ship login", fetched.Objective)
@@ -156,11 +157,13 @@ func TestFileStore_ReviseToPlanning_FromImplementationOrReview(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StagePlanning, updated.Stage)
 
-	// Also valid from "review".
+	// Also valid from "review". Stage only moves there for real via a
+	// successful RecordExecution, which is more machinery than this test
+	// needs — write the fixture stage directly (writeTask, not the
+	// guarded Update, which rightly refuses to change Stage at all).
 	reviewTask := updated
 	reviewTask.Stage = StageReview
-	updated, err = store.Update("demo-project", "task-a", reviewTask)
-	require.NoError(t, err)
+	require.NoError(t, store.writeTask("demo-project", reviewTask))
 	updated, err = store.ReviseToPlanning("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Equal(t, StagePlanning, updated.Stage)

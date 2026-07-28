@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
+
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // ErrInvalidID is returned when an id is empty or contains path
@@ -183,7 +184,7 @@ func (s *FileStore) writeProject(p Project) error {
 		return fmt.Errorf("creating project directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(p)
+	data, err := yamlutil.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("encoding project %s: %w", p.ID, err)
 	}
@@ -203,7 +204,7 @@ func (s *FileStore) readProject(id string) (Project, error) {
 	}
 
 	var p Project
-	if err := yaml.Unmarshal(data, &p); err != nil {
+	if err := yamlutil.Unmarshal(data, &p); err != nil {
 		return Project{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return p, nil

@@ -50,11 +50,13 @@ export interface CreateTaskRequest {
   references: TaskReferences
 }
 
-// UpdateTaskRequest is the body for editing a task in place — its id and
-// project are fixed by the URL and can never change.
+// UpdateTaskRequest is the body for editing a task in place — its id,
+// project, and stage are fixed by the URL/workflow and can never change
+// here. Stage only ever moves through the dedicated Finalize/Revise
+// actions (see finalizeRequirements/finalizePlan/finalizeReview/etc.
+// below), never through this generic update.
 export interface UpdateTaskRequest {
   title: string
-  stage: TaskStage
   objective: string
   constraints: string[]
   assumptions: string[]

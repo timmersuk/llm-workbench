@@ -127,11 +127,40 @@ func (c *core) commitPending(staleThreshold time.Duration) error {
 // already landed on disk by the time draining started, so the first
 // `git add` on a shared directory captures both; the second finds nothing
 // left to stage). That's a deliberate, accepted squash — see this
-// package's design discussion — not an error.
+// package's design discussion — not an error. Any .yaml file under paths
+// that fails to parse (repairTornYAMLFiles) — the signature of a write
+// torn by a crash mid-flight — is repaired in place when possible, or
+// left staged-then-unstaged (still dirty on disk, retried next tick) when
+// it isn't, so a rare torn write never gets baked into permanent git
+// history and never blocks the rest of an otherwise-valid commit either.
+//
+// paths is always absolute — commitPending's pendingChange.dir
+// (taskDir/projectDir) and sweepOrphans' paths (filepath.Join(c.root, ...)
+// applied to git status output) both guarantee it, a deliberate unified
+// contract rather than each caller/consumer defensively handling both
+// conventions (repairTornYAMLFiles used to be the latter and it cost a
+// real bug: an absolute path double-joined with c.root produces a
+// malformed path os.Stat fails on, which the repair step was silently
+// swallowing).
 func (c *core) addAndCommit(paths []string, message string) error {
+	// Validate/repair before staging, not after: a repaired file's fixed
+	// bytes need to be what git add actually picks up. paths here is
+	// either one whole directory (commitPending's normal case) or a list
+	// of individual files (sweepOrphans), so a still-unrepairable file
+	// can't always be excluded from the initial `git add` by name —
+	// unstaged again below instead, uniformly for both cases.
+	unrepaired := repairTornYAMLFiles(paths)
+
 	addArgs := append([]string{"add", "--"}, paths...)
 	if _, err := runGit(c.root, addArgs...); err != nil {
 		return fmt.Errorf("staging %v: %w", paths, err)
+	}
+
+	if len(unrepaired) > 0 {
+		resetArgs := append([]string{"reset", "--"}, unrepaired...)
+		if _, err := runGit(c.root, resetArgs...); err != nil {
+			return fmt.Errorf("unstaging unrepairable file(s) %v: %w", unrepaired, err)
+		}
 	}
 
 	staged, err := hasStagedChanges(c.root)
@@ -181,16 +210,25 @@ func (c *core) sweepOrphans(staleThreshold time.Duration) error {
 		if idx := strings.Index(path, " -> "); idx >= 0 {
 			path = path[idx+len(" -> "):]
 		}
-		info, err := os.Stat(filepath.Join(c.root, path))
+		full := filepath.Join(c.root, path)
+		info, err := os.Stat(full)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				logrus.WithError(err).WithField("path", full).Warn("unexpected error checking a dirty path's age; skipping it this tick")
+			}
 			// Deleted or otherwise inaccessible. This package has no
 			// delete-type operation today (commit.go is entirely
-			// Create/Update/Append/Record), so this path is never expected
-			// to be hit in practice — skip rather than guess at handling.
+			// Create/Update/Append/Record), so os.IsNotExist(err) is never
+			// expected to be hit in practice — skip rather than guess at
+			// handling. Any *other* error is unexpected enough to be worth
+			// a log line rather than silently swallowing it the same way.
 			continue
 		}
 		if now.Sub(info.ModTime()) >= staleThreshold {
-			stale = append(stale, path)
+			// Absolute, matching commitPending's pendingChange.dir
+			// convention — addAndCommit's paths argument is always
+			// absolute now, never a mix (see its own doc comment).
+			stale = append(stale, full)
 		}
 	}
 	if len(stale) == 0 {

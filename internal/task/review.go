@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // Review decision values, per docs/task schema v0.md and CONTEXT.md's
@@ -158,7 +158,7 @@ func (s *FileStore) RecordReview(projectID, id string, review Review) (Review, e
 		return Review{}, fmt.Errorf("creating reviews directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(review)
+	data, err := yamlutil.Marshal(review)
 	if err != nil {
 		return Review{}, fmt.Errorf("encoding review %s for %s: %w", review.ReviewID, id, err)
 	}
@@ -202,7 +202,7 @@ func (s *FileStore) ListReviews(projectID, id string) ([]Review, error) {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 		var review Review
-		if err := yaml.Unmarshal(data, &review); err != nil {
+		if err := yamlutil.Unmarshal(data, &review); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
 		}
 		reviews = append(reviews, review)

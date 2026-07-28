@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // PRCommentsYAML is the normalized, chronologically-sorted YAML document
@@ -133,7 +133,7 @@ func mergePRComments(viewJSON, inlineJSON []byte) (PRCommentsYAML, error) {
 
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].CreatedAt.Before(entries[j].CreatedAt) })
 
-	out, err := yaml.Marshal(entries)
+	out, err := yamlutil.Marshal(entries)
 	if err != nil {
 		return "", fmt.Errorf("marshaling PR comments: %w", err)
 	}

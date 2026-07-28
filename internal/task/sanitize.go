@@ -2,14 +2,14 @@ package task
 
 import "strings"
 
-// trimmedList trims whitespace from each item of items. gopkg.in/yaml.v3
-// (still v3.0.1 as of writing, no fix available) fails to round-trip any
-// string — scalar or list item — whose first character is a newline: it
-// marshals without error but errors on Unmarshal ("did not find expected
-// key"/"did not find expected '-' indicator"). LLM-authored Draft content
-// (CONTEXT.md) commonly starts with a blank line, so every free-text field
-// coming from a Draft is trimmed before it's written, rather than writing a
-// file this same package can't read back.
+// trimmedList trims whitespace from each item of items. Originally
+// required to work around a gopkg.in/yaml.v3 bug (fixed by the migration
+// to github.com/goccy/go-yaml, internal/yamlutil): any string — scalar or
+// list item — whose first character was a newline marshaled without
+// error but errored on Unmarshal ("did not find expected key"/"did not
+// find expected '-' indicator"), and LLM-authored Draft content
+// (CONTEXT.md) commonly starts with a blank line. Kept now as deliberate
+// data hygiene for LLM-authored free text, not correctness.
 func trimmedList(items []string) []string {
 	trimmed := make([]string, len(items))
 	for i, s := range items {
@@ -18,9 +18,9 @@ func trimmedList(items []string) []string {
 	return trimmed
 }
 
-// trimmedVerification trims each VerificationStep's Description (same yaml.v3
-// leading-newline hazard trimmedList guards against, since Description is
-// LLM-authored Draft free text) and drops any entry whose Description is
+// trimmedVerification trims each VerificationStep's Description (same
+// hygiene trimmedList applies, since Description is LLM-authored Draft
+// free text) and drops any entry whose Description is
 // empty after trimming — an empty verification step carries no meaning and
 // would only clutter Review's per-step walk. Kind is trimmed but otherwise
 // preserved as-is; validation of its value belongs to the Draft schema, not
@@ -37,9 +37,9 @@ func trimmedVerification(items []VerificationStep) []VerificationStep {
 	return trimmed
 }
 
-// trimmedContextFiles trims each ContextFile's Path/Role (same yaml.v3
-// leading-newline hazard trimmedList guards against, since both are
-// LLM-authored Draft free text) and drops any entry whose Path is empty
+// trimmedContextFiles trims each ContextFile's Path/Role (same hygiene
+// trimmedList applies, since both are LLM-authored Draft free text) and
+// drops any entry whose Path is empty
 // after trimming — a file entry with no path carries no meaning.
 func trimmedContextFiles(items []ContextFile) []ContextFile {
 	trimmed := make([]ContextFile, 0, len(items))
