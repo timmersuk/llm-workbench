@@ -223,6 +223,13 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
     abortControllerRef.current?.abort()
   }
 
+  // lastExecution backs the "Last run ..." status line shown in place of
+  // an empty trace — pastExecutions is sorted ascending by execution id
+  // (internal/task ListExecutions), so the last entry is the most recent
+  // attempt, whether from this session's history fetch or a run that just
+  // completed (handleStreamEvent's 'done' case appends to the same state).
+  const lastExecution = pastExecutions[pastExecutions.length - 1]
+
   return (
     <div className="stage-conversation">
       <div className="stage-conversation-header">
@@ -252,8 +259,33 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
 
       {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
 
-      {continuableExecutionId && (
-        <fieldset className="continue-choice" disabled={running}>
+      <ExecutionHistoryList projectId={projectId} taskId={taskId} executions={pastExecutions} />
+
+      {trace.length > 0 ? (
+        <div className="chat-history" ref={historyRef}>
+          {trace.map((block, index) => (
+            <div key={index} className="chat-message">
+              {block.kind === 'text' && <MarkdownMessage content={block.content} />}
+              {block.kind === 'tools' && (
+                <ToolActivitySequence activities={block.activities} live={running && index === trace.length - 1} />
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        !running &&
+        lastExecution && (
+          <p className={`last-run-status execution-status-${lastExecution.status}`}>
+            Last run {lastExecution.execution_id}: {lastExecution.status}
+            {lastExecution.failure && <> — {lastExecution.failure.message}</>}
+          </p>
+        )
+      )}
+
+      {runError && <p className="error">{runError}</p>}
+
+      {continuableExecutionId && !running && (
+        <fieldset className="continue-choice">
           <legend>Prior attempt {continuableExecutionId} didn&apos;t finish</legend>
           <label>
             <input
@@ -277,23 +309,6 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
           </label>
         </fieldset>
       )}
-
-      <ExecutionHistoryList projectId={projectId} taskId={taskId} executions={pastExecutions} />
-
-      {trace.length > 0 && (
-        <div className="chat-history" ref={historyRef}>
-          {trace.map((block, index) => (
-            <div key={index} className="chat-message">
-              {block.kind === 'text' && <MarkdownMessage content={block.content} />}
-              {block.kind === 'tools' && (
-                <ToolActivitySequence activities={block.activities} live={running && index === trace.length - 1} />
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {runError && <p className="error">{runError}</p>}
 
       <div className="chat-input">
         {running ? (

@@ -41,9 +41,19 @@ describe('ExecutePanel — past executions', () => {
     vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
     render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
 
-    expect(await screen.findByText(/exec-001: success/)).toBeInTheDocument()
-    expect(screen.getByText(/task-exec\/task-a\/exec-001/)).toBeInTheDocument()
-    expect(screen.getByText(/1 commit\(s\)/)).toBeInTheDocument()
+    const item = await screen.findByRole('listitem')
+    expect(within(item).getByText(/exec-001: success/)).toBeInTheDocument()
+    expect(within(item).getByText(/task-exec\/task-a\/exec-001/)).toBeInTheDocument()
+    expect(within(item).getByText(/1 commit\(s\)/)).toBeInTheDocument()
+  })
+
+  it('shows a status line next to the run button reflecting the most recent attempt', async () => {
+    vi.mocked(api.listExecutions).mockResolvedValue({
+      executions: [makeExecution(), makeExecution({ execution_id: 'exec-002', status: 'failure', failure: { type: 'execution', message: 'boom' } })],
+    })
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByText('Last run exec-002: failure — boom')).toBeInTheDocument()
   })
 
   it('renders nothing extra when there are no prior attempts', async () => {
@@ -83,8 +93,9 @@ describe('ExecutePanel — running an execution', () => {
     await user.click(await screen.findByRole('button', { name: 'Run Execution' }))
 
     await waitFor(() => expect(onExecuted).toHaveBeenCalledWith(execution))
-    expect(await screen.findByText(/exec-001: failure/)).toBeInTheDocument()
-    expect(screen.getByText(/boom/)).toBeInTheDocument()
+    const item = await screen.findByRole('listitem')
+    expect(within(item).getByText(/exec-001: failure/)).toBeInTheDocument()
+    expect(within(item).getByText(/boom/)).toBeInTheDocument()
   })
 
   it('shows an inline error for a real failure', async () => {
@@ -155,6 +166,23 @@ describe('ExecutePanel — continuing from a failed execution', () => {
     const freshRadio = screen.getByRole('radio', { name: 'Start fresh' })
     expect(continueRadio).toBeChecked()
     expect(freshRadio).not.toBeChecked()
+  })
+
+  it('hides the choice once a run is in flight', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: 'exec-002' })
+    vi.mocked(api.startExecution).mockImplementation(
+      (_projectId, _taskId, _executor, _onEvent, signal) =>
+        new Promise((resolve) => {
+          signal?.addEventListener('abort', () => resolve())
+        }),
+    )
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    await screen.findByRole('radio', { name: /Continue from exec-002/ })
+    await user.click(screen.getByRole('button', { name: 'Run Execution' }))
+
+    expect(screen.queryByText(/didn't finish/)).not.toBeInTheDocument()
   })
 
   it('passes the eligible execution id through startExecution when Continue is selected', async () => {
