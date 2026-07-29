@@ -65,6 +65,48 @@ describe('GrillMePanel — initial load', () => {
     expect(screen.getByText('Sure, tell me more.')).toBeInTheDocument()
   })
 
+  it('renders a persisted message’s real segments in order (docs/adr/0023), not the tools-then-text fallback', async () => {
+    const conv: Conversation = {
+      stage: 'requirements',
+      messages: [
+        { role: 'user', content: 'run the checks', created_at: '2026-01-01T00:00:00Z' },
+        {
+          role: 'assistant',
+          content: 'build passes, now testingtests pass, now checking frontendall green',
+          tool_activity: [
+            { name: 'Bash', arguments: '{"command":"go test ./..."}', result: 'ok' },
+            { name: 'Grep', arguments: '{"pattern":"TODO"}', result: 'no matches' },
+          ],
+          segments: [
+            { kind: 'text', text: 'build passes, now testing' },
+            { kind: 'tools', tool_activity: [{ name: 'Bash', arguments: '{"command":"go test ./..."}', result: 'ok' }] },
+            { kind: 'text', text: 'tests pass, now checking frontend' },
+            { kind: 'tools', tool_activity: [{ name: 'Grep', arguments: '{"pattern":"TODO"}', result: 'no matches' }] },
+            { kind: 'text', text: 'all green' },
+          ],
+          created_at: '2026-01-01T00:00:01Z',
+        },
+      ],
+    }
+    vi.mocked(api.getStageConversation).mockResolvedValue(conv)
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await screen.findByText('build passes, now testing')
+
+    const text = document.body.textContent ?? ''
+    const iNarration1 = text.indexOf('build passes, now testing')
+    const iBash = text.indexOf('Bash')
+    const iNarration2 = text.indexOf('tests pass, now checking frontend')
+    const iGrep = text.indexOf('Grep')
+    const iNarration3 = text.indexOf('all green')
+
+    expect(iNarration1).toBeGreaterThanOrEqual(0)
+    expect(iBash).toBeGreaterThan(iNarration1)
+    expect(iNarration2).toBeGreaterThan(iBash)
+    expect(iGrep).toBeGreaterThan(iNarration2)
+    expect(iNarration3).toBeGreaterThan(iGrep)
+  })
+
   it('does not crash, and still starts on demand, when messages is null', async () => {
     const user = userEvent.setup()
     vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'requirements', messages: null })
@@ -288,6 +330,42 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     // "still sending" state.
     await act(async () => finish())
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled())
+  })
+
+  it('renders narration and tool activity in the real order they stream (docs/adr/0023), not tools-then-text', async () => {
+    const user = userEvent.setup()
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
+      deliver = onEvent
+      return new Promise(() => undefined) // stays in-flight for the duration of this test
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'run the checks')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    act(() => deliver({ content: 'build passes, now testing' }))
+    act(() => deliver({ tool_activity: { phase: 'call', name: 'Bash', arguments: '{"command":"go test ./..."}' } }))
+    act(() => deliver({ tool_activity: { phase: 'result', name: 'Bash', result: 'ok', is_error: false } }))
+    act(() => deliver({ content: 'tests pass, now checking frontend' }))
+    act(() => deliver({ tool_activity: { phase: 'call', name: 'Grep', arguments: '{"pattern":"TODO"}' } }))
+    act(() => deliver({ tool_activity: { phase: 'result', name: 'Grep', result: 'no matches', is_error: false } }))
+    act(() => deliver({ content: 'all green' }))
+
+    const text = document.body.textContent ?? ''
+    const iNarration1 = text.indexOf('build passes, now testing')
+    const iBash = text.indexOf('Bash')
+    const iNarration2 = text.indexOf('tests pass, now checking frontend')
+    const iGrep = text.indexOf('Grep')
+    const iNarration3 = text.indexOf('all green')
+
+    expect(iNarration1).toBeGreaterThanOrEqual(0)
+    expect(iBash).toBeGreaterThan(iNarration1)
+    expect(iNarration2).toBeGreaterThan(iBash)
+    expect(iGrep).toBeGreaterThan(iNarration2)
+    expect(iNarration3).toBeGreaterThan(iGrep)
   })
 
   it('sends on Enter without needing the Send button', async () => {

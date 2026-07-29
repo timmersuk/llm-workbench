@@ -3,24 +3,98 @@ import type { KeyboardEvent, ReactNode } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { isAbortError, listAgentExecutors, listModels } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
+import type { ToolActivityEntry } from './ToolActivity'
 import { ToolActivitySequence } from './ToolActivity'
-import type { ChatStreamEvent, Conversation, ConversationMessage, ConversationToolActivity } from './types'
+import type { ChatStreamEvent, Conversation, ConversationMessage } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
+// DisplaySegment mirrors ExecutePanel.tsx's TraceBlock — one piece of a
+// turn's real chronological sequence of narration and tool-call runs
+// (docs/adr/0023), rendered in order for both live streaming and
+// historical/reloaded messages, the same pattern ExecutePanel already
+// established for Execution traces.
+type DisplaySegment = { kind: 'text'; text: string } | { kind: 'tools'; activities: ToolActivityEntry[] }
+
 interface DisplayMessage {
   role: string
+  // content is a derived concatenation of every text segment's text, kept
+  // alongside segments purely for handleCopyMessage/handleEditMessage below
+  // (Copy and "edit and resend" both need the plain reply text, not its
+  // segment structure) — segments is what's rendered.
   content: string
   reasoningContent: string
   toolCallName: string | null
-  // toolActivity is the turn's intermediate tool calls/results
-  // (CONTEXT.md's "Tool Activity"), paired call-with-its-result the same
-  // shape whether loaded from persisted history or built live from
-  // streamed tool_activity events (docs/adr/0018) — only the wrapping
-  // rendering differs between "live" and "at rest" (see the render below).
-  toolActivity: ConversationToolActivity[]
+  segments: DisplaySegment[]
   error: string | null
   thinkingCollapsed: boolean
+}
+
+// appendTextSegment/appendToolCallSegment/appendToolResultSegment coalesce
+// consecutive same-kind events into one growing segment rather than one
+// segment per event — same coalescing rule as ExecutePanel.tsx's
+// appendText/appendToolCall/appendToolResult (and the backend's
+// runStageTurn, docs/adr/0023), applied here to one message's own segments
+// instead of a whole run's flat trace.
+function appendTextSegment(segments: DisplaySegment[], text: string): DisplaySegment[] {
+  const last = segments[segments.length - 1]
+  if (last && last.kind === 'text') {
+    return [...segments.slice(0, -1), { ...last, text: last.text + text }]
+  }
+  return [...segments, { kind: 'text', text }]
+}
+
+function appendToolCallSegment(segments: DisplaySegment[], activity: ToolActivityEntry): DisplaySegment[] {
+  const last = segments[segments.length - 1]
+  if (last && last.kind === 'tools') {
+    return [...segments.slice(0, -1), { ...last, activities: [...last.activities, activity] }]
+  }
+  return [...segments, { kind: 'tools', activities: [activity] }]
+}
+
+// appendToolResultSegment fills in the most recently opened segment's last
+// pending call — tool_activity call/result events arrive strictly paired
+// and in order (runStageTurn, internal/api/stage_conversation.go), so the
+// trailing 'tools' segment's last activity is always the one this result
+// belongs to.
+function appendToolResultSegment(segments: DisplaySegment[], result: string, isError: boolean | undefined): DisplaySegment[] {
+  const last = segments[segments.length - 1]
+  if (!last || last.kind !== 'tools' || last.activities.length === 0) {
+    return segments
+  }
+  const activities = [...last.activities]
+  activities[activities.length - 1] = { ...activities[activities.length - 1], result, isError }
+  return [...segments.slice(0, -1), { ...last, activities }]
+}
+
+// toDisplaySegments prefers m.segments (the server always populates it —
+// see ConversationMessage.EffectiveSegments, internal/task/conversation.go)
+// and falls back to synthesizing today's bundled [tools, text] shape from
+// m.tool_activity/m.content only when segments is absent, so pre-existing
+// test fixtures that construct a bare ConversationMessage literal without
+// it keep rendering exactly as before.
+function toDisplaySegments(m: ConversationMessage): DisplaySegment[] {
+  if (m.segments && m.segments.length > 0) {
+    return m.segments.map((s) =>
+      s.kind === 'text'
+        ? { kind: 'text', text: s.text }
+        : {
+            kind: 'tools',
+            activities: s.tool_activity.map((a) => ({ name: a.name, arguments: a.arguments, result: a.result, isError: a.is_error })),
+          },
+    )
+  }
+  const segments: DisplaySegment[] = []
+  if (m.tool_activity && m.tool_activity.length > 0) {
+    segments.push({
+      kind: 'tools',
+      activities: m.tool_activity.map((a) => ({ name: a.name, arguments: a.arguments, result: a.result, isError: a.is_error })),
+    })
+  }
+  if (m.content) {
+    segments.push({ kind: 'text', text: m.content })
+  }
+  return segments
 }
 
 // mergeDraftDefaults fills in emptyDraft's fields the model's tool call
@@ -103,7 +177,7 @@ function toDisplayMessage(m: ConversationMessage): DisplayMessage {
     content: m.content,
     reasoningContent: '',
     toolCallName: m.tool_call?.name ?? null,
-    toolActivity: m.tool_activity ?? [],
+    segments: toDisplaySegments(m),
     error: m.error ?? null,
     thinkingCollapsed: true,
   }
@@ -568,20 +642,9 @@ export function StageConversationPanel<D, S = never>({
     if (event.tool_activity) {
       const ta = event.tool_activity
       if (ta.phase === 'call') {
-        updateLastMessage((msg) => ({ ...msg, toolActivity: [...msg.toolActivity, { name: ta.name, arguments: ta.arguments }] }))
+        updateLastMessage((msg) => ({ ...msg, segments: appendToolCallSegment(msg.segments, { name: ta.name, arguments: ta.arguments }) }))
       } else {
-        // Fills in the most recent call still missing its result — calls
-        // and results stream strictly paired and in order (runStageTurn,
-        // internal/api/stage_conversation.go), so the last entry is always
-        // the one this result belongs to.
-        updateLastMessage((msg) => {
-          if (msg.toolActivity.length === 0) {
-            return msg
-          }
-          const updated = [...msg.toolActivity]
-          updated[updated.length - 1] = { ...updated[updated.length - 1], result: ta.result, is_error: ta.is_error }
-          return { ...msg, toolActivity: updated }
-        })
+        updateLastMessage((msg) => ({ ...msg, segments: appendToolResultSegment(msg.segments, ta.result ?? '', ta.is_error) }))
       }
       return
     }
@@ -593,7 +656,12 @@ export function StageConversationPanel<D, S = never>({
       setStreamedChars((n) => n + event.reasoning_content!.length)
     }
     if (event.content) {
-      updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
+      updateLastMessage((msg) => ({
+        ...msg,
+        segments: appendTextSegment(msg.segments, event.content!),
+        content: msg.content + event.content,
+        thinkingCollapsed: true,
+      }))
       setStreamedChars((n) => n + event.content!.length)
     }
   }
@@ -605,8 +673,8 @@ export function StageConversationPanel<D, S = never>({
 
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text, reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
+      { role: 'user', content: text, reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: true },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -661,7 +729,7 @@ export function StageConversationPanel<D, S = never>({
   async function startConversation(model: string, executorKey: string) {
     setMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -721,8 +789,8 @@ export function StageConversationPanel<D, S = never>({
     const previousMessages = messages
     setMessages((prev) => [
       ...prev.slice(0, index),
-      { role: 'user', content, reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: false },
+      { role: 'user', content, reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: true },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false },
     ])
     setPendingDraft(null)
     setPendingQuestion(null)
@@ -959,16 +1027,18 @@ export function StageConversationPanel<D, S = never>({
                 <div className="thinking-content">{message.reasoningContent}</div>
               </details>
             )}
-            <ToolActivitySequence
-              activities={message.toolActivity.map((a) => ({
-                name: a.name,
-                arguments: a.arguments,
-                result: a.result,
-                isError: a.is_error,
-              }))}
-              live={sending && index === messages.length - 1}
-            />
-            <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
+            <strong>{message.role}:</strong>
+            {message.segments.map((segment, segIndex) => (
+              <div key={segIndex}>
+                {segment.kind === 'text' && <MarkdownMessage content={segment.text} />}
+                {segment.kind === 'tools' && (
+                  <ToolActivitySequence
+                    activities={segment.activities}
+                    live={sending && index === messages.length - 1 && segIndex === message.segments.length - 1}
+                  />
+                )}
+              </div>
+            ))}
             {message.toolCallName && message.toolCallName !== askQuestionToolName && (
               <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>
             )}

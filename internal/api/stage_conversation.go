@@ -310,10 +310,13 @@ func beginStageStream(w http.ResponseWriter) (func(chatStreamEvent), bool) {
 // transcript keeps it too), any Draft tool call the model proposed
 // (CONTEXT.md), flattened into the persisted ConversationToolCall shape, and
 // the turn's Tool Activity (docs/adr/0018), already capped by runStageTurn.
-// All three streaming handlers build this identically; they differ only in
-// how they then pair or replace it in the record.
-func stageAssistantMessage(content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, streamErr error) task.ConversationMessage {
-	msg := task.ConversationMessage{Role: "assistant", Content: content, ToolActivity: activity}
+// segments is the turn's real chronological order (docs/adr/0023) that
+// content/activity are themselves derived from; all three are runStageTurn's
+// return values, passed straight through. All three streaming handlers build
+// this identically; they differ only in how they then pair or replace it in
+// the record.
+func stageAssistantMessage(content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, streamErr error) task.ConversationMessage {
+	msg := task.ConversationMessage{Role: "assistant", Content: content, ToolActivity: activity, Segments: segments}
 	if streamErr != nil {
 		msg.Error = streamErr.Error()
 	}
@@ -368,6 +371,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var activity []task.ConversationToolActivity
+		var segments []task.ConversationSegment
 		var streamErr error
 
 		// resolveStageRun resolves the workspace and (for Review) appends the
@@ -383,7 +387,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		} else if run, runErr = s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage, history); runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     taskId + ":" + stage,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -402,7 +406,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
 
 		if _, err := target.store.AppendConversationMessages(target.projectId, taskId, stage,
 			task.ConversationMessage{Role: "user", Content: req.Content},
@@ -467,13 +471,14 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var activity []task.ConversationToolActivity
+		var segments []task.ConversationSegment
 		var streamErr error
 
 		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage, existing)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     taskId + ":" + stage,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -488,7 +493,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
 
 		if _, err := target.store.AppendConversationMessages(target.projectId, taskId, stage, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting stage conversation kickoff message")
@@ -632,13 +637,14 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var activity []task.ConversationToolActivity
+		var segments []task.ConversationSegment
 		var streamErr error
 
 		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage, task.Conversation{Messages: historyPrefix})
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     sessionKey,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -654,7 +660,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
 
 		now := time.Now().UTC()
 		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}
@@ -671,41 +677,71 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 // runStageTurn runs one agent turn and streams its deltas via writeEvent
 // (the chatStreamEvent shape both stage-conversation endpoints share),
 // returning the assistant's accumulated content, any proposed Draft tool
-// call, and the turn's Tool Activity for the caller to persist
-// (docs/adr/0018). Shared by handlePostStageMessage and
-// handleStartStageConversation — they differ in what UserMessage/History
-// they supply and what gets persisted afterward, not in how a turn is
-// actually run and streamed.
-func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, err error) {
+// call, the turn's Tool Activity (docs/adr/0018), and its real chronological
+// segments (docs/adr/0023) for the caller to persist. Shared by
+// handlePostStageMessage and handleStartStageConversation — they differ in
+// what UserMessage/History they supply and what gets persisted afterward,
+// not in how a turn is actually run and streamed.
+func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, err error) {
+	// segments is the turn's one real record of what happened, in the order
+	// it happened (docs/adr/0023) — content/activity below are both derived
+	// from it once the turn ends, rather than tracked in parallel, so
+	// there's nothing else for them to drift from. Consecutive tool calls
+	// coalesce into one Tools-kind segment (a "sequence", CONTEXT.md's Tool
+	// Activity) the same way ExecutePanel.tsx's TraceBlock already groups
+	// them on the frontend; consecutive text deltas coalesce into one
+	// Text-kind segment.
+	//
 	// Surface the agent's intermediate tool activity (the executed
 	// read_file/grep_search/glob/bash calls and their results) live, so a
-	// client can render "ran go test ./... -> ok" as it happens, AND
-	// accumulate the same calls into activity for the caller to persist
-	// (capped via task.TruncateForPersistence, independent of whatever the
-	// live SSE event above carries). These are the loop's EXECUTED tools —
-	// kept distinct from the single final Draft (validated against in.Tools
-	// below), which is never routed here. General across all three stages:
-	// Requirements/Planning only ever make read-only calls, Review adds bash.
+	// client can render "ran go test ./... -> ok" as it happens. These are
+	// the loop's EXECUTED tools — kept distinct from the single final Draft
+	// (validated against in.Tools below), which is never routed here.
+	// General across all three stages: Requirements/Planning only ever make
+	// read-only calls, Review adds bash.
 	in.OnToolCall = func(name, argsJSON string) {
 		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "call", Name: name, Arguments: argsJSON}})
-		activity = append(activity, task.ConversationToolActivity{Name: name, Arguments: task.TruncateForPersistence(argsJSON)})
+		entry := task.ConversationToolActivity{Name: name, Arguments: task.TruncateForPersistence(argsJSON)}
+		if n := len(segments); n > 0 && segments[n-1].Kind == task.SegmentKindTools {
+			segments[n-1].ToolActivity = append(segments[n-1].ToolActivity, entry)
+		} else {
+			segments = append(segments, task.ConversationSegment{Kind: task.SegmentKindTools, ToolActivity: []task.ConversationToolActivity{entry}})
+		}
 	}
 	in.OnToolResult = func(name, result string, isError bool) {
 		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "result", Name: name, Result: result, IsError: isError}})
 		// Fill in the most recent call still missing its result — calls and
 		// results arrive strictly paired and in order (both the toolloop
 		// engine and the claude/codex CLI integrations execute/report one
-		// call's result before the next call happens), so the last entry is
-		// always the one this result belongs to.
-		if n := len(activity); n > 0 {
-			activity[n-1].Result = task.TruncateForPersistence(result)
-			activity[n-1].IsError = isError
+		// call's result before the next call happens), so the last entry of
+		// the last Tools segment is always the one this result belongs to.
+		if n := len(segments); n > 0 && segments[n-1].Kind == task.SegmentKindTools {
+			if acts := segments[n-1].ToolActivity; len(acts) > 0 {
+				acts[len(acts)-1].Result = task.TruncateForPersistence(result)
+				acts[len(acts)-1].IsError = isError
+			}
 		}
 	}
 	out, runErr := runner.Run(ctx, in, func(d chat.Delta) error {
 		writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent, Usage: usageEvent(d.Usage)})
+		// Only real narration becomes a segment — a reasoning- or
+		// usage-only delta (d.Content == "") must not spawn a spurious
+		// empty text segment or otherwise disturb the coalescing above.
+		if d.Content != "" {
+			if n := len(segments); n > 0 && segments[n-1].Kind == task.SegmentKindText {
+				segments[n-1].Text += d.Content
+			} else {
+				segments = append(segments, task.ConversationSegment{Kind: task.SegmentKindText, Text: d.Content})
+			}
+		}
 		return nil
 	})
+	// out.Content is deliberately not used — content is derived from
+	// segments below, which (unlike out.Content) is guaranteed to include
+	// every round's text: one runner backend's multi-round loop only
+	// returns its last round's text in out.Content, silently dropping
+	// earlier narration that was nonetheless streamed live and captured
+	// above.
 	toolCall := out.ToolCall
 	// A local OpenAI-compatible model can hallucinate a tool_calls delta for
 	// a tool it was never offered (e.g. one primed by the "explore the
@@ -726,7 +762,22 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 			Arguments: toolCall.Function.Arguments,
 		}})
 	}
-	return out.Content, toolCall, activity, runErr
+
+	// content/activity are derived from the finished segments, once, rather
+	// than hand-maintained in parallel inside the closures above — segments
+	// stays the single source of truth with nothing else to drift from.
+	var contentBuilder strings.Builder
+	for _, seg := range segments {
+		switch seg.Kind {
+		case task.SegmentKindText:
+			contentBuilder.WriteString(seg.Text)
+		case task.SegmentKindTools:
+			activity = append(activity, seg.ToolActivity...)
+		}
+	}
+	content = contentBuilder.String()
+
+	return content, toolCall, activity, segments, runErr
 }
 
 // offersToolNamed reports whether tools contains one named name.

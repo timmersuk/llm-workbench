@@ -674,6 +674,82 @@ func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testin
 	assert.True(t, assistant.ToolActivity[1].IsError)
 }
 
+// TestHandlePostStageMessage_PersistsSegmentsInRealInterleavedOrder locks in
+// docs/adr/0023: a turn that narrates between tool calls must persist that
+// real chronological order (text, tools, text, tools, text), not the old
+// bundled "all tool activity, then all text" shape — Content/ToolActivity
+// stay derived from Segments, in the same order.
+func TestHandlePostStageMessage_PersistsSegmentsInRealInterleavedOrder(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+
+	var persistedMsgs []task.ConversationMessage
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+		persistedMsgs = msgs
+		return true
+	})).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+
+	knowledgeReader := new(mockKnowledgeStore)
+
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(agentrunner.RunInput)
+			onDelta := args.Get(2).(func(chat.Delta) error)
+			// Drive text and tool calls in a real interleaved order — not
+			// "all tools then all text" — to prove runStageTurn records
+			// what actually happened, not a flattened summary.
+			require.NoError(t, onDelta(chat.Delta{Content: "build passes, now testing"}))
+			in.OnToolCall("Bash", `{"command":"go test ./..."}`)
+			in.OnToolResult("Bash", "ok", false)
+			require.NoError(t, onDelta(chat.Delta{Content: "tests pass, now checking frontend"}))
+			in.OnToolCall("Bash", `{"command":"npm test"}`)
+			in.OnToolResult("Bash", "ok", false)
+			require.NoError(t, onDelta(chat.Delta{Content: "all green"}))
+		}).
+		Return(nil, agentrunner.RunOutput{}, nil)
+
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "run the checks"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
+		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Len(t, persistedMsgs, 2)
+	assistant := persistedMsgs[1]
+
+	require.Len(t, assistant.Segments, 5)
+	assert.Equal(t, task.SegmentKindText, assistant.Segments[0].Kind)
+	assert.Equal(t, "build passes, now testing", assistant.Segments[0].Text)
+	assert.Equal(t, task.SegmentKindTools, assistant.Segments[1].Kind)
+	require.Len(t, assistant.Segments[1].ToolActivity, 1)
+	assert.Equal(t, "Bash", assistant.Segments[1].ToolActivity[0].Name)
+	assert.Equal(t, task.SegmentKindText, assistant.Segments[2].Kind)
+	assert.Equal(t, "tests pass, now checking frontend", assistant.Segments[2].Text)
+	assert.Equal(t, task.SegmentKindTools, assistant.Segments[3].Kind)
+	require.Len(t, assistant.Segments[3].ToolActivity, 1)
+	assert.Equal(t, `{"command":"npm test"}`, assistant.Segments[3].ToolActivity[0].Arguments)
+	assert.Equal(t, task.SegmentKindText, assistant.Segments[4].Kind)
+	assert.Equal(t, "all green", assistant.Segments[4].Text)
+
+	// Content/ToolActivity are still populated, derived from Segments in
+	// the same order — nothing reads them any differently than before.
+	assert.Equal(t, "build passes, now testingtests pass, now checking frontendall green", assistant.Content)
+	require.Len(t, assistant.ToolActivity, 2)
+	assert.Equal(t, "Bash", assistant.ToolActivity[0].Name)
+	assert.Equal(t, `{"command":"go test ./..."}`, assistant.ToolActivity[0].Arguments)
+	assert.Equal(t, `{"command":"npm test"}`, assistant.ToolActivity[1].Arguments)
+}
+
 // TestHandlePostStageMessage_IgnoresMismatchedToolCallName covers a model
 // hallucinating a tool call for a tool that was never offered (e.g. a local
 // OpenAI-compatible model emitting a "Glob" tool_calls delta when only
@@ -765,7 +841,13 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 			in.Workspace == filepath.Join(reposRoot, "logthing") && in.UserMessage == "go ahead" &&
 			len(in.Tools) == 2 && in.Tools[0].Function.Name == proposePlanToolName && in.Tools[1].Function.Name == askQuestionToolName
 	}), mock.Anything).Return([]chat.Delta{{Content: "thinking..."}, {Content: "here's the plan"}}, agentrunner.RunOutput{
-		Content: "here's the plan",
+		// Content is deliberately NOT "thinking...here's the plan" here:
+		// runStageTurn no longer trusts RunOutput.Content (docs/adr/0023),
+		// it derives persisted content from what was actually streamed via
+		// onDelta above — this field is unused by the code under test, left
+		// different on purpose so a future reader doesn't mistake it for
+		// the source of truth.
+		Content: "here's the plan (stale, unused)",
 		ToolCall: &chat.ToolCall{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{
 			Name: proposePlanToolName, Arguments: `{"approach":"port logthing"}`,
 		}},
@@ -790,7 +872,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 
 	require.Len(t, persistedMsgs, 2)
 	assert.Equal(t, "assistant", persistedMsgs[1].Role)
-	assert.Equal(t, "here's the plan", persistedMsgs[1].Content)
+	assert.Equal(t, "thinking...here's the plan", persistedMsgs[1].Content)
 	require.NotNil(t, persistedMsgs[1].ToolCall)
 	assert.Equal(t, "call-1", persistedMsgs[1].ToolCall.ID)
 	assert.Equal(t, `{"approach":"port logthing"}`, persistedMsgs[1].ToolCall.Arguments)
@@ -1131,7 +1213,7 @@ func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t
 	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
 		gotIn = in
 		return true
-	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "fresh reply"}, nil)
+	}), mock.Anything).Return([]chat.Delta{{Content: "fresh reply"}}, agentrunner.RunOutput{}, nil)
 
 	reposRoot, repositories := newStageMessageWorkspace(t)
 	projects, factory := newStageMessageServer(t, tasks, repositories)
@@ -1187,7 +1269,7 @@ func TestHandleRegenerateStageMessage_EditUsesNewContent(t *testing.T) {
 
 	runner := new(mockAgentRunner)
 	runner.On("CloseSession", "TASK-0001:"+task.StageRequirements).Return()
-	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).Return(nil, agentrunner.RunOutput{Content: "new reply"}, nil)
+	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).Return([]chat.Delta{{Content: "new reply"}}, agentrunner.RunOutput{}, nil)
 
 	reposRoot, repositories := newStageMessageWorkspace(t)
 	projects, factory := newStageMessageServer(t, tasks, repositories)

@@ -262,7 +262,7 @@ func TestHandleRegenerateTaskDraftMessage_TruncatesHistoryEvictsSessionAndPersis
 	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
 		gotIn = in
 		return true
-	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "fresh reply"}, nil)
+	}), mock.Anything).Return([]chat.Delta{{Content: "fresh reply"}}, agentrunner.RunOutput{}, nil)
 
 	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/task-drafts/session-1/messages/2/regenerate", stageRegenerateRequest{Content: "original question"})
 	req.SetPathValue("projectId", "demo-project")

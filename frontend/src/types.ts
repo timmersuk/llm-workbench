@@ -279,12 +279,26 @@ export interface ConversationToolActivity {
   is_error?: boolean
 }
 
+// ConversationSegment mirrors internal/task/conversation.go's
+// ConversationSegment (docs/adr/0023) — one piece of a turn's real
+// chronological sequence, either a run of narration or a maximal run of
+// consecutive tool calls (a "sequence", CONTEXT.md's Tool Activity). The
+// server always populates this on every ConversationMessage it returns
+// (synthesizing a best-effort [tools, text] pair for a turn recorded before
+// this field existed — real order isn't recoverable retroactively), but the
+// type is kept optional here so pre-existing test fixtures that construct a
+// bare ConversationMessage literal without it don't need updating.
+export type ConversationSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'tools'; tool_activity: ConversationToolActivity[] }
+
 export interface ConversationMessage {
   role: string
   content: string
   tool_call?: ConversationToolCall
   tool_call_id?: string
   tool_activity?: ConversationToolActivity[]
+  segments?: ConversationSegment[]
   // error is set when this turn failed — a reload must still show that a
   // failure happened, not just an assistant message with empty content and
   // no explanation (internal/task/conversation.go's ConversationMessage.Error).

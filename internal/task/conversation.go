@@ -1,6 +1,7 @@
 package task
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -75,6 +76,50 @@ func (a ConversationToolActivity) MarshalYAML() (interface{}, error) {
 	}{a.Name, yamlutil.Quoted(a.Arguments), yamlutil.Quoted(a.Result), a.IsError}, nil
 }
 
+// ConversationSegmentKind distinguishes ConversationSegment's two shapes.
+type ConversationSegmentKind string
+
+const (
+	SegmentKindText  ConversationSegmentKind = "text"
+	SegmentKindTools ConversationSegmentKind = "tools"
+)
+
+// ConversationSegment is one piece of an assistant turn's real
+// chronological sequence: either a run of narration text or one run of
+// consecutive tool calls (a "sequence" in CONTEXT.md's Tool Activity
+// sense) — never both. A turn that narrates between tool calls (Review's
+// automated-checks pass narrating "build passes, now testing" between
+// `go build` and `go test`, say) produces several of these in the real
+// order they happened; Content/ToolActivity on ConversationMessage flatten
+// that same turn into one string plus one list, which cannot represent
+// which narration came before which call (see docs/adr/0023). Segments is
+// the one place real order is recorded; Content/ToolActivity remain
+// derived from it (or, for a message persisted before this field existed,
+// synthesized in the opposite direction — see ConversationMessage.EffectiveSegments).
+type ConversationSegment struct {
+	Kind ConversationSegmentKind `yaml:"kind" json:"kind"`
+	// Text holds this segment's narration when Kind == SegmentKindText;
+	// empty otherwise.
+	Text string `yaml:"text,omitempty" json:"text,omitempty"`
+	// ToolActivity holds this segment's maximal run of consecutive calls
+	// when Kind == SegmentKindTools; empty otherwise. Each entry already
+	// carries its own MarshalYAML (Arguments/Result quoting), applied
+	// automatically since it's passed through unchanged here.
+	ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty" json:"tool_activity,omitempty"`
+}
+
+// MarshalYAML forces Text through yamlutil.Quoted, the same treatment
+// ConversationMessage.Content gets and for the same reason: it's ordinary
+// LLM prose, and goccy's default plain-style heuristic doesn't safely
+// handle every character that can appear in it.
+func (s ConversationSegment) MarshalYAML() (interface{}, error) {
+	return struct {
+		Kind         ConversationSegmentKind    `yaml:"kind"`
+		Text         yamlutil.Quoted            `yaml:"text,omitempty"`
+		ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty"`
+	}{s.Kind, yamlutil.Quoted(s.Text), s.ToolActivity}, nil
+}
+
 // maxPersistedToolActivityBytes caps each persisted
 // ConversationToolActivity.Arguments/Result string. Deliberately smaller
 // than the 16KB a tool result is capped at before a model ever sees it
@@ -109,6 +154,12 @@ type ConversationMessage struct {
 	// than as separate Conversation entries (docs/adr/0018's rejected
 	// alternatives). Never set on a "user" message.
 	ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty" json:"tool_activity,omitempty"`
+	// Segments is this turn's real chronological sequence of narration and
+	// tool-call runs — see ConversationSegment's doc comment. Nil for a
+	// "user" message, and nil for any assistant message persisted before
+	// this field existed; EffectiveSegments is how a caller gets a always-
+	// populated view regardless of which case this is.
+	Segments []ConversationSegment `yaml:"segments,omitempty" json:"-"`
 	// Error records why this turn failed, if it did — an assistant message
 	// with empty Content and no Error means the agent genuinely said
 	// nothing; empty Content with Error set means the turn errored out
@@ -123,8 +174,12 @@ type ConversationMessage struct {
 // doesn't safely handle every character that can appear in it (see
 // yamlutil.Quoted's doc comment). Role/ToolCallID/CreatedAt are short,
 // controlled-vocabulary values with no such risk, left as plain
-// types; ToolCall/ToolActivity carry their own MarshalYAML and are
-// applied automatically since they're passed through unchanged.
+// types; ToolCall/ToolActivity/Segments carry their own MarshalYAML and
+// are applied automatically since they're passed through unchanged.
+// Segments is persisted exactly as recorded (nil stays nil) — never
+// synthesized here; EffectiveSegments' synthesis is wire-only (see
+// MarshalJSON), so a legacy file on disk is never rewritten to pretend it
+// always had real ordering.
 func (m ConversationMessage) MarshalYAML() (interface{}, error) {
 	return struct {
 		Role         string                     `yaml:"role"`
@@ -132,9 +187,48 @@ func (m ConversationMessage) MarshalYAML() (interface{}, error) {
 		ToolCall     *ConversationToolCall      `yaml:"tool_call,omitempty"`
 		ToolCallID   string                     `yaml:"tool_call_id,omitempty"`
 		ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty"`
+		Segments     []ConversationSegment      `yaml:"segments,omitempty"`
 		Error        yamlutil.Quoted            `yaml:"error,omitempty"`
 		CreatedAt    time.Time                  `yaml:"created_at"`
-	}{m.Role, yamlutil.Quoted(m.Content), m.ToolCall, m.ToolCallID, m.ToolActivity, yamlutil.Quoted(m.Error), m.CreatedAt}, nil
+	}{m.Role, yamlutil.Quoted(m.Content), m.ToolCall, m.ToolCallID, m.ToolActivity, m.Segments, yamlutil.Quoted(m.Error), m.CreatedAt}, nil
+}
+
+// EffectiveSegments returns m.Segments when the turn was recorded with
+// real ordering, or — for a message persisted before Segments existed —
+// synthesizes a best-effort [tools, text] pair from the legacy flattened
+// Content/ToolActivity fields, omitting either piece when empty. This
+// reproduces today's bundled rendering (every tool call, then all the
+// text) for old data; real order is not recoverable retroactively, since
+// it was never captured for a message recorded before this field existed.
+func (m ConversationMessage) EffectiveSegments() []ConversationSegment {
+	if len(m.Segments) > 0 {
+		return m.Segments
+	}
+	var segments []ConversationSegment
+	if len(m.ToolActivity) > 0 {
+		segments = append(segments, ConversationSegment{Kind: SegmentKindTools, ToolActivity: m.ToolActivity})
+	}
+	if m.Content != "" {
+		segments = append(segments, ConversationSegment{Kind: SegmentKindText, Text: m.Content})
+	}
+	return segments
+}
+
+// conversationMessageAlias exists only so ConversationMessage.MarshalJSON
+// can re-marshal every field through encoding/json's normal struct-tag
+// behavior without recursing back into itself.
+type conversationMessageAlias ConversationMessage
+
+// MarshalJSON overrides Segments (tagged json:"-" on the real field, since
+// the wire value isn't always the persisted value) with EffectiveSegments()
+// — so every API response carries a populated segments array regardless of
+// whether the underlying message predates this field, without ever
+// rewriting the actual persisted YAML (see MarshalYAML's doc comment).
+func (m ConversationMessage) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		conversationMessageAlias
+		Segments []ConversationSegment `json:"segments,omitempty"`
+	}{conversationMessageAlias(m), m.EffectiveSegments()})
 }
 
 // Conversation is one stage's full, append-only message history, stored as

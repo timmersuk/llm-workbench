@@ -232,6 +232,55 @@ func TestFileStore_AppendConversationMessages_ContentWithLeadingSpaceLinesRoundT
 	assert.Equal(t, quotedDiffStat, reloaded.Messages[0].Content, "trailing whitespace is trimmed by design (existing TrimSpace behavior); the leading-space content lines must still round-trip intact")
 }
 
+// TestFileStore_AppendConversationMessages_SegmentsRoundTrip proves
+// ConversationMessage.MarshalYAML actually persists Segments (docs/adr/0023)
+// — the field is added to MarshalYAML's explicit allowlist struct, so
+// without that this would silently write nothing and GetConversation would
+// come back with an empty Segments regardless of what was appended. Also
+// covers the leading-space-lines shape (same regression class as the two
+// tests above) for a Text segment specifically, since it carries its own
+// yamlutil.Quoted treatment separate from Content's.
+func TestFileStore_AppendConversationMessages_SegmentsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	narration := "Here's the diff:\n\n" +
+		" internal/api/foo.go | 2 +-\n" +
+		" internal/api/bar.go | 4 ++--"
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StageReview, ConversationMessage{
+		Role:    "assistant",
+		Content: narration + " ok, now testing all green",
+		ToolActivity: []ConversationToolActivity{
+			{Name: "Bash", Arguments: `{"command":"go test ./..."}`, Result: "ok"},
+		},
+		Segments: []ConversationSegment{
+			{Kind: SegmentKindText, Text: narration},
+			{Kind: SegmentKindTools, ToolActivity: []ConversationToolActivity{
+				{Name: "Bash", Arguments: `{"command":"go test ./..."}`, Result: "ok"},
+			}},
+			{Kind: SegmentKindText, Text: " ok, now testing all green"},
+		},
+	})
+	require.NoError(t, err)
+
+	reloaded, err := store.GetConversation("demo-project", "task-a", StageReview)
+	require.NoError(t, err, "the persisted file must itself be readable back")
+	require.Len(t, reloaded.Messages, 1)
+
+	segments := reloaded.Messages[0].Segments
+	require.Len(t, segments, 3)
+	assert.Equal(t, SegmentKindText, segments[0].Kind)
+	assert.Equal(t, narration, segments[0].Text, "leading-space diff lines inside a Text segment must round-trip intact")
+	assert.Equal(t, SegmentKindTools, segments[1].Kind)
+	require.Len(t, segments[1].ToolActivity, 1)
+	assert.Equal(t, "ok", segments[1].ToolActivity[0].Result)
+	assert.Equal(t, SegmentKindText, segments[2].Kind)
+	assert.Equal(t, " ok, now testing all green", segments[2].Text)
+}
+
 // TestFileStore_AppendConversationMessages_DoesNotRewritePriorMessages proves
 // the append is genuinely append-only at the byte level (no read-modify-
 // rewrite of the whole file): bytes already on disk from an earlier call

@@ -238,13 +238,14 @@ func (s *Server) handleStartTaskDraftConversation() http.HandlerFunc {
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var activity []task.ConversationToolActivity
+		var segments []task.ConversationSegment
 		var streamErr error
 
 		run, runErr := s.resolveTaskDraftRun(r.Context(), target.proj, existing)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:   taskDraftSessionKey(projectId, sessionId),
 				Workspace:    run.Workspace,
 				SystemPrompt: run.SystemPrompt,
@@ -258,7 +259,7 @@ func (s *Server) handleStartTaskDraftConversation() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
 
 		if _, err := target.store.AppendTaskDraftConversationMessages(projectId, sessionId, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"project": projectId, "session": sessionId}).Error("persisting task draft conversation kickoff message")
@@ -293,6 +294,7 @@ func (s *Server) handlePostTaskDraftMessage() http.HandlerFunc {
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var activity []task.ConversationToolActivity
+		var segments []task.ConversationSegment
 		var streamErr error
 
 		history, convErr := target.store.GetTaskDraftConversation(projectId, sessionId)
@@ -303,7 +305,7 @@ func (s *Server) handlePostTaskDraftMessage() http.HandlerFunc {
 		} else if run, runErr = s.resolveTaskDraftRun(r.Context(), target.proj, history); runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:   taskDraftSessionKey(projectId, sessionId),
 				Workspace:    run.Workspace,
 				SystemPrompt: run.SystemPrompt,
@@ -318,7 +320,7 @@ func (s *Server) handlePostTaskDraftMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
 
 		if _, err := target.store.AppendTaskDraftConversationMessages(projectId, sessionId,
 			task.ConversationMessage{Role: "user", Content: req.Content},
@@ -421,13 +423,14 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 		var assistantContent string
 		var proposed *chat.ToolCall
 		var activity []task.ConversationToolActivity
+		var segments []task.ConversationSegment
 		var streamErr error
 
 		run, runErr := s.resolveTaskDraftRun(r.Context(), target.proj, task.Conversation{Messages: historyPrefix})
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:   sessionKey,
 				Workspace:    run.Workspace,
 				SystemPrompt: run.SystemPrompt,
@@ -442,7 +445,7 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
 
 		now := time.Now().UTC()
 		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}
