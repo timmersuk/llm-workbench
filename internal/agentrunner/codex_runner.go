@@ -428,6 +428,21 @@ func tomlQuote(s string) string {
 	return b.String()
 }
 
+// appendAgentMessageText appends one completed AgentMessage item's text to
+// content, which accumulates across an entire turn (Run's/Execute's loop).
+// Codex's thread stream emits a separate ItemCompleted{Item: *AgentMessage}
+// event for each complete remark the agent makes between tool calls, so
+// without a paragraph break here two consecutive AgentMessages would
+// concatenate directly into one run-on line once rendered as markdown (see
+// claude_runner.go's identical fix for processMessage/processExecuteMessage,
+// where the same content builder is shared across separate AssistantMessages).
+func appendAgentMessageText(content *strings.Builder, text string) {
+	if content.Len() > 0 {
+		content.WriteString("\n\n")
+	}
+	content.WriteString(text)
+}
+
 // processCodexRunEvent folds one types.ThreadEvent from a codex thread
 // into content/out for Run, mirroring claude_runner.go's processMessage.
 // toolNames are the Draft tool(s) this turn offered (empty for free-chat
@@ -454,7 +469,7 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *str
 	case *types.ItemCompleted:
 		switch item := e.Item.(type) {
 		case *types.AgentMessage:
-			content.WriteString(item.Text)
+			appendAgentMessageText(content, item.Text)
 		case *types.CommandExecution:
 			if onToolCall != nil {
 				onToolCall("Bash", item.Command)
@@ -528,13 +543,13 @@ func processCodexExecuteEvent(ev types.ThreadEvent, content *strings.Builder, ou
 	case *types.ItemCompleted:
 		if onEvent == nil {
 			if msg, ok := e.Item.(*types.AgentMessage); ok {
-				content.WriteString(msg.Text)
+				appendAgentMessageText(content, msg.Text)
 			}
 			break
 		}
 		switch item := e.Item.(type) {
 		case *types.AgentMessage:
-			content.WriteString(item.Text)
+			appendAgentMessageText(content, item.Text)
 		case *types.CommandExecution:
 			if err := onEvent(ExecuteEvent{Kind: "tool_call", ToolName: "Bash", ToolInput: item.Command}); err != nil {
 				return true, err
