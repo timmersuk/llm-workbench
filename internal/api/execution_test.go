@@ -298,6 +298,129 @@ func TestHandleStartExecution_ExecuteErrorRecordsFailure(t *testing.T) {
 	assert.Contains(t, recorded.Failure.Message, "boom")
 }
 
+// TestHandleStartExecution_WorkspaceResolutionFailure_RecordsFailureExecution
+// is a regression test: CreateExecutionLog runs before workspace resolution
+// is even attempted, so a failure here used to just emit a bare SSE error
+// and return, leaving that log with no matching execution.yaml record. A
+// human retrying would then get the exact same executionID from
+// NextExecutionID, which CreateExecutionLog would reject as already
+// existing — an unrecoverable deadlock. This asserts the failure is instead
+// recorded like any other, and streamed as a normal "done" event so the
+// frontend's execution history shows what actually happened.
+func TestHandleStartExecution_WorkspaceResolutionFailure_RecordsFailureExecution(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return(nil, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-001", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-001").Return(nil)
+
+	var recorded task.Execution
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+		recorded = e
+		return true
+	})).Return(task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusFailure}, nil)
+
+	runner := new(mockAgentRunner)
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+
+	// The real repo is on "main" (newExecutionTestRepo), but the project
+	// fixture claims a different default branch — ensureDefaultBranch
+	// short-circuits on Project.DefaultBranch without ever touching the
+	// repo, so ResolveExecutionWorkspace is the first thing to actually
+	// notice the mismatch and fail, exactly like the checkDefaultBranch
+	// error a real "shared checkout on the wrong branch" produces.
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: repositories, DefaultBranch: "not-main"}, nil)
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	(&Server{Projects: projects, Tasks: tasks,
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	runner.AssertNotCalled(t, "Execute", mock.Anything, mock.Anything, mock.Anything)
+
+	sseEvents := decodeSSEEvents(t, w.Body.String())
+	require.Len(t, sseEvents, 1)
+	assert.Equal(t, "done", sseEvents[0].Type, "a failure here must surface the same way a real Execute failure does — via the recorded Execution, not a bare error event")
+	require.NotNil(t, sseEvents[0].Execution)
+
+	assert.Equal(t, task.ExecutionStatusFailure, recorded.Status)
+	require.NotNil(t, recorded.Failure)
+	assert.Equal(t, task.FailureTypeExecution, recorded.Failure.Type)
+	assert.Contains(t, recorded.Failure.Message, "resolving execution workspace")
+	assert.Empty(t, recorded.Output.GitBranch, "the workspace was never created, so there is no branch to report")
+}
+
+// TestHandleStartExecution_PRCommentsFetchFailure_RecordsFailureExecution
+// is the same regression as the workspace-resolution test above, for the
+// other early-return path that runs after CreateExecutionLog but before
+// runner.Execute — fetching the reopened PR's review comments.
+func TestHandleStartExecution_PRCommentsFetchFailure_RecordsFailureExecution(t *testing.T) {
+	reposRoot, repositories := newExecutionTestRepo(t, "demo-repo")
+	repoDir := filepath.Join(reposRoot, "demo-repo")
+
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "git %v: %s", args, out)
+		return string(out)
+	}
+	baseBranch := strings.TrimSpace(run("rev-parse", "--abbrev-ref", "HEAD"))
+
+	priorBranch := "task-exec/TASK-0001/exec-001"
+	run("checkout", "-b", priorBranch)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "wip.txt"), []byte("prior attempt\n"), 0o644))
+	run("add", ".")
+	run("commit", "-q", "-m", "prior attempt")
+	run("checkout", baseBranch)
+
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{
+		ID: "TASK-0001", Stage: task.StageImplementation,
+		PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/42", Number: 42, Branch: priorBranch},
+	}, nil)
+	tasks.On("GetPlan", "demo-project", "TASK-0001").Return(task.Plan{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
+		{ExecutionID: "exec-001", Decision: task.ReviewDecisionNeedsChanges, Notes: "fix the widget"},
+	}, nil)
+	tasks.On("ListExecutions", "demo-project", "TASK-0001").Return([]task.Execution{
+		{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: task.ExecutionOutput{GitBranch: priorBranch}},
+	}, nil)
+	tasks.On("NextExecutionID", "demo-project", "TASK-0001").Return("exec-002", nil)
+	tasks.On("CreateExecutionLog", "demo-project", "TASK-0001", "exec-002").Return(nil)
+
+	var recorded task.Execution
+	tasks.On("RecordExecution", "demo-project", "TASK-0001", mock.MatchedBy(func(e task.Execution) bool {
+		recorded = e
+		return true
+	})).Return(task.Execution{ExecutionID: "exec-002", Status: task.ExecutionStatusFailure}, nil)
+
+	prClient := &fakeGitHubPRClient{commentsErr: errors.New(`gh api ...: 422 "per_page" is not a permitted key`)}
+	runner := new(mockAgentRunner)
+
+	req := newExecutionRequest(t, executionStartRequest{})
+	w := httptest.NewRecorder()
+	(&Server{Projects: newExecutionProjectStore(repositories), Tasks: tasks,
+		AgentRunners: map[string]agentrunner.AgentRunner{"claude-code": runner}, ReposRoot: reposRoot, PRClient: prClient}).handleStartExecution()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	runner.AssertNotCalled(t, "Execute", mock.Anything, mock.Anything, mock.Anything)
+
+	sseEvents := decodeSSEEvents(t, w.Body.String())
+	require.Len(t, sseEvents, 1)
+	assert.Equal(t, "done", sseEvents[0].Type)
+
+	assert.Equal(t, task.ExecutionStatusFailure, recorded.Status)
+	require.NotNil(t, recorded.Failure)
+	assert.Contains(t, recorded.Failure.Message, "fetching PR comments")
+	assert.Equal(t, "task-exec/TASK-0001/exec-002", recorded.Output.GitBranch, "the worktree itself was created successfully before this step failed")
+	assert.Equal(t, priorBranch, recorded.Output.ForkedFromBranch)
+}
+
 func TestClassifyExecutionOutcome_ContextCanceledIsResourceFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

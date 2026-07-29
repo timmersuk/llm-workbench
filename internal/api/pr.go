@@ -37,7 +37,7 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 			return
 		}
 		if t.Stage != task.StagePRReview {
-			http.Error(w, fmt.Sprintf("task is not in pr_review stage (currently %q)", t.Stage), http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, fmt.Sprintf("task is not in pr_review stage (currently %q)", t.Stage))
 			return
 		}
 
@@ -47,7 +47,7 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 			return
 		}
 		if len(executions) == 0 {
-			http.Error(w, "no execution to push", http.StatusNotFound)
+			writeAPIError(w, http.StatusNotFound, "no execution to push")
 			return
 		}
 		// ListExecutions sorts ascending by the zero-padded id, so the last
@@ -81,7 +81,7 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 
 		dir, err := agentrunner.ResolveWorkspace(r.Context(), s.ReposRoot, proj.Repositories)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("resolving workspace: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("resolving workspace: %v", err))
 			return
 		}
 
@@ -90,7 +90,7 @@ func (s *Server) handlePushPR() http.HandlerFunc {
 			existingURL, existingNumber, existingBranch, s.PRClient,
 		)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("pushing and opening PR: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("pushing and opening PR: %v", err))
 			return
 		}
 

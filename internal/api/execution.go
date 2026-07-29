@@ -122,7 +122,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req executionStartRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -132,7 +132,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		}
 		runner, ok := s.AgentRunners[executorKey]
 		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown executor %q", executorKey))
 			return
 		}
 
@@ -149,7 +149,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		// something squeezed into the event stream.
 		defaultBranch, err := s.ensureDefaultBranch(r.Context(), proj)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("determining default branch: %v", err))
 			return
 		}
 		store := s.Tasks
@@ -160,7 +160,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			return
 		}
 		if t.Stage != task.StageImplementation {
-			http.Error(w, fmt.Sprintf("task is not in implementation stage (currently %q)", t.Stage), http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, fmt.Sprintf("task is not in implementation stage (currently %q)", t.Stage))
 			return
 		}
 
@@ -191,7 +191,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		priorFailureMessage := ""
 		if req.ContinueFromExecutionID != "" {
 			if failureExecutionID == "" || req.ContinueFromExecutionID != failureExecutionID {
-				http.Error(w, fmt.Sprintf("execution %q is no longer available to continue from", req.ContinueFromExecutionID), http.StatusConflict)
+				writeAPIError(w, http.StatusConflict, fmt.Sprintf("execution %q is no longer available to continue from", req.ContinueFromExecutionID))
 				return
 			}
 			forkFrom = failureForkFrom
@@ -212,13 +212,13 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		// (RecordExecution below refuses to record any outcome, success or
 		// not, without a matching log).
 		if err := store.CreateExecutionLog(projectId, taskId, executionID); err != nil {
-			http.Error(w, fmt.Sprintf("creating execution log: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("creating execution log: %v", err))
 			return
 		}
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "streaming unsupported")
 			return
 		}
 
@@ -233,9 +233,19 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			flusher.Flush()
 		}
 
+		// Measured from here, not from just before runner.Execute, so a
+		// recordAbortedExecution call below (workspace resolution or
+		// PR-comments fetching failing) reports a real duration, not a zero
+		// one.
+		start := time.Now()
+
 		ws, wsErr := agentrunner.ResolveExecutionWorkspace(r.Context(), s.ReposRoot, proj.Repositories, taskId, executionID, forkFrom, defaultBranch)
 		if wsErr != nil {
-			writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("resolving execution workspace: %v", wsErr)})
+			// The workspace was never created — nothing to report yet for
+			// GitBranch/ForkedFromBranch, unlike the PR-comments failure
+			// below where it already exists.
+			recordAbortedExecution(r.Context(), writeEvent, store, projectId, taskId, executionID, executorKey, start,
+				reviewFeedback, continuedFromExecutionID, "", "", fmt.Errorf("resolving execution workspace: %w", wsErr))
 			return
 		}
 
@@ -250,14 +260,14 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		if reviewFeedback != "" && t.PullRequest != nil {
 			prCommentsPath = filepath.Join(ws.Path, prCommentsExecutionFilename)
 			if err := s.writePRCommentsFile(r.Context(), ws.Path, prCommentsPath, t.PullRequest.Number); err != nil {
-				writeEvent(executeStreamEvent{Type: "error", Error: fmt.Sprintf("fetching PR comments: %v", err)})
+				recordAbortedExecution(r.Context(), writeEvent, store, projectId, taskId, executionID, executorKey, start,
+					reviewFeedback, continuedFromExecutionID, ws.Branch, forkFrom, fmt.Errorf("fetching PR comments: %w", err))
 				return
 			}
 		}
 
 		systemPrompt := buildExecutionPrompt(t, plan, reviewFeedback, priorFailureMessage, prCommentsPath != "")
 
-		start := time.Now()
 		out, execErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
 			SessionKey:   taskId + ":execute",
 			Workspace:    ws.Path,
@@ -415,6 +425,43 @@ func classifyExecutionOutcome(exec *task.Execution, err error, ctx context.Conte
 	}
 	exec.Status = task.ExecutionStatusFailure
 	exec.Failure = &task.ExecutionFailure{Type: failureType, Message: err.Error()}
+}
+
+// recordAbortedExecution persists a failure Execution for an attempt that
+// never reached runner.Execute — workspace resolution or PR-comments
+// fetching failed first (handleStartExecution's two early-return points).
+// Without this, the log CreateExecutionLog already wrote before either of
+// those steps ran would have no matching record: an id silently skipped
+// with nothing on record to explain why, violating "No hidden state" and
+// "Failures are first-class" (architectural invariants.md) — a human would
+// have to go find the orphaned log file by hand to learn what happened.
+// gitBranch/forkFrom are the empty string when the workspace itself never
+// resolved (nothing to report yet); ws.Branch/forkFrom once the workspace
+// exists but a later step still failed before Execute ran. Uses the same
+// classifyExecutionOutcome classifier the main run path does, so a Stop
+// clicked before the workspace even resolves is still recorded as a
+// "resource" failure, not lumped in with a real "execution" one. Writes the
+// resulting "done" SSE event itself (matching the main run path's own
+// convention of only ever surfacing a failure via the recorded Execution,
+// not a separate live error event) — or, best-effort, a bare error event if
+// even RecordExecution itself fails.
+func recordAbortedExecution(ctx context.Context, writeEvent func(executeStreamEvent), store TaskStore, projectId, taskId, executionID, executorKey string, start time.Time, reviewFeedback, continuedFromExecutionID, gitBranch, forkFrom string, abortErr error) {
+	exec := task.Execution{
+		ExecutionID: executionID,
+		Executor:    task.ExecutionExecutor{Type: executorKey},
+		Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback, ContinuedFromExecutionID: continuedFromExecutionID},
+		Output:      task.ExecutionOutput{GitBranch: gitBranch, ForkedFromBranch: forkFrom},
+		Metrics:     task.ExecutionMetrics{DurationSeconds: time.Since(start).Seconds()},
+	}
+	classifyExecutionOutcome(&exec, abortErr, ctx)
+
+	recorded, recordErr := store.RecordExecution(projectId, taskId, exec)
+	if recordErr != nil {
+		logrus.WithError(recordErr).WithFields(logrus.Fields{"task": taskId, "execution": executionID}).Error("persisting aborted execution record")
+		writeEvent(executeStreamEvent{Type: "error", Error: abortErr.Error()})
+		return
+	}
+	writeEvent(executeStreamEvent{Type: "done", Execution: &recorded})
 }
 
 // handleListExecutions returns every recorded execution attempt for a

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
+import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import {
   deleteStageMessage,
   getStageConversation,
@@ -571,7 +572,19 @@ export function StageConversationPanel<D, S = never>({
       await postStageMessage(projectId, taskId, stage, text, selectedModel, executor, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
-        updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+        // A rejection here (as opposed to a mid-stream {error} SSE event,
+        // handled by handleStreamEvent above) means the request failed
+        // before the server ever sent its streaming response headers —
+        // handlePostStageMessage only reaches AppendConversationMessages
+        // after those headers are sent, so nothing was persisted. Leaving
+        // the optimistic [user, assistant] pair appended above in local
+        // state would permanently diverge from the server's conversation —
+        // exactly what previously surfaced later as a "message index N out
+        // of range" 400 from Edit/Regenerate/Delete acting on a message
+        // the server never knew existed. Roll it back and hand the typed
+        // text back to the draft box so nothing is lost.
+        setMessages((prev) => prev.slice(0, -2))
+        setDraft(text)
       }
     } finally {
       abortControllerRef.current = null
@@ -654,6 +667,7 @@ export function StageConversationPanel<D, S = never>({
     if (sending) {
       return
     }
+    const previousMessages = messages
     setMessages((prev) => [
       ...prev.slice(0, index),
       { role: 'user', content, reasoningContent: '', toolCallName: null, toolActivity: [], error: null, thinkingCollapsed: true },
@@ -671,7 +685,15 @@ export function StageConversationPanel<D, S = never>({
       await regenerateStageMessage(projectId, taskId, stage, index, content, selectedModel, executor, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
-        updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
+        // Same reasoning as sendMessage's catch: a rejection here means
+        // handleRegenerateStageMessage failed before it ever reached
+        // ReplaceConversationMessages, so nothing changed server-side.
+        // Restore local state to exactly what it was before this attempt
+        // (not just the truncated prefix) so it can't drift from the
+        // server's real conversation, and hand the content back to the
+        // draft box so a retry doesn't require retyping it.
+        setMessages(previousMessages)
+        setDraft(content)
       }
     } finally {
       abortControllerRef.current = null
@@ -915,21 +937,42 @@ export function StageConversationPanel<D, S = never>({
                 <p className="error">{message.error}</p>
               ))}
             <div className="message-actions">
-              <button type="button" className="action-btn" onClick={() => handleCopyMessage(message.content)}>
-                Copy
+              <button type="button" className="action-btn" title="Copy" aria-label="Copy" onClick={() => handleCopyMessage(message.content)}>
+                <CopyIcon />
               </button>
               {message.role === 'user' && (
-                <button type="button" className="action-btn" onClick={() => handleEditMessage(index)} disabled={sending}>
-                  Edit
+                <button
+                  type="button"
+                  className="action-btn"
+                  title="Edit and continue from here"
+                  aria-label="Edit"
+                  onClick={() => handleEditMessage(index)}
+                  disabled={sending}
+                >
+                  <EditIcon />
                 </button>
               )}
               {message.role === 'assistant' && index > 0 && (
-                <button type="button" className="action-btn" onClick={() => handleRegenerateMessage(index)} disabled={sending}>
-                  Regenerate
+                <button
+                  type="button"
+                  className="action-btn"
+                  title="Regenerate"
+                  aria-label="Regenerate"
+                  onClick={() => handleRegenerateMessage(index)}
+                  disabled={sending}
+                >
+                  <RegenerateIcon />
                 </button>
               )}
-              <button type="button" className="action-btn" onClick={() => handleDeleteMessage(index)} disabled={sending}>
-                Delete
+              <button
+                type="button"
+                className="action-btn"
+                title="Delete"
+                aria-label="Delete"
+                onClick={() => handleDeleteMessage(index)}
+                disabled={sending}
+              >
+                <DeleteIcon />
               </button>
             </div>
           </div>

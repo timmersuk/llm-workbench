@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/timmersuk/llm-workbench/internal/yamlutil"
@@ -129,7 +130,13 @@ type Execution struct {
 // (NextExecutionID) and expects (RecordExecution). Not a hard requirement
 // of docs/task schema v0.md (which only gives "exec-001" as an example),
 // but a fixed format keeps NextExecutionID's sequencing and ListExecutions'
-// sort order simple and predictable.
+// sort order simple and predictable. Deliberately narrow (no ".log"
+// variant): ListExecutions matches entry names against this same pattern
+// specifically to *exclude* a sibling exec-NNN.log.yaml event log from
+// being parsed as a second, bogus Execution record — widening it here would
+// break that. NextExecutionID needs the log file to count too (see its own
+// doc comment); it does that itself, locally, rather than through this
+// pattern.
 var executionIDPattern = regexp.MustCompile(`^exec-(\d{3,})$`)
 
 func executionsDir(dir string) string {
@@ -142,11 +149,20 @@ func executionPath(dir, executionID string) string {
 
 // NextExecutionID returns the next sequential "exec-NNN" id for id's task,
 // by scanning its executions/ directory for the highest existing number —
-// "exec-001" if none exist yet. Callers pass the result to RecordExecution;
-// this method itself never writes anything, so a caller that ends up not
-// recording an execution (e.g. the run failed before producing any result
-// at all) simply leaves a gap in the sequence, which is fine — ids only
-// need to be unique and increasing, not contiguous.
+// counting both a real exec-NNN.yaml record and a log-only exec-NNN.log.yaml
+// (CreateExecutionLog's naming, executionLogPath) — "exec-001" if neither
+// exists yet. Callers pass the result to RecordExecution; this method
+// itself never writes anything, so a caller that ends up not recording an
+// execution (e.g. the run failed before producing any result at all)
+// simply leaves a gap in the sequence, which is fine — ids only need to be
+// unique and increasing, not contiguous. Counting the log-only case is what
+// keeps that gap a single skipped id rather than a permanent deadlock:
+// CreateExecutionLog already refuses to reuse an id with an existing log,
+// so this must agree with it about what counts as "taken," even though
+// ListExecutions deliberately does the opposite (excludes the log file, so
+// it's never parsed as a bogus Execution record) — the two methods are
+// answering different questions ("what id is free" vs. "what executions
+// exist") over the same directory.
 func (s *FileStore) NextExecutionID(projectID, id string) (string, error) {
 	if err := validateID(projectID); err != nil {
 		return "", err
@@ -173,7 +189,8 @@ func (s *FileStore) NextExecutionID(projectID, id string) (string, error) {
 		if ext != ".yaml" {
 			continue
 		}
-		m := executionIDPattern.FindStringSubmatch(name[:len(name)-len(ext)])
+		base := strings.TrimSuffix(name[:len(name)-len(ext)], ".log")
+		m := executionIDPattern.FindStringSubmatch(base)
 		if m == nil {
 			continue
 		}

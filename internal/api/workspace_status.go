@@ -43,7 +43,7 @@ func (s *Server) handleWorkspaceStatus() http.HandlerFunc {
 				writeJSON(w, http.StatusOK, workspaceStatusResponse{})
 				return
 			}
-			http.Error(w, fmt.Sprintf("resolving workspace status: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("resolving workspace status: %v", err))
 			return
 		}
 		writeJSON(w, http.StatusOK, workspaceStatusResponse{RepositoryConfigured: true, Status: status})

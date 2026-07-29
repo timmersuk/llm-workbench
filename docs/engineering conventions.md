@@ -26,6 +26,12 @@ doesn't have to be re-derived or re-litigated later.
   `cmd/server/main.go`'s frontend-mount/listen failures) where the process
   exits immediately after, so there's no downstream log aggregation benefit
   to structuring it.
+* Every HTTP request is logged once, centrally, by `loggingMiddleware`
+  (`internal/api/router.go`), wrapping the whole mux: method, path, status,
+  duration, at `Info` for 2xx/3xx, `Warn` for 4xx, `Error` for 5xx. This is
+  the only place request-level outcome is logged — individual handlers
+  still log their own domain-specific detail (e.g. a persistence failure)
+  on top of it, not instead of it.
 
 ## Configuration
 
@@ -303,21 +309,27 @@ doesn't have to be re-derived or re-litigated later.
 
 ## API error responses
 
-* Handlers return errors via `http.Error(w, message, statusCode)` — plain
-  text body, not JSON — for consistency with the standard library idiom used
-  throughout `internal/api`. Successful responses are JSON via `writeJSON`.
+* Handlers return errors via `writeAPIError(w, statusCode, message)`
+  (`internal/api/json.go`) — a small flat JSON envelope,
+  `{"error":{"code":"...","message":"..."}}`, in place of the standard
+  library's plain-text `http.Error`. `code` is a fixed slug per status
+  category (`bad_request`, `conflict`, `not_found`, `bad_gateway`,
+  `internal_error` — see `errorCodeForStatus`), not a per-message enum: it
+  exists so a frontend caller can branch on category without an enum that
+  has to keep pace with every handler's wording. `message` is the same
+  human-readable text every call site already passed to `http.Error`.
+  Successful responses are JSON via `writeJSON`, which `writeAPIError`
+  itself is built on.
 * Map domain errors to HTTP status in one place per resource (see
   `writeGetError` in `internal/api/json.go`): invalid input → 400, not found
   → 404, anything else → 500 with a generic message (don't leak internal
   error text for 500s).
-* Known inconsistency: `/healthcheck` failures are the one exception to the
-  plain-text rule above — they return a JSON body (see Healthchecks). The
-  frontend's `getHealthStatus` (`frontend/src/api.ts`) parses that JSON
-  correctly, but `listTasks`/`listProjects`/`sendChatMessage` only look at
-  the HTTP status code and never read the plain-text error body at all.
-  This hasn't been reconciled one way or the other (standardize on JSON
-  everywhere vs. keep plain-text for REST resources) — treat it as an open
-  decision, not an accident to silently "fix" in passing.
+* `/healthcheck` keeps its own richer JSON body (see Healthchecks) rather
+  than this envelope — it reports per-subsystem detail on success too, not
+  just on failure, so it was never a fit for a plain error shape.
+* Frontend callers parse `error.message` from the JSON body instead of
+  reading response text (`frontend/src/api.ts`'s `streamSSE` and
+  `deleteStageMessage`).
 
 ## Interface-based dependency injection
 

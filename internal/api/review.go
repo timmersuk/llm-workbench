@@ -60,7 +60,7 @@ func (s *Server) handleReviewDiff() http.HandlerFunc {
 		}
 		defaultBranch, err := s.ensureDefaultBranch(r.Context(), proj)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("determining default branch: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("determining default branch: %v", err))
 			return
 		}
 		store := s.Tasks
@@ -71,7 +71,7 @@ func (s *Server) handleReviewDiff() http.HandlerFunc {
 			return
 		}
 		if len(executions) == 0 {
-			http.Error(w, "no execution to review", http.StatusNotFound)
+			writeAPIError(w, http.StatusNotFound, "no execution to review")
 			return
 		}
 		// ListExecutions sorts ascending by the zero-padded id, so the last
@@ -81,12 +81,12 @@ func (s *Server) handleReviewDiff() http.HandlerFunc {
 
 		ws, err := agentrunner.ResolveReviewWorkspace(r.Context(), s.ReposRoot, proj.Repositories, taskId, latest.ExecutionID, defaultBranch)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("resolving review workspace: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("resolving review workspace: %v", err))
 			return
 		}
 		_, patch, err := agentrunner.CollectExecutionPatch(r.Context(), ws, latest.Output.ForkedFromBranch)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("collecting execution diff: %v", err), http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, fmt.Sprintf("collecting execution diff: %v", err))
 			return
 		}
 		writeJSON(w, http.StatusOK, reviewDiffResponse{Patch: patch})

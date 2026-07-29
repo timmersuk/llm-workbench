@@ -79,7 +79,11 @@ func (realGitHubPRClient) Comments(ctx context.Context, dir string, number int) 
 	if err != nil {
 		return "", fmt.Errorf("fetching PR #%d comments/reviews: %w", number, err)
 	}
-	inlineOut, err := runGH(ctx, dir, "api", fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/comments", number), "-F", "per_page=100")
+	// -X GET is required here: gh api defaults to POST whenever any -F/-f
+	// field is present and no method is given explicitly, which sent this
+	// as a create-review-comment POST instead of a list-comments GET and
+	// 422'd on GitHub's create-endpoint schema (missing body/commit_id/path).
+	inlineOut, err := runGH(ctx, dir, "api", fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/comments", number), "-X", "GET", "-F", "per_page=100")
 	if err != nil {
 		return "", fmt.Errorf("fetching PR #%d inline comments: %w", number, err)
 	}

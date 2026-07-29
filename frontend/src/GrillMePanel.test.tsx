@@ -355,6 +355,32 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     await act(async () => finishFirstSend())
   })
 
+  it('rolls back the optimistic message pair and restores the draft when postStageMessage rejects before streaming', async () => {
+    // Regression test: postStageMessage rejecting (as opposed to a
+    // mid-stream {error} event, covered below) means the server never
+    // persisted a turn at all — e.g. it was unreachable, or the request
+    // 400'd before handlePostStageMessage ever sent its SSE headers. If the
+    // optimistically-appended [user, assistant] pair were left in place,
+    // local message indices would permanently disagree with the server's
+    // persisted conversation — exactly what previously surfaced later as a
+    // "message index N out of range" 400 the moment Edit/Regenerate/Delete
+    // acted on a message the server never knew existed.
+    const user = userEvent.setup()
+    vi.mocked(api.postStageMessage).mockRejectedValue(new Error('Failed to fetch'))
+
+    const { container } = render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
+    // Only the kickoff assistant bubble exists before the failed send.
+    await waitFor(() => expect(container.querySelectorAll('.chat-message')).toHaveLength(1))
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'is the server up?')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
+    expect(container.querySelectorAll('.chat-message')).toHaveLength(1)
+    expect(screen.getByPlaceholderText('Reply...')).toHaveValue('is the server up?')
+  })
+
   it('surfaces a mid-stream error event inline', async () => {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
@@ -464,6 +490,29 @@ describe('GrillMePanel — message actions', () => {
 
     expect(screen.getByPlaceholderText('Reply...')).toHaveValue('')
     expect(api.regenerateStageMessage).not.toHaveBeenCalled()
+  })
+
+  it('rolls back to the pre-attempt transcript and restores the draft when regenerateStageMessage rejects before streaming', async () => {
+    // Regression test for the actual bug report: sending "it's all good"
+    // while the server was down left a local-only [user, assistant] pair
+    // in place (the old behavior); clicking Regenerate on that dangling
+    // assistant bubble then sent an index the server had never heard of,
+    // surfacing as a 400 "message index N out of range". Asserting the
+    // full pre-attempt transcript is restored (not just that the failed
+    // pair disappears) is what actually proves indices can't drift.
+    const user = userEvent.setup()
+    const container = await renderWithHistory()
+    vi.mocked(api.regenerateStageMessage).mockRejectedValue(new Error('Failed to fetch'))
+
+    const messages = container.querySelectorAll('.chat-message')
+    await user.click(within(messages[1] as HTMLElement).getByRole('button', { name: 'Regenerate' }))
+
+    await waitFor(() => expect(api.regenerateStageMessage).toHaveBeenCalled())
+    await waitFor(() => expect(container.querySelectorAll('.chat-message')).toHaveLength(2))
+    const restored = container.querySelectorAll('.chat-message')
+    expect(within(restored[0] as HTMLElement).getByText('first question')).toBeInTheDocument()
+    expect(within(restored[1] as HTMLElement).getByText('first answer')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Reply...')).toHaveValue('first question')
   })
 
   it('Regenerate on an assistant message resends the preceding user message unchanged', async () => {

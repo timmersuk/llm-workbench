@@ -11,7 +11,7 @@ func (s *Server) handleListProjects() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		result, err := s.Projects.List()
 		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -33,7 +33,7 @@ func (s *Server) handleCreateProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in project.CreateInput
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -50,7 +50,7 @@ func (s *Server) handleUpdateProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in project.UpdateInput
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 

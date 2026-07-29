@@ -109,11 +109,11 @@ func (s *Server) handleChatCompletions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req chatCompletionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 		if req.SessionKey == "" {
-			http.Error(w, "session_key is required", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "session_key is required")
 			return
 		}
 
@@ -123,13 +123,13 @@ func (s *Server) handleChatCompletions() http.HandlerFunc {
 		}
 		runner, ok := s.AgentRunners[executorKey]
 		if !ok {
-			http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown executor %q", executorKey))
 			return
 		}
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "streaming unsupported")
 			return
 		}
 
@@ -183,11 +183,11 @@ func (s *Server) handleCloseChatSession() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req chatSessionCloseRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 		if req.SessionKey == "" {
-			http.Error(w, "session_key is required", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "session_key is required")
 			return
 		}
 		s.closeSessions(req.SessionKey)
@@ -199,12 +199,12 @@ func (s *Server) handleListModels() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		runner, ok := s.AgentRunners[defaultChatExecutor]
 		if !ok {
-			http.Error(w, "no local chat executor registered", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "no local chat executor registered")
 			return
 		}
 		models, err := runner.ListModels(r.Context())
 		if err != nil {
-			http.Error(w, "listing models failed: "+err.Error(), http.StatusBadGateway)
+			writeAPIError(w, http.StatusBadGateway, "listing models failed: "+err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string][]string{"models": models})

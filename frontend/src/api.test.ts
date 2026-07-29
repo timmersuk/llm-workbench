@@ -296,17 +296,24 @@ describe('streaming (via streamChatCompletion)', () => {
     expect(events).toEqual([{ content: 'hi' }])
   })
 
-  it('rejects without calling onEvent when the response is non-ok', async () => {
-    stubFetch(sseResponse(['data: {"content":"hi"}\n\n'], 500))
+  it('rejects with the parsed error.message when the response is non-ok with a writeAPIError JSON body', async () => {
+    stubFetch(jsonResponse({ error: { code: 'bad_request', message: 'unknown executor "foo"' } }, 400))
     const onEvent = vi.fn()
-    await expect(streamChatCompletion('hi', 'model', 'local', 'sess-1', onEvent)).rejects.toThrow('request failed with status 500')
+    await expect(streamChatCompletion('hi', 'model', 'local', 'sess-1', onEvent)).rejects.toThrow('unknown executor "foo"')
+    expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('rejects with the raw body text when the response is non-ok and not the JSON error envelope', async () => {
+    stubFetch(textResponse('upstream unavailable', 502))
+    const onEvent = vi.fn()
+    await expect(streamChatCompletion('hi', 'model', 'local', 'sess-1', onEvent)).rejects.toThrow('upstream unavailable')
     expect(onEvent).not.toHaveBeenCalled()
   })
 
   it('rejects when the response is ok but has no body', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 200 })))
     const onEvent = vi.fn()
-    await expect(streamChatCompletion('hi', 'model', 'local', 'sess-1', onEvent)).rejects.toThrow('request failed with status 200')
+    await expect(streamChatCompletion('hi', 'model', 'local', 'sess-1', onEvent)).rejects.toThrow('request failed: no response body')
     expect(onEvent).not.toHaveBeenCalled()
   })
 
