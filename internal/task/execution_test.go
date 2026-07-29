@@ -39,6 +39,51 @@ func TestFileStore_NextExecutionID_StartsAtExec001AndIncrements(t *testing.T) {
 	assert.Equal(t, "exec-002", id)
 }
 
+// TestFileStore_NextExecutionID_SkipsPastAnOrphanedLogWithNoRecord is a
+// regression test for a real deadlock: internal/api/execution.go's
+// handleStartExecution calls CreateExecutionLog before it can possibly
+// fail (deliberately, so an attempt is provably recorded as having begun),
+// but several of its own later steps (resolving the execution workspace,
+// fetching PR review comments) can still abort the request before
+// RecordExecution ever runs — leaving a log file with no matching
+// execution.yaml. Before this fix, NextExecutionID only looked at real
+// records, so it kept proposing that same id forever, and
+// CreateExecutionLog kept rejecting it with ErrExecutionLogAlreadyExists —
+// unrecoverable without deleting the stray log file by hand.
+func TestFileStore_NextExecutionID_SkipsPastAnOrphanedLogWithNoRecord(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newImplementationTask(t, store, "task-a")
+
+	// exec-001 completes normally.
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
+	_, err := store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-001", Status: ExecutionStatusSuccess})
+	require.NoError(t, err)
+
+	// exec-002's log gets created, but the attempt aborts before
+	// RecordExecution — simulating handleStartExecution's early-return
+	// failure paths.
+	id, err := store.NextExecutionID("demo-project", "task-a")
+	require.NoError(t, err)
+	require.Equal(t, "exec-002", id)
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", id))
+	// (no RecordExecution call for exec-002 — the simulated abort)
+
+	// A retry must not be handed "exec-002" again — CreateExecutionLog
+	// would reject it outright — and ListExecutions must still report only
+	// the one real, completed execution, not a bogus second entry parsed
+	// from the orphaned log file.
+	id, err = store.NextExecutionID("demo-project", "task-a")
+	require.NoError(t, err)
+	assert.Equal(t, "exec-003", id)
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", id))
+
+	executions, err := store.ListExecutions("demo-project", "task-a")
+	require.NoError(t, err)
+	require.Len(t, executions, 1)
+	assert.Equal(t, "exec-001", executions[0].ExecutionID)
+}
+
 func TestFileStore_RecordExecution_AppendOnlyRejectsDuplicateID(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
