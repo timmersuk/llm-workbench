@@ -438,6 +438,95 @@ export async function regenerateStageMessage(
   await streamSSE<ChatStreamEvent>(res, onEvent)
 }
 
+function taskDraftPath(projectId: string, sessionId: string): string {
+  return `/api/v1/projects/${encodeURIComponent(projectId)}/task-drafts/${encodeURIComponent(sessionId)}`
+}
+
+// getTaskDraftConversation returns a task-drafts session's persisted
+// message history — the pre-creation "New Task" chat's counterpart to
+// getStageConversation, keyed by a client-minted sessionId instead of a
+// task+stage (there is no task yet).
+export function getTaskDraftConversation(projectId: string, sessionId: string): Promise<Conversation> {
+  return getJSON<Conversation>(`${taskDraftPath(projectId, sessionId)}/conversation`)
+}
+
+// postTaskDraftMessage posts a user message to a task-drafts session and
+// streams the assistant's reply — the task-drafts counterpart to
+// postStageMessage, including a `tool_call` event when the model proposes
+// a propose_task Draft.
+export async function postTaskDraftMessage(
+  projectId: string,
+  sessionId: string,
+  content: string,
+  model: string,
+  executor: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${taskDraftPath(projectId, sessionId)}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, model, executor }),
+    signal,
+  })
+  await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
+// startTaskDraftConversation begins a brand-new task-drafts session's
+// Conversation on the agent's own initiative — the task-drafts counterpart
+// to startStageConversation. Rejects with 409 once the session already has
+// messages (see streamSSE), so callers should only invoke this once, when
+// getTaskDraftConversation comes back empty.
+export async function startTaskDraftConversation(
+  projectId: string,
+  sessionId: string,
+  model: string,
+  executor: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${taskDraftPath(projectId, sessionId)}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, executor }),
+    signal,
+  })
+  await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
+// deleteTaskDraftMessage removes exactly one message from a task-drafts
+// session's persisted Conversation, and evicts its live agent session
+// server-side — the task-drafts counterpart to deleteStageMessage.
+export async function deleteTaskDraftMessage(projectId: string, sessionId: string, index: number): Promise<Conversation> {
+  const res = await fetch(`${taskDraftPath(projectId, sessionId)}/messages/${index}`, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(await parseAPIError(res, `deleting message returned ${res.status}`))
+  }
+  return res.json() as Promise<Conversation>
+}
+
+// regenerateTaskDraftMessage resends the user turn at index — the
+// task-drafts counterpart to regenerateStageMessage; see that function's
+// doc comment for the shared Regenerate/Edit semantics.
+export async function regenerateTaskDraftMessage(
+  projectId: string,
+  sessionId: string,
+  index: number,
+  content: string,
+  model: string,
+  executor: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${taskDraftPath(projectId, sessionId)}/messages/${index}/regenerate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, model, executor }),
+    signal,
+  })
+  await streamSSE<ChatStreamEvent>(res, onEvent)
+}
+
 // startExecution runs one autonomous Implementation-stage execution
 // attempt to completion, streaming the agent's live text/tool_call/
 // tool_result activity via onEvent (internal/api/execution.go). The final

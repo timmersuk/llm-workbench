@@ -1,5 +1,6 @@
 import { finalizeRequirements } from './api'
 import { RequirementsDraftForm } from './RequirementsDraftForm'
+import { stageConversationOps } from './stageConversationOps'
 import { StageConversationPanel } from './StageConversationPanel'
 import type { ContextFile, RequirementsDraft, Task, TaskContext } from './types'
 
@@ -46,9 +47,8 @@ function normalizeRequirementsDraft(draft: RequirementsDraft): RequirementsDraft
 export function GrillMePanel({ projectId, taskId, onFinalized }: GrillMePanelProps) {
   return (
     <StageConversationPanel<RequirementsDraft>
-      projectId={projectId}
-      taskId={taskId}
-      stage="requirements"
+      conversationKey={`${projectId}:${taskId}:requirements`}
+      ops={stageConversationOps(projectId, taskId, 'requirements')}
       title="GrillMe"
       description="Reply below to answer GrillMe's questions — its proposal will become this task's requirements once you finalize it."
       emptyDraft={EMPTY_DRAFT}

@@ -1041,6 +1041,21 @@ func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, stor
 			if err != nil {
 				return stageRun{}, err
 			}
+			// A brand-new task from the chat-driven "New Task" flow can
+			// never also be a reopened, previously-rejected one — Create
+			// always starts a task fresh at stage: requirements with no
+			// reviews/ yet, so buildRejectedReviewContext's addendum is
+			// empty in that case by construction, not by luck. That keeps
+			// this a plain either/or branch rather than a merge of the two
+			// addenda: whichever prior-context source actually applies
+			// (a rejected review, or this task's own pre-creation
+			// conversation), never both.
+			if addendum == "" {
+				addendum, err = s.buildTaskDraftContext(store, projectId, t)
+				if err != nil {
+					return stageRun{}, err
+				}
+			}
 			systemPrompt += addendum
 		}
 		return stageRun{Workspace: ws, SystemPrompt: systemPrompt, MaxTurns: requirementsPlanningMaxTurns}, nil
@@ -1124,6 +1139,58 @@ func (s *Server) buildRejectedReviewContext(ctx context.Context, store TaskStore
 	}
 
 	return b.String(), nil
+}
+
+// maxTaskDraftContextBytes caps buildTaskDraftContext's addendum — a long
+// "New Task" interview folded verbatim into every subsequent Requirements
+// turn's system prompt would otherwise grow unboundedly and compete with
+// the same Windows CreateProcess ~32K argument-length ceiling
+// buildReviewContext's doc comment describes for the review prompt. A
+// human rarely spends more than a few exchanges settling a task's terse
+// fields before confirming, so this is generous headroom, not a tight fit.
+const maxTaskDraftContextBytes = 8 * 1024
+
+// buildTaskDraftContext returns a Requirements-stage prompt addendum
+// surfacing the pre-creation "New Task" conversation that produced t, when
+// t.DraftSessionID is set — the task-drafts counterpart to
+// buildRejectedReviewContext just above (resolveStageRun treats the two as
+// mutually exclusive: a brand-new task can never also be a reopened
+// rejected one, so exactly one of these ever contributes an addendum,
+// never both). Returns "" (no error) when t has no DraftSessionID, or the
+// session's Conversation is empty (a task created before this mechanism
+// existed, or one Create call that raced ahead of any chat — neither is an
+// error). Deliberately just concatenates role/content pairs rather than
+// reusing conversationHistoryToChatMessages' tool-activity summarization —
+// this is prose for a human-facing addendum section, not chat.Message
+// history a runner replays, and a task-drafts turn's own tool activity
+// (exploring the repo) isn't itself part of what was "settled," unlike the
+// content of what was said.
+func (s *Server) buildTaskDraftContext(store TaskStore, projectId string, t task.Task) (string, error) {
+	if t.DraftSessionID == "" {
+		return "", nil
+	}
+
+	conv, err := store.GetTaskDraftConversation(projectId, t.DraftSessionID)
+	if err != nil {
+		return "", fmt.Errorf("loading task draft conversation for %s: %w", t.ID, err)
+	}
+	if len(conv.Messages) == 0 {
+		return "", nil
+	}
+
+	var b strings.Builder
+	b.WriteString("\n## Pre-creation conversation\nBefore this task existed, the human and an assistant discussed what to build, settling this task's own terse fields (objective, constraints, assumptions, success criteria). Treat the points below as already agreed — don't re-ask or re-litigate them unless the human reopens one; focus this interview on the deeper narrative context (background, files, verification) instead.\n\n")
+	for _, m := range conv.Messages {
+		if content := strings.TrimSpace(m.Content); content != "" {
+			fmt.Fprintf(&b, "%s: %s\n", m.Role, content)
+		}
+	}
+
+	addendum := b.String()
+	if len(addendum) > maxTaskDraftContextBytes {
+		addendum = addendum[:maxTaskDraftContextBytes] + "\n[truncated: exceeded the prompt addendum size limit]\n"
+	}
+	return addendum, nil
 }
 
 // buildReviewContext resolves the worktree of the task's most recent execution

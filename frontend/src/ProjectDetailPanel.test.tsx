@@ -7,11 +7,51 @@ import type { Project, Task } from './types'
 
 vi.mock('./api')
 vi.mock('./TaskDetailPanel', () => ({
-  TaskDetailPanel: (props: { projectId: string; task: Task; onBack: () => void }) => (
+  TaskDetailPanel: (props: { projectId: string; task: Task; onBack: () => void; onViewDraft: () => void }) => (
     <div data-testid="task-detail-panel">
       task-detail:{props.projectId}:{props.task.id}
       <button type="button" onClick={props.onBack}>
         Back to tasks
+      </button>
+      <button type="button" onClick={props.onViewDraft}>
+        View pre-creation conversation
+      </button>
+    </div>
+  ),
+}))
+vi.mock('./NewTaskPanel', () => ({
+  NewTaskPanel: (props: { projectId: string; sessionId: string; onCreated: (task: Task) => void }) => (
+    <div data-testid="new-task-panel">
+      new-task:{props.projectId}:{props.sessionId}
+      <button
+        type="button"
+        onClick={() =>
+          props.onCreated({
+            id: 'created-task',
+            title: 'Created Task',
+            project: props.projectId,
+            stage: 'requirements',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            objective: '',
+            constraints: [],
+            assumptions: [],
+            success_criteria: [],
+            references: { knowledge: [], repo: [] },
+          })
+        }
+      >
+        Confirm draft
+      </button>
+    </div>
+  ),
+}))
+vi.mock('./TaskDraftView', () => ({
+  TaskDraftView: (props: { projectId: string; task: Task; onBack: () => void }) => (
+    <div data-testid="task-draft-view">
+      task-draft:{props.projectId}:{props.task.id}
+      <button type="button" onClick={props.onBack}>
+        Back to task
       </button>
     </div>
   ),
@@ -52,9 +92,14 @@ function noop() {
 interface Overrides {
   onBack?: () => void
   selectedTaskId?: string
+  selectedTaskView?: 'draft'
+  selectedNewTaskSessionId?: string
   onSelectTask?: (id: string) => void
   onBackToProject?: () => void
   onInvalidTask?: () => void
+  onNewTask?: (sessionId: string) => void
+  onViewTaskDraft?: () => void
+  onBackFromTaskDraft?: () => void
 }
 
 function renderPanel(overrides: Overrides = {}) {
@@ -63,9 +108,14 @@ function renderPanel(overrides: Overrides = {}) {
       project={project}
       onBack={overrides.onBack ?? noop}
       selectedTaskId={overrides.selectedTaskId}
+      selectedTaskView={overrides.selectedTaskView}
+      selectedNewTaskSessionId={overrides.selectedNewTaskSessionId}
       onSelectTask={overrides.onSelectTask ?? noop}
       onBackToProject={overrides.onBackToProject ?? noop}
       onInvalidTask={overrides.onInvalidTask ?? noop}
+      onNewTask={overrides.onNewTask ?? noop}
+      onViewTaskDraft={overrides.onViewTaskDraft ?? noop}
+      onBackFromTaskDraft={overrides.onBackFromTaskDraft ?? noop}
     />,
   )
 }
@@ -96,30 +146,46 @@ describe('ProjectDetailPanel — task list states', () => {
   })
 })
 
-describe('ProjectDetailPanel — task creation and selection', () => {
-  it('New Task creates a task via createProjectTask and reloads the list', async () => {
+describe('ProjectDetailPanel — New Task (chat-driven)', () => {
+  it('New Task mints a session id client-side and calls onNewTask immediately, with no API call', async () => {
     const user = userEvent.setup()
+    const onNewTask = vi.fn()
     vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
-    vi.mocked(api.createProjectTask).mockResolvedValue(makeTask({ id: 'new-task', title: 'New Task' }))
 
-    renderPanel()
+    renderPanel({ onNewTask })
     await screen.findByText('No tasks yet.')
 
     await user.click(screen.getByRole('button', { name: 'New Task' }))
-    await user.type(screen.getByLabelText('ID'), 'new-task')
-    await user.type(screen.getByLabelText('Title'), 'New Task')
-    await user.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() =>
-      expect(api.createProjectTask).toHaveBeenCalledWith('demo', {
-        id: 'new-task',
-        title: 'New Task',
-        references: { knowledge: [], repo: [] },
-      }),
-    )
-    await waitFor(() => expect(api.listProjectTasks).toHaveBeenCalledTimes(2))
+    expect(onNewTask).toHaveBeenCalledTimes(1)
+    expect(onNewTask.mock.calls[0][0]).toEqual(expect.any(String))
+    expect(onNewTask.mock.calls[0][0].length).toBeGreaterThan(0)
+    expect(api.createProjectTask).not.toHaveBeenCalled()
   })
 
+  it('renders NewTaskPanel when selectedNewTaskSessionId is set', async () => {
+    vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
+    renderPanel({ selectedNewTaskSessionId: 'session-123' })
+
+    expect(await screen.findByTestId('new-task-panel')).toHaveTextContent('new-task:demo:session-123')
+  })
+
+  it('confirming the draft in NewTaskPanel reloads the task list and selects the created task', async () => {
+    const user = userEvent.setup()
+    const onSelectTask = vi.fn()
+    vi.mocked(api.listProjectTasks).mockResolvedValue({ tasks: [], errors: [] })
+
+    renderPanel({ selectedNewTaskSessionId: 'session-123', onSelectTask })
+    await screen.findByTestId('new-task-panel')
+
+    await user.click(screen.getByRole('button', { name: 'Confirm draft' }))
+
+    expect(onSelectTask).toHaveBeenCalledWith('created-task')
+    await waitFor(() => expect(api.listProjectTasks).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('ProjectDetailPanel — task selection', () => {
   it('clicking a kanban card calls onSelectTask with the clicked task id (no fetch)', async () => {
     const user = userEvent.setup()
     const onSelectTask = vi.fn()
@@ -184,6 +250,49 @@ describe('ProjectDetailPanel — controlled selectedTaskId', () => {
 
     expect(onBackToProject).toHaveBeenCalled()
     await waitFor(() => expect(api.listProjectTasks).toHaveBeenCalledTimes(2))
+  })
+
+  it('View pre-creation conversation calls onViewTaskDraft', async () => {
+    const user = userEvent.setup()
+    const onViewTaskDraft = vi.fn()
+    vi.mocked(api.listProjectTasks).mockResolvedValue({
+      tasks: [makeTask({ id: 'task-a', title: 'Task A' })],
+      errors: [],
+    })
+    renderPanel({ selectedTaskId: 'task-a', onViewTaskDraft })
+    await screen.findByTestId('task-detail-panel')
+
+    await user.click(screen.getByRole('button', { name: 'View pre-creation conversation' }))
+
+    expect(onViewTaskDraft).toHaveBeenCalled()
+  })
+})
+
+describe('ProjectDetailPanel — task draft view', () => {
+  it('renders TaskDraftView (not TaskDetailPanel) when selectedTaskView is draft', async () => {
+    vi.mocked(api.listProjectTasks).mockResolvedValue({
+      tasks: [makeTask({ id: 'task-a', title: 'Task A', draft_session_id: 'session-1' })],
+      errors: [],
+    })
+    renderPanel({ selectedTaskId: 'task-a', selectedTaskView: 'draft' })
+
+    expect(await screen.findByTestId('task-draft-view')).toHaveTextContent('task-draft:demo:task-a')
+    expect(screen.queryByTestId('task-detail-panel')).not.toBeInTheDocument()
+  })
+
+  it('Back from TaskDraftView calls onBackFromTaskDraft', async () => {
+    const user = userEvent.setup()
+    const onBackFromTaskDraft = vi.fn()
+    vi.mocked(api.listProjectTasks).mockResolvedValue({
+      tasks: [makeTask({ id: 'task-a', title: 'Task A', draft_session_id: 'session-1' })],
+      errors: [],
+    })
+    renderPanel({ selectedTaskId: 'task-a', selectedTaskView: 'draft', onBackFromTaskDraft })
+    await screen.findByTestId('task-draft-view')
+
+    await user.click(screen.getByRole('button', { name: 'Back to task' }))
+
+    expect(onBackFromTaskDraft).toHaveBeenCalled()
   })
 })
 

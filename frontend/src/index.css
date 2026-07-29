@@ -423,6 +423,20 @@ td button {
   font-size: 14px;
 }
 
+/* link-button is back-link's inline counterpart — a plain button styled as
+   a text link, for a nav action embedded mid-sentence (e.g. TaskDetailPanel's
+   "View pre-creation conversation") rather than a standalone line above a
+   panel's content. */
+.link-button {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: inherit;
+  text-decoration: underline;
+}
+
 .kanban-board {
   display: grid;
   grid-template-columns: repeat(6, minmax(140px, 1fr));

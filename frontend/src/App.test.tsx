@@ -9,12 +9,17 @@ vi.mock('./api')
 interface ProjectsPanelStubProps {
   selectedProjectId?: string
   selectedTaskId?: string
+  selectedTaskView?: string
+  selectedNewTaskSessionId?: string
   onSelectProject: (id: string) => void
   onBackToProjects: () => void
   onInvalidProject: () => void
   onSelectTask: (id: string) => void
   onBackToProject: () => void
   onInvalidTask: () => void
+  onNewTask: (sessionId: string) => void
+  onViewTaskDraft: () => void
+  onBackFromTaskDraft: () => void
 }
 
 vi.mock('./ProjectsPanel', () => ({
@@ -23,6 +28,8 @@ vi.mock('./ProjectsPanel', () => ({
       projects panel
       <span data-testid="selected-project-id">{props.selectedProjectId ?? ''}</span>
       <span data-testid="selected-task-id">{props.selectedTaskId ?? ''}</span>
+      <span data-testid="selected-task-view">{props.selectedTaskView ?? ''}</span>
+      <span data-testid="selected-new-task-session-id">{props.selectedNewTaskSessionId ?? ''}</span>
       <button type="button" onClick={() => props.onSelectProject('demo')}>
         Select demo
       </button>
@@ -40,6 +47,15 @@ vi.mock('./ProjectsPanel', () => ({
       </button>
       <button type="button" onClick={props.onInvalidTask}>
         Invalid task
+      </button>
+      <button type="button" onClick={() => props.onNewTask('minted-session')}>
+        New task
+      </button>
+      <button type="button" onClick={props.onViewTaskDraft}>
+        View task draft
+      </button>
+      <button type="button" onClick={props.onBackFromTaskDraft}>
+        Back from task draft
       </button>
     </div>
   ),
@@ -194,6 +210,46 @@ describe('App — user-driven navigation pushes history', () => {
     expect(pushSpy).toHaveBeenCalledWith(null, '', '/projects/demo')
     expect(await screen.findByTestId('selected-task-id')).toHaveTextContent('')
     expect(screen.getByTestId('selected-project-id')).toHaveTextContent('demo')
+  })
+
+  it('New Task pushes /projects/:projectId/new-task/:sessionId with the minted session id', async () => {
+    const user = userEvent.setup()
+    setLocation('/projects/demo')
+    const pushSpy = vi.spyOn(window.history, 'pushState')
+    render(<App />)
+    await screen.findByTestId('selected-project-id')
+
+    await user.click(screen.getByRole('button', { name: 'New task' }))
+
+    expect(pushSpy).toHaveBeenCalledWith(null, '', '/projects/demo/new-task/minted-session')
+    expect(await screen.findByTestId('selected-new-task-session-id')).toHaveTextContent('minted-session')
+  })
+
+  it('View task draft pushes /projects/:projectId/tasks/:taskId/draft', async () => {
+    const user = userEvent.setup()
+    setLocation('/projects/demo/tasks/task-a')
+    const pushSpy = vi.spyOn(window.history, 'pushState')
+    render(<App />)
+    await screen.findByTestId('selected-task-id')
+
+    await user.click(screen.getByRole('button', { name: 'View task draft' }))
+
+    expect(pushSpy).toHaveBeenCalledWith(null, '', '/projects/demo/tasks/task-a/draft')
+    expect(await screen.findByTestId('selected-task-view')).toHaveTextContent('draft')
+  })
+
+  it('Back from task draft pushes /projects/:projectId/tasks/:taskId without the draft view', async () => {
+    const user = userEvent.setup()
+    setLocation('/projects/demo/tasks/task-a/draft')
+    const pushSpy = vi.spyOn(window.history, 'pushState')
+    render(<App />)
+    await screen.findByTestId('selected-task-view')
+
+    await user.click(screen.getByRole('button', { name: 'Back from task draft' }))
+
+    expect(pushSpy).toHaveBeenCalledWith(null, '', '/projects/demo/tasks/task-a')
+    expect(await screen.findByTestId('selected-task-view')).toHaveTextContent('')
+    expect(screen.getByTestId('selected-task-id')).toHaveTextContent('task-a')
   })
 })
 

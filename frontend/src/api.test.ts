@@ -3,6 +3,7 @@ import {
   closeChatSession,
   createProject,
   createProjectTask,
+  deleteTaskDraftMessage,
   finalizePlan,
   finalizeRequirements,
   getHealthStatus,
@@ -10,14 +11,18 @@ import {
   getProjectTask,
   getStageConversation,
   getTaskContext,
+  getTaskDraftConversation,
   getTaskPlan,
   listAgentExecutors,
   listModels,
   listProjectTasks,
   listProjects,
   postStageMessage,
+  postTaskDraftMessage,
+  regenerateTaskDraftMessage,
   reviseRequirements,
   revisePlan,
+  startTaskDraftConversation,
   streamChatCompletion,
   updateProject,
   updateProjectTask,
@@ -364,5 +369,55 @@ describe('streamChatCompletion / postStageMessage request shape', () => {
         body: JSON.stringify({ content: 'hello', model: 'my-model', executor: 'claude-code' }),
       },
     )
+  })
+})
+
+describe('task-drafts requests', () => {
+  it('getTaskDraftConversation hits the right, escaped path and returns the parsed body', async () => {
+    const body = { stage: '', messages: [] }
+    const fetchMock = stubFetch(jsonResponse(body))
+    await expect(getTaskDraftConversation('demo project', 'session one')).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project/task-drafts/session%20one/conversation', {
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('postTaskDraftMessage POSTs content+model+executor to the session-scoped messages endpoint', async () => {
+    const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
+    await postTaskDraftMessage('demo', 'session-1', 'I want a login page', 'my-model', 'claude-code', vi.fn())
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/task-drafts/session-1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'I want a login page', model: 'my-model', executor: 'claude-code' }),
+    })
+  })
+
+  it('startTaskDraftConversation POSTs model+executor to the session-scoped start endpoint', async () => {
+    const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
+    await startTaskDraftConversation('demo', 'session-1', 'my-model', 'claude-code', vi.fn())
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/task-drafts/session-1/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'my-model', executor: 'claude-code' }),
+    })
+  })
+
+  it('deleteTaskDraftMessage DELETEs the indexed message and returns the parsed body', async () => {
+    const body = { stage: '', messages: [] }
+    const fetchMock = stubFetch(jsonResponse(body))
+    await expect(deleteTaskDraftMessage('demo', 'session-1', 2)).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/task-drafts/session-1/messages/2', {
+      method: 'DELETE',
+    })
+  })
+
+  it('regenerateTaskDraftMessage POSTs content+model+executor to the indexed regenerate endpoint', async () => {
+    const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
+    await regenerateTaskDraftMessage('demo', 'session-1', 1, 'edited', 'my-model', 'claude-code', vi.fn())
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/task-drafts/session-1/messages/1/regenerate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'edited', model: 'my-model', executor: 'claude-code' }),
+    })
   })
 })

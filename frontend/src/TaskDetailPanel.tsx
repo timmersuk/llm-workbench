@@ -12,14 +12,19 @@ interface TaskDetailPanelProps {
   projectId: string
   task: Task
   onBack: () => void
+  // onViewDraft navigates to the read-only pre-creation "New Task"
+  // conversation (TaskDraftView.tsx) — only ever offered (see the nav link
+  // below) when task.draft_session_id is set.
+  onViewDraft: () => void
 }
 
 // TaskDetailPanel is a task's full view: read-only requirements fields
 // (GrillMe-owned once past bare creation), the finalized context/plan
 // artifacts, and — depending on the task's current stage — GrillMe,
 // Planning Mode, or a Revise action. There is no per-task edit form beyond
-// this view; TaskForm only ever creates a task (see CONTEXT.md).
-export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDetailPanelProps) {
+// this view; a task is only ever created via the chat-driven "New Task"
+// flow (NewTaskPanel.tsx, CONTEXT.md's "Draft").
+export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDraft }: TaskDetailPanelProps) {
   const [task, setTask] = useState(initialTask)
   const [context, setContext] = useState<TaskContext | null>(null)
   const [plan, setPlan] = useState<TaskPlan | null>(null)
@@ -173,6 +178,15 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
       </div>
       <p>
         {task.id} &middot; stage: {task.stage}
+        {task.draft_session_id && (
+          <>
+            {' '}
+            &middot;{' '}
+            <button type="button" className="link-button" onClick={onViewDraft}>
+              View pre-creation conversation
+            </button>
+          </>
+        )}
       </p>
 
       {executionFailureNotice && <div className="execution-failure-banner">{executionFailureNotice}</div>}

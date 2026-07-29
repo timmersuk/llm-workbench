@@ -98,6 +98,33 @@ func (m *mockTaskStore) ReplaceConversationMessages(projectID, id, stage string,
 	return c, args.Error(1)
 }
 
+func (m *mockTaskStore) GetTaskDraftConversation(projectID, sessionID string) (task.Conversation, error) {
+	args := m.Called(projectID, sessionID)
+	var c task.Conversation
+	if v := args.Get(0); v != nil {
+		c = v.(task.Conversation)
+	}
+	return c, args.Error(1)
+}
+
+func (m *mockTaskStore) AppendTaskDraftConversationMessages(projectID, sessionID string, msgs ...task.ConversationMessage) (task.Conversation, error) {
+	args := m.Called(projectID, sessionID, msgs)
+	var c task.Conversation
+	if v := args.Get(0); v != nil {
+		c = v.(task.Conversation)
+	}
+	return c, args.Error(1)
+}
+
+func (m *mockTaskStore) ReplaceTaskDraftConversationMessages(projectID, sessionID string, msgs []task.ConversationMessage) (task.Conversation, error) {
+	args := m.Called(projectID, sessionID, msgs)
+	var c task.Conversation
+	if v := args.Get(0); v != nil {
+		c = v.(task.Conversation)
+	}
+	return c, args.Error(1)
+}
+
 func (m *mockTaskStore) FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error) {
 	args := m.Called(projectID, id, draft)
 	var t task.Task

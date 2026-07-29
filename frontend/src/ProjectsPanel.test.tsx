@@ -11,13 +11,19 @@ vi.mock('./ProjectDetailPanel', () => ({
     project: Project
     onBack: () => void
     selectedTaskId?: string
+    selectedTaskView?: 'draft'
+    selectedNewTaskSessionId?: string
     onSelectTask: (id: string) => void
     onBackToProject: () => void
     onInvalidTask: () => void
+    onNewTask: (sessionId: string) => void
+    onViewTaskDraft: () => void
+    onBackFromTaskDraft: () => void
   }) => (
     <div data-testid="project-detail-panel">
       project-detail:{props.project.id}
       {props.selectedTaskId && <span data-testid="selected-task-id">{props.selectedTaskId}</span>}
+      {props.selectedNewTaskSessionId && <span data-testid="selected-new-task-session-id">{props.selectedNewTaskSessionId}</span>}
       <button type="button" onClick={props.onBack}>
         Back to projects
       </button>
@@ -29,6 +35,15 @@ vi.mock('./ProjectDetailPanel', () => ({
       </button>
       <button type="button" onClick={props.onInvalidTask}>
         Invalid task
+      </button>
+      <button type="button" onClick={() => props.onNewTask('minted-session')}>
+        New task
+      </button>
+      <button type="button" onClick={props.onViewTaskDraft}>
+        View task draft
+      </button>
+      <button type="button" onClick={props.onBackFromTaskDraft}>
+        Back from task draft
       </button>
     </div>
   ),
@@ -55,12 +70,17 @@ function noop() {
 interface Overrides {
   selectedProjectId?: string
   selectedTaskId?: string
+  selectedTaskView?: 'draft'
+  selectedNewTaskSessionId?: string
   onSelectProject?: (id: string) => void
   onBackToProjects?: () => void
   onInvalidProject?: () => void
   onSelectTask?: (id: string) => void
   onBackToProject?: () => void
   onInvalidTask?: () => void
+  onNewTask?: (sessionId: string) => void
+  onViewTaskDraft?: () => void
+  onBackFromTaskDraft?: () => void
 }
 
 function renderPanel(overrides: Overrides = {}) {
@@ -68,12 +88,17 @@ function renderPanel(overrides: Overrides = {}) {
     <ProjectsPanel
       selectedProjectId={overrides.selectedProjectId}
       selectedTaskId={overrides.selectedTaskId}
+      selectedTaskView={overrides.selectedTaskView}
+      selectedNewTaskSessionId={overrides.selectedNewTaskSessionId}
       onSelectProject={overrides.onSelectProject ?? noop}
       onBackToProjects={overrides.onBackToProjects ?? noop}
       onInvalidProject={overrides.onInvalidProject ?? noop}
       onSelectTask={overrides.onSelectTask ?? noop}
       onBackToProject={overrides.onBackToProject ?? noop}
       onInvalidTask={overrides.onInvalidTask ?? noop}
+      onNewTask={overrides.onNewTask ?? noop}
+      onViewTaskDraft={overrides.onViewTaskDraft ?? noop}
+      onBackFromTaskDraft={overrides.onBackFromTaskDraft ?? noop}
     />,
   )
 }

@@ -1,29 +1,43 @@
 import { useEffect, useState } from 'react'
-import { createProjectTask, getProjectTask, listProjectTasks, updateProject } from './api'
+import { getProjectTask, listProjectTasks, updateProject } from './api'
+import { NewTaskPanel } from './NewTaskPanel'
 import { ProjectForm } from './ProjectForm'
-import { TaskForm } from './TaskForm'
 import { TaskDetailPanel } from './TaskDetailPanel'
+import { TaskDraftView } from './TaskDraftView'
 import { TaskKanbanBoard } from './TaskKanbanBoard'
-import type { CreateTaskRequest, LoadError, Project, Task, UpdateProjectRequest } from './types'
+import type { LoadError, Project, Task, UpdateProjectRequest } from './types'
+import type { Route } from './url'
 
 interface ProjectDetailPanelProps {
   project: Project
   onBack: () => void
-  // selectedTaskId is controlled by App, driven off the URL — see
-  // frontend/src/url.ts. Undefined means "show the task list".
+  // selectedTaskId/selectedTaskView/selectedNewTaskSessionId are all
+  // controlled by App, driven off the URL — see frontend/src/url.ts.
   selectedTaskId?: string
+  selectedTaskView?: Route['taskView']
+  selectedNewTaskSessionId?: string
   onSelectTask: (id: string) => void
   onBackToProject: () => void
   onInvalidTask: () => void
+  // onNewTask fires the moment "New Task" is clicked, carrying a
+  // client-minted session id — see the button below.
+  onNewTask: (sessionId: string) => void
+  onViewTaskDraft: () => void
+  onBackFromTaskDraft: () => void
 }
 
 export function ProjectDetailPanel({
   project,
   onBack,
   selectedTaskId,
+  selectedTaskView,
+  selectedNewTaskSessionId,
   onSelectTask,
   onBackToProject,
   onInvalidTask,
+  onNewTask,
+  onViewTaskDraft,
+  onBackFromTaskDraft,
 }: ProjectDetailPanelProps) {
   const [current, setCurrent] = useState(project)
   const [editingProject, setEditingProject] = useState(false)
@@ -31,7 +45,6 @@ export function ProjectDetailPanel({
   const [tasks, setTasks] = useState<Task[]>([])
   const [loadErrors, setLoadErrors] = useState<LoadError[]>([])
   const [tasksError, setTasksError] = useState<string | null>(null)
-  const [creatingTask, setCreatingTask] = useState(false)
   // tasksLoaded tracks whether the initial listProjectTasks call has
   // settled (either way) — distinct from the id-resolution below, which
   // stays a plain string|undefined with no tri-state of its own. Without
@@ -102,10 +115,12 @@ export function ProjectDetailPanel({
     setEditingProject(false)
   }
 
-  async function handleTaskCreate(req: CreateTaskRequest) {
-    await createProjectTask(current.id, req)
-    setCreatingTask(false)
-    reloadTasks()
+  // handleNewTask mints a session id client-side and pushes the
+  // /projects/:projectId/new-task/:sessionId URL immediately — before any
+  // message is sent — so a reload mid-conversation lands back on the same
+  // session instead of losing it (NewTaskPanel.tsx).
+  function handleNewTask() {
+    onNewTask(crypto.randomUUID())
   }
 
   const loadErrorNotice = loadErrors.length > 0 && (
@@ -115,9 +130,30 @@ export function ProjectDetailPanel({
     </p>
   )
 
+  if (selectedNewTaskSessionId) {
+    return (
+      <div className="project-detail">
+        <button type="button" className="back-link" onClick={onBackToProject}>
+          &larr; Back to tasks
+        </button>
+        <NewTaskPanel
+          projectId={current.id}
+          sessionId={selectedNewTaskSessionId}
+          onCreated={(task) => {
+            reloadTasks()
+            onSelectTask(task.id)
+          }}
+        />
+      </div>
+    )
+  }
+
   if (selectedTaskId) {
     if (!resolvedTask) {
       return null
+    }
+    if (selectedTaskView === 'draft') {
+      return <TaskDraftView projectId={current.id} task={resolvedTask} onBack={onBackFromTaskDraft} />
     }
     return (
       <TaskDetailPanel
@@ -127,6 +163,7 @@ export function ProjectDetailPanel({
           onBackToProject()
           reloadTasks()
         }}
+        onViewDraft={onViewTaskDraft}
       />
     )
   }
@@ -156,14 +193,10 @@ export function ProjectDetailPanel({
       <section>
         <div className="panel-actions">
           <h3>Tasks</h3>
-          {!creatingTask && (
-            <button type="button" onClick={() => setCreatingTask(true)}>
-              New Task
-            </button>
-          )}
+          <button type="button" onClick={handleNewTask}>
+            New Task
+          </button>
         </div>
-
-        {creatingTask && <TaskForm onSubmit={handleTaskCreate} onCancel={() => setCreatingTask(false)} />}
 
         {tasksError && <p className="error">Failed to load tasks: {tasksError}</p>}
         {loadErrorNotice}

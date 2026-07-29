@@ -24,6 +24,13 @@ export interface Task {
   success_criteria: string[]
   references: TaskReferences
   pull_request?: PullRequest
+  // draft_session_id mirrors task.Task.DraftSessionID (internal/task/task.go)
+  // — set at creation time when this task came from the chat-driven "New
+  // Task" flow, pointing at the frozen pre-creation conversation
+  // (task-drafts/<draft_session_id>/conversation.yaml). Absent for a task
+  // created before this mechanism existed. TaskDetailPanel only shows its
+  // "View pre-creation conversation" nav link when this is set.
+  draft_session_id?: string
 }
 
 export interface Project {
@@ -39,15 +46,30 @@ export interface Project {
 
 // CreateTaskRequest is the body for creating a task within a project (the
 // project itself comes from the URL, not this body). id is client-chosen
-// and must be unique within that project. stage/objective/constraints/
-// assumptions/success_criteria are deliberately absent: a task always
-// starts at stage: requirements (server-defaulted), and its requirements
-// fields are set later via GrillMe's Finalize, not at creation (see
-// CONTEXT.md's "Draft"/"Finalize").
+// and must be unique within that project; stage is never sent — a task
+// always starts at stage: requirements (server-defaulted). Widened beyond
+// TaskForm's old id/title/references-only shape once task creation became
+// chat-driven (propose_task, internal/drafttool): the human's confirmed (or
+// edited) draft can already carry the requirements fields propose_task
+// proposed, rather than always leaving them for GrillMe's Finalize to set
+// afterward — objective/constraints/assumptions/success_criteria are
+// therefore optional here (a human could still confirm a bare id+title and
+// let GrillMe fill in the rest, same as before this flow existed), not
+// required. draft_session_id, when the task came from that chat, points
+// back at the task-drafts session whose conversation produced it — a
+// permanent pointer set once at creation (task.Task.DraftSessionID);
+// backend Create passes every field on this request straight into
+// task.Task via json.Decode, so no corresponding Go-side request struct
+// exists to keep in sync.
 export interface CreateTaskRequest {
   id: string
   title: string
   references: TaskReferences
+  objective?: string
+  constraints?: string[]
+  assumptions?: string[]
+  success_criteria?: string[]
+  draft_session_id?: string
 }
 
 // UpdateTaskRequest is the body for editing a task in place — its id,
@@ -205,6 +227,24 @@ export interface TaskPlan {
   risks: string[]
   estimated_complexity: 'low' | 'medium' | 'high' | ''
   recommended_executor: string
+}
+
+// TaskDraft mirrors the propose_task tool's argument shape
+// (internal/drafttool/drafttool.go's proposeTaskSchema) — the pre-creation
+// "New Task" chat's Draft: a fully-populated draft task.yaml (minus the
+// server-set id/project/stage/timestamps... except id itself, which the
+// human is expected to review or override before creation, so it travels
+// here unlike a real task.yaml's server-set fields). Rendered by
+// TaskDraftForm.tsx for the human to edit before NewTaskPanel.tsx calls
+// createProjectTask with it.
+export interface TaskDraft {
+  id: string
+  title: string
+  objective: string
+  constraints: string[]
+  assumptions: string[]
+  success_criteria: string[]
+  references: TaskReferences
 }
 
 // RequirementsDraft mirrors task.RequirementsDraft (internal/task/context.go)

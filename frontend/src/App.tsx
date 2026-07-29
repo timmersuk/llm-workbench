@@ -90,12 +90,17 @@ function App() {
           <ProjectsPanel
             selectedProjectId={route.projectId}
             selectedTaskId={route.taskId}
+            selectedTaskView={route.taskView}
+            selectedNewTaskSessionId={route.newTaskSessionId}
             onSelectProject={(id) => navigate({ tab: 'projects', projectId: id })}
             onBackToProjects={() => navigate({ tab: 'projects' })}
             onInvalidProject={() => correctTo({ tab: 'projects' })}
             onSelectTask={(id) => navigate({ tab: 'projects', projectId: route.projectId, taskId: id })}
             onBackToProject={() => navigate({ tab: 'projects', projectId: route.projectId })}
             onInvalidTask={() => correctTo({ tab: 'projects', projectId: route.projectId })}
+            onNewTask={(sessionId) => navigate({ tab: 'projects', projectId: route.projectId, newTaskSessionId: sessionId })}
+            onViewTaskDraft={() => navigate({ tab: 'projects', projectId: route.projectId, taskId: route.taskId, taskView: 'draft' })}
+            onBackFromTaskDraft={() => navigate({ tab: 'projects', projectId: route.projectId, taskId: route.taskId })}
           />
         )}
         {route.tab === 'chat' && <ChatPanel />}
