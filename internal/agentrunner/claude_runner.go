@@ -21,15 +21,23 @@ import (
 // machine's PATH.
 var lookPath = exec.LookPath
 
-// readOnlyTools is the fixed allow-list for Requirements/Planning stage
-// agent runs — no Write/Edit/Bash, so the agent can read the reference
-// repository but never modify it. This is the guardrail described in
-// docs/architectural invariants.md's "the new trust boundary is scoped to
-// can read files in the reference repo, not can modify" framing.
+// readOnlyTools is the fixed tool set for Requirements/Planning stage agent
+// runs — no Write/Edit/Bash, so the agent can read the reference repository
+// but never modify it. This is the guardrail described in docs/architectural
+// invariants.md's "the new trust boundary is scoped to can read files in the
+// reference repo, not can modify" framing. Enforced via WithTools (the
+// CLI's --tools, which actually restricts the built-in tool surface); also
+// passed to WithAllowedTools so those same tools don't require an
+// interactive permission prompt (see docs/adr/0022 — --allowed-tools/
+// --disallowed-tools are a permission auto-approve/deny list, a separate,
+// narrower mechanism than --tools, and on their own don't stop the CLI's
+// full default built-in surface — Task/Agent subagent spawning, Bash,
+// Write, Edit, WebFetch, skill tools like ScheduleWakeup, etc. — from being
+// visible and callable).
 var readOnlyTools = []string{"Read", "Grep", "Glob"}
 
-// executionTools is the allow-list for Execute — the Implementation stage
-// is the one place this trust boundary deliberately widens beyond
+// executionTools is the tool set for Execute — the Implementation stage is
+// the one place this trust boundary deliberately widens beyond
 // readOnlyTools, because Execute always runs against an isolated git
 // worktree (see ResolveExecutionWorkspace), never the shared checkout Run
 // uses, so Write/Edit/Bash here can't touch anything a human or another
@@ -255,6 +263,12 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		claudecode.WithCwd(in.Workspace),
 		claudecode.WithSystemPrompt(in.SystemPrompt),
 		claudecode.WithPartialStreaming(),
+		// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
+		// (--allowed-tools) only auto-approves these without a permission
+		// prompt — see docs/adr/0022. Both must be set, or the CLI's full
+		// default built-in surface (Task/Agent, WebFetch, skill tools, ...)
+		// stays visible/callable alongside executionTools.
+		claudecode.WithTools(executionTools...),
 		claudecode.WithAllowedTools(executionTools...),
 	}
 	// See clientFor's identical comment: omitting WithMaxTurns entirely
@@ -342,6 +356,12 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	if in.EnableBashTool {
 		allowedTools = append(allowedTools, "Bash")
 	}
+	// builtinTools snapshots allowedTools before the MCP-qualified names
+	// below get appended — WithTools (--tools) only understands the CLI's
+	// built-in tool names (its own --help example is "Bash,Edit,Read"), not
+	// mcp__<server>__<tool> names, unlike WithAllowedTools/--allowed-tools
+	// which is MCP-qualified-name-aware (see mcpServerName's doc comment).
+	builtinTools := append([]string{}, allowedTools...)
 	// in.Tools is optional — free-chat callers (no Draft concept) leave it
 	// empty, in which case no MCP tool/server is registered at all rather
 	// than trying to build one from zero tools.
@@ -382,6 +402,12 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 		server := claudecode.CreateSDKMcpServer(knowledgeServerName, "1.0.0", knowledgeTools...)
 		opts = append(opts, claudecode.WithSdkMcpServer(knowledgeServerName, server))
 	}
+	// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
+	// (--allowed-tools) only auto-approves these without a permission
+	// prompt — see docs/adr/0022. Both must be set, or the CLI's full
+	// default built-in surface (Task/Agent, WebFetch, skill tools like
+	// ScheduleWakeup, ...) stays visible/callable alongside readOnlyTools.
+	opts = append(opts, claudecode.WithTools(builtinTools...))
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
 
 	client = r.newClient(opts...)

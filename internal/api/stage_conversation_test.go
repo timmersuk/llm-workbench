@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1204,4 +1205,101 @@ func TestHandleRegenerateStageMessage_EditUsesNewContent(t *testing.T) {
 	require.Len(t, replaced, 2)
 	assert.Equal(t, "edited question", replaced[0].Content)
 	assert.Equal(t, "new reply", replaced[1].Content)
+}
+
+// TestConversationHistoryToChatMessages_IncludesToolActivity locks in
+// docs/adr/0022's rehydration fix: a message's ToolActivity must be folded
+// into the flattened content, not dropped, so a session rehydrated after a
+// restart still has evidence of its own prior tool calls instead of denying
+// (or "confessing to fabricating") something it genuinely did.
+func TestConversationHistoryToChatMessages_IncludesToolActivity(t *testing.T) {
+	conv := task.Conversation{
+		Stage: task.StageRequirements,
+		Messages: []task.ConversationMessage{
+			{
+				Role:    "assistant",
+				Content: "I've kicked off research into the storage layer.",
+				ToolActivity: []task.ConversationToolActivity{
+					{Name: "Agent", Arguments: `{"description":"Explore persistence layer"}`, Result: "Async agent launched successfully.", IsError: false},
+					{Name: "ScheduleWakeup", Arguments: `{"stop":false}`, Result: "'prompt' is required when stop is not true", IsError: true},
+				},
+			},
+		},
+	}
+
+	got := conversationHistoryToChatMessages(conv)
+
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Content, "I've kicked off research into the storage layer.")
+	assert.Contains(t, got[0].Content, "Agent (ok)")
+	assert.Contains(t, got[0].Content, "ScheduleWakeup (error)")
+	assert.Contains(t, got[0].Content, "'prompt' is required when stop is not true")
+}
+
+// TestConversationHistoryToChatMessages_CollapsesRepeatedToolNames locks in
+// summarizeToolActivities: repeated successful calls to the same tool
+// (a dozen Read/Grep calls exploring a codebase in one turn, the common
+// shape once docs/adr/0022 closes off Agent/ScheduleWakeup) collapse to a
+// single "Name ×N" line instead of one full preview per call, keeping a
+// tool-heavy turn from eating the whole maxHistoryReplayBytes budget on
+// repetition alone. A lone call keeps its full preview. Every erroring
+// call — even a repeat of an already-collapsed name — keeps its own
+// full-detail line, since the error itself is the signal worth replaying.
+func TestConversationHistoryToChatMessages_CollapsesRepeatedToolNames(t *testing.T) {
+	msg := task.ConversationMessage{Role: "assistant", Content: "explored the codebase"}
+	for i := 0; i < 12; i++ {
+		msg.ToolActivity = append(msg.ToolActivity, task.ConversationToolActivity{Name: "Read", Result: "file contents"})
+	}
+	msg.ToolActivity = append(msg.ToolActivity,
+		task.ConversationToolActivity{Name: "Agent", Result: "Async agent launched successfully."},
+		task.ConversationToolActivity{Name: "ScheduleWakeup", Result: "'prompt' is required when stop is not true", IsError: true},
+		task.ConversationToolActivity{Name: "ScheduleWakeup", Result: "'prompt' is required when stop is not true", IsError: true},
+	)
+
+	got := conversationHistoryToChatMessages(task.Conversation{
+		Stage:    task.StageRequirements,
+		Messages: []task.ConversationMessage{msg},
+	})
+
+	require.Len(t, got, 1)
+	content := got[0].Content
+	assert.Contains(t, content, "Read ×12", "12 identical successful Read calls must collapse to one count line")
+	assert.NotContains(t, content, "file contents", "a collapsed group must not carry a per-call preview")
+	assert.Contains(t, content, "Agent (ok): Async agent launched successfully.", "a lone call keeps its full preview")
+	assert.Equal(t, 2, strings.Count(content, "ScheduleWakeup (error)"), "every erroring call stays individually detailed, even repeated ones")
+}
+
+// TestConversationHistoryToChatMessages_TruncatesLongToolActivity ensures a
+// single turn's tool activity can't dominate the replayed-history budget
+// (maxHistoryReplayBytes in claude_runner.go, sized for Windows'
+// CreateProcess ~32K argument-length ceiling) — each activity's preview is
+// capped, not replayed at its full persisted size (up to 2KB per
+// task.maxPersistedToolActivityBytes).
+func TestConversationHistoryToChatMessages_TruncatesLongToolActivity(t *testing.T) {
+	huge := make([]byte, maxRehydratedToolActivityPreviewBytes*4)
+	for i := range huge {
+		huge[i] = 'x'
+	}
+	conv := task.Conversation{
+		Stage: task.StageRequirements,
+		Messages: []task.ConversationMessage{
+			{
+				Role:    "assistant",
+				Content: "turn with a huge tool result",
+				ToolActivity: []task.ConversationToolActivity{
+					{Name: "Grep", Result: string(huge)},
+				},
+			},
+		},
+	}
+
+	got := conversationHistoryToChatMessages(conv)
+
+	require.Len(t, got, 1)
+	assert.Less(t, len(got[0].Content), len(huge))
+}
+
+func TestConversationHistoryToChatMessages_EmptyConversationReturnsNil(t *testing.T) {
+	got := conversationHistoryToChatMessages(task.Conversation{})
+	assert.Nil(t, got)
 }

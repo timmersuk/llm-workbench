@@ -748,15 +748,104 @@ func toolNames(tools []chat.Tool) []string {
 	return names
 }
 
+// maxRehydratedToolActivityPreviewBytes caps the per-activity annotation
+// conversationHistoryToChatMessages folds into replayed history — a
+// one-line breadcrumb ("did I actually call this?") for a session rehydrated
+// after a restart, not a replay of the full persisted arguments/result
+// (which can be up to 2KB each, task.maxPersistedToolActivityBytes). The
+// outer maxHistoryReplayBytes cap in claude_runner.go's
+// systemPromptWithHistory remains the real budget guard for the Windows
+// CreateProcess ~32K argument-length ceiling; this just keeps one turn's
+// worth of activity from dominating that budget on its own.
+const maxRehydratedToolActivityPreviewBytes = 160
+
+// summarizeToolActivity renders one ConversationToolActivity as a single
+// compact line for conversationHistoryToChatMessages — enough for a
+// rehydrated model to recognize its own prior action, not a full replay.
+func summarizeToolActivity(a task.ConversationToolActivity) string {
+	status := "ok"
+	preview := a.Result
+	if a.IsError {
+		status = "error"
+	}
+	if preview == "" {
+		preview = a.Arguments
+	}
+	preview = strings.ReplaceAll(preview, "\n", " ")
+	if len(preview) > maxRehydratedToolActivityPreviewBytes {
+		preview = preview[:maxRehydratedToolActivityPreviewBytes] + "…"
+	}
+	return fmt.Sprintf("%s (%s): %s", a.Name, status, preview)
+}
+
+// summarizeToolActivities groups a turn's tool activity by tool name,
+// keyed to the trade-off maxRehydratedToolActivityPreviewBytes exists for:
+// a turn making the same read-only call many times (a dozen Read/Grep
+// calls exploring a codebase) shouldn't cost a full preview line per call.
+// Repeated successful calls to the same tool collapse to one "Name ×N"
+// count line with no preview; a lone successful call keeps its full
+// summarizeToolActivity preview (unchanged from before grouping existed);
+// every erroring call keeps its own full-detail line regardless of
+// repetition, since an error is exactly the signal a rehydrated session
+// most needs verbatim (e.g. this rehydration gap was fixed because a real
+// ScheduleWakeup validation error was invisible after a restart).
+func summarizeToolActivities(activities []task.ConversationToolActivity) []string {
+	type group struct {
+		successCount int
+		firstSuccess *task.ConversationToolActivity
+		errors       []task.ConversationToolActivity
+	}
+	order := make([]string, 0, len(activities))
+	groups := make(map[string]*group, len(activities))
+	for i, a := range activities {
+		g, ok := groups[a.Name]
+		if !ok {
+			g = &group{}
+			groups[a.Name] = g
+			order = append(order, a.Name)
+		}
+		if a.IsError {
+			g.errors = append(g.errors, a)
+			continue
+		}
+		g.successCount++
+		if g.firstSuccess == nil {
+			g.firstSuccess = &activities[i]
+		}
+	}
+
+	lines := make([]string, 0, len(order))
+	for _, name := range order {
+		g := groups[name]
+		for _, e := range g.errors {
+			lines = append(lines, summarizeToolActivity(e))
+		}
+		switch g.successCount {
+		case 0:
+			// nothing beyond the error lines already appended above
+		case 1:
+			lines = append(lines, summarizeToolActivity(*g.firstSuccess))
+		default:
+			lines = append(lines, fmt.Sprintf("%s ×%d", name, g.successCount))
+		}
+	}
+	return lines
+}
+
 // conversationHistoryToChatMessages maps a stage's persisted Conversation
 // into the chat.Message shape agentrunner.RunInput.History expects, so an
 // AgentRunner that lost its in-memory session (e.g. a server restart wiped
 // ClaudeRunner's cached clients or ChatClientRunner's held history) can
 // rehydrate from the durable record instead of starting the interview over.
-// A tool-call proposal is flattened into a short annotation on the
-// assistant message's content rather than reconstructed as a structured
-// tool-call turn — this is a best-effort transcript for the model to read,
-// not a protocol-valid replay of the original exchange.
+// A turn's tool activity and its tool-call proposal are both flattened into
+// short annotations on the assistant message's content rather than
+// reconstructed as structured tool-call turns — this is a best-effort
+// transcript for the model to read, not a protocol-valid replay of the
+// original exchange. Carrying tool activity matters specifically: without
+// it, a rehydrated session has no evidence in its own replayed context that
+// it ever made a prior tool call, which can lead the model to wrongly deny
+// or "confess to fabricating" something it genuinely did before the
+// restart (see docs/adr/0022).
 func conversationHistoryToChatMessages(conv task.Conversation) []chat.Message {
 	if len(conv.Messages) == 0 {
 		return nil
@@ -764,6 +853,9 @@ func conversationHistoryToChatMessages(conv task.Conversation) []chat.Message {
 	out := make([]chat.Message, 0, len(conv.Messages))
 	for _, m := range conv.Messages {
 		content := m.Content
+		for _, line := range summarizeToolActivities(m.ToolActivity) {
+			content += fmt.Sprintf("\n(called %s)", line)
+		}
 		if m.ToolCall != nil {
 			content += fmt.Sprintf("\n(proposed a draft via %s: %s)", m.ToolCall.Name, m.ToolCall.Arguments)
 		}

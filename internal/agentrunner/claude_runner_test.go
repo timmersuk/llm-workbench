@@ -2,6 +2,7 @@ package agentrunner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -722,6 +723,99 @@ func TestClaudeRunner_ClientFor_ErrorsWhenWorkspaceEmpty(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: ""})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "claude-code requires a project repository")
+}
+
+// captureOptions applies opts to a fresh claudecode.Options so a test can
+// inspect exactly what a ClaudeRunner call configured — the same pattern
+// docs/adr/0022's fix depends on: WithTools must be set, not just
+// WithAllowedTools, or the CLI's full default tool surface stays reachable.
+func captureOptions(opts ...claudecode.Option) claudecode.Options {
+	var o claudecode.Options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// TestClaudeRunner_ClientFor_SetsToolsAlongsideAllowedTools locks in
+// docs/adr/0022's fix: WithAllowedTools alone (the CLI's --allowed-tools,
+// a permission auto-approve list) doesn't restrict which tools the model
+// can see — WithTools (--tools) is the actual gate, and clientFor must set
+// both to the same readOnlyTools set for a plain Requirements/Planning
+// session (no Bash, no Draft/knowledge tools registered).
+func TestClaudeRunner_ClientFor_SetsToolsAlongsideAllowedTools(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		captured = captureOptions(opts...)
+		return &fakeClaudeClient{}
+	}
+
+	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: t.TempDir()})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"Read", "Grep", "Glob"}, captured.Tools)
+	assert.Equal(t, []string{"Read", "Grep", "Glob"}, captured.AllowedTools)
+}
+
+// TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames locks in that
+// WithTools only ever receives built-in tool names — the CLI's --tools
+// --help example is "Bash,Edit,Read", unlike --allowed-tools/
+// --disallowed-tools which claude_runner.go already treats as
+// MCP-qualified-name-aware (mcp__<server>__<tool>). Passing an MCP name to
+// --tools would either error or silently fail to enable the Draft/
+// knowledge tools, so this must stay in AllowedTools only.
+func TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		captured = captureOptions(opts...)
+		return &fakeClaudeClient{}
+	}
+
+	in := RunInput{
+		Workspace:      t.TempDir(),
+		EnableBashTool: true,
+		Tools: []chat.Tool{{
+			Type: "function",
+			Function: chat.ToolSchema{
+				Name:       "propose_context",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+	}
+	_, err := r.clientFor(context.Background(), "task-a:review", in)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "Bash"}, captured.Tools,
+		"WithTools must stay built-in-only even when Draft MCP tools are registered")
+	assert.Contains(t, captured.AllowedTools, mcpQualifiedName("propose_context"),
+		"the MCP-qualified name still belongs in AllowedTools/--allowed-tools")
+	assert.NotContains(t, captured.Tools, mcpQualifiedName("propose_context"))
+}
+
+// TestClaudeRunner_Execute_SetsToolsAlongsideAllowedTools mirrors the
+// clientFor test for Execute's independent opts construction (docs/adr/0022
+// applies the same fix to both call sites).
+func TestClaudeRunner_Execute_SetsToolsAlongsideAllowedTools(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		captured = captureOptions(opts...)
+		return &fakeClaudeClient{}
+	}
+
+	_, err := r.Execute(context.Background(), ExecuteInput{
+		SessionKey: "task-a:execute",
+		Workspace:  t.TempDir(),
+	}, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, executionTools, captured.Tools)
+	assert.Equal(t, executionTools, captured.AllowedTools)
 }
 
 // fakeKnowledgeStore is a minimal knowledgetool.Store stub, shared by the

@@ -50,3 +50,9 @@ Scoped to the `local` executor only: `claude-code` and `codex` gate their
 `--allowedTools` name allow-list over Claude Code's tools; a coarse sandbox
 toggle over Codex's), so extending this to them is a separate design
 question, not a natural extension of this change.
+
+**Correction (docs/adr/0022):** the claim above that `--allowedTools` gates
+Claude Code's tool surface was wrong — it's a permission auto-approve list,
+not a restriction on which tools the model can see/call. The actual gate is
+`--tools`, which `internal/agentrunner/claude_runner.go` didn't set at all
+until docs/adr/0022's fix.
