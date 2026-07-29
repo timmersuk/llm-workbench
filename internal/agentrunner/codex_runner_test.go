@@ -22,6 +22,16 @@ func TestCodexRunner_TryLockRejectsConcurrentSameKey(t *testing.T) {
 	assert.True(t, r.tryLock("task-a:planning"), "unlocking must free the key for reuse")
 }
 
+func TestCodexRunner_RunTimeout_UsesExecuteTimeoutWhenBashEnabled(t *testing.T) {
+	r := NewCodexRunner(5*time.Minute, 30*time.Minute, "", "", "")
+	assert.Equal(t, 30*time.Minute, r.runTimeout(RunInput{EnableBashTool: true}))
+}
+
+func TestCodexRunner_RunTimeout_UsesRunTimeoutWhenBashDisabled(t *testing.T) {
+	r := NewCodexRunner(5*time.Minute, 30*time.Minute, "", "", "")
+	assert.Equal(t, 5*time.Minute, r.runTimeout(RunInput{EnableBashTool: false}))
+}
+
 func TestCodexRunner_CheckHealth(t *testing.T) {
 	origLookPath := lookPath
 	defer func() { lookPath = origLookPath }()

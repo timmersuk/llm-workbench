@@ -574,6 +574,16 @@ func TestToolResultText_EncodesStructuredContentAsJSON(t *testing.T) {
 	assert.JSONEq(t, `{"ok":true}`, toolResultText(map[string]any{"ok": true}))
 }
 
+func TestClaudeRunner_RunTimeout_UsesExecuteTimeoutWhenBashEnabled(t *testing.T) {
+	r := NewClaudeRunner(5*time.Minute, 30*time.Minute, "", nil)
+	assert.Equal(t, 30*time.Minute, r.runTimeout(RunInput{EnableBashTool: true}))
+}
+
+func TestClaudeRunner_RunTimeout_UsesRunTimeoutWhenBashDisabled(t *testing.T) {
+	r := NewClaudeRunner(5*time.Minute, 30*time.Minute, "", nil)
+	assert.Equal(t, 5*time.Minute, r.runTimeout(RunInput{EnableBashTool: false}))
+}
+
 func TestClaudeRunner_CheckHealth_FailsWhenReposRootEmpty(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	err := r.CheckHealth(context.Background())

@@ -95,6 +95,15 @@ type ClaudeRunner struct {
 // unattended multi-step implementation run to completion — reusing Run's
 // budget for Execute cut autonomous executions off mid-run well before they
 // could finish (see the blank-page bug this split was introduced to fix).
+// A Run call with EnableBashTool set (the Review stage's automated-checks
+// turn, up to reviewMaxTurns tool calls running the project's real test
+// suite) is the same kind of unattended multi-step run as Execute, just
+// dispatched through Run instead — runTimeout gives it Execute's longer
+// budget instead of Run's, rather than reusing the short human-paced one
+// meant for Requirements/Planning's read-only turns (the same
+// "reusing the wrong budget cuts an autonomous run off mid-way" failure
+// this comment already describes for Run vs Execute, just recurring one
+// level down).
 // reposRoot is the configured REPOS_ROOT value, held so CheckHealth
 // can report unavailable when it's unset. knowledgeStore, if non-nil, is
 // exposed on every Run call via a second always-registered in-process MCP
@@ -110,6 +119,17 @@ func NewClaudeRunner(timeout, executeTimeout time.Duration, reposRoot string, kn
 		knowledgeStore: knowledgeStore,
 		newClient:      claudecode.NewClient,
 	}
+}
+
+// runTimeout picks Run's per-call budget: executeTimeout for a
+// EnableBashTool turn (Review's unattended, many-tool-call automated
+// checks), timeout otherwise (Requirements/Planning's human-paced,
+// read-only turns). See NewClaudeRunner's doc comment for why.
+func (r *ClaudeRunner) runTimeout(in RunInput) time.Duration {
+	if in.EnableBashTool {
+		return r.executeTimeout
+	}
+	return r.timeout
 }
 
 // CheckHealth implements AgentRunner. reposRoot must be configured — without
@@ -192,7 +212,7 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 	}
 	defer r.unlock(key)
 
-	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	runCtx, cancel := context.WithTimeout(ctx, r.runTimeout(in))
 	defer cancel()
 
 	client, err := r.clientFor(runCtx, key, in)

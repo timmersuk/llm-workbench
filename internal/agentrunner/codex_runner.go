@@ -67,7 +67,8 @@ type CodexRunner struct {
 // NewCodexRunner returns a CodexRunner whose Run calls are each bounded by
 // timeout and whose Execute calls are separately bounded by executeTimeout
 // — split the same way and for the same reason as NewClaudeRunner's
-// timeout/executeTimeout. reposRoot is the configured REPOS_ROOT
+// timeout/executeTimeout, including runTimeout's EnableBashTool exception
+// (see NewClaudeRunner's doc comment). reposRoot is the configured REPOS_ROOT
 // value (same role as NewClaudeRunner's). draftMCPPath is the absolute path
 // to the compiled cmd/draftmcp binary; CodexRunner registers it as an MCP
 // server the first time Run or Execute is actually called (see
@@ -86,6 +87,15 @@ func NewCodexRunner(timeout, executeTimeout time.Duration, reposRoot string, dra
 		draftMCPPath:   draftMCPPath,
 		knowledgeRoot:  knowledgeRoot,
 	}
+}
+
+// runTimeout picks Run's per-call budget — see ClaudeRunner.runTimeout,
+// which this mirrors exactly.
+func (r *CodexRunner) runTimeout(in RunInput) time.Duration {
+	if in.EnableBashTool {
+		return r.executeTimeout
+	}
+	return r.timeout
 }
 
 // CheckHealth implements AgentRunner. reposRoot and draftMCPPath must both
@@ -135,7 +145,7 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	}
 	defer r.unlock(key)
 
-	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	runCtx, cancel := context.WithTimeout(ctx, r.runTimeout(in))
 	defer cancel()
 
 	opts := types.NewCodexOptions().
