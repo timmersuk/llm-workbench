@@ -388,6 +388,11 @@ func (s *TaskStore) AppendExecutionLogEvent(projectID, id, executionID string, e
 	)
 }
 
+// GetExecutionLog delegates straight to the wrapped task.FileStore.
+func (s *TaskStore) GetExecutionLog(projectID, id, executionID string) (task.ExecutionLog, error) {
+	return s.files.GetExecutionLog(projectID, id, executionID)
+}
+
 // ListReviews delegates straight to the wrapped task.FileStore.
 func (s *TaskStore) ListReviews(projectID, id string) ([]task.Review, error) {
 	return s.files.ListReviews(projectID, id)

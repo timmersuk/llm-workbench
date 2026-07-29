@@ -470,6 +470,30 @@ func (s *Server) handleGetContinuableExecution() http.HandlerFunc {
 	}
 }
 
+// handleGetExecutionLog returns one execution attempt's full recorded event
+// stream (executions/exec-NNN.log.yaml) — the only durable evidence of what
+// an unattended run actually did, surfaced so a human can inspect a past
+// attempt's tool calls/output after the fact, not just its summary
+// (task.Execution's artifacts/commits/metrics). A missing log (an execution
+// recorded before this capture feature existed, with no archived session to
+// backfill it from) is a 404, not an empty/zero-value 200.
+func (s *Server) handleGetExecutionLog() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectId := r.PathValue("projectId")
+		store, ok := s.resolveTaskStore(w, projectId)
+		if !ok {
+			return
+		}
+
+		log, err := store.GetExecutionLog(projectId, r.PathValue("taskId"), r.PathValue("executionId"))
+		if err != nil {
+			writeGetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, log)
+	}
+}
+
 // resolveReviewContinuation looks up the latest review recorded for taskId
 // and, only when its decision is needs_changes, resolves the branch to
 // continue from and the notes to carry into the new attempt's prompt — a
