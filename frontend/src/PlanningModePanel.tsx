@@ -1,5 +1,6 @@
 import { finalizePlan } from './api'
 import { PlanDraftForm } from './PlanDraftForm'
+import { stageConversationOps } from './stageConversationOps'
 import { StageConversationPanel } from './StageConversationPanel'
 import type { Task, TaskPlan } from './types'
 
@@ -23,9 +24,8 @@ interface PlanningModePanelProps {
 export function PlanningModePanel({ projectId, taskId, onFinalized }: PlanningModePanelProps) {
   return (
     <StageConversationPanel<TaskPlan>
-      projectId={projectId}
-      taskId={taskId}
-      stage="planning"
+      conversationKey={`${projectId}:${taskId}:planning`}
+      ops={stageConversationOps(projectId, taskId, 'planning')}
       title="Planning Mode"
       description="Reply below to answer Planning Mode's questions — its proposal will become this task's execution plan once you finalize it."
       emptyDraft={EMPTY_DRAFT}

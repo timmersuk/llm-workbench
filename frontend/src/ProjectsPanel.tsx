@@ -3,29 +3,40 @@ import { createProject, getProject, listProjects } from './api'
 import { ProjectDetailPanel } from './ProjectDetailPanel'
 import { ProjectForm } from './ProjectForm'
 import type { CreateProjectRequest, LoadError, Project } from './types'
+import type { Route } from './url'
 
 interface ProjectsPanelProps {
   // selectedProjectId is controlled by App, driven off the URL — see
   // frontend/src/url.ts. Undefined means "show the list".
   selectedProjectId?: string
   selectedTaskId?: string
+  selectedTaskView?: Route['taskView']
+  selectedNewTaskSessionId?: string
   onSelectProject: (id: string) => void
   onBackToProjects: () => void
   onInvalidProject: () => void
   onSelectTask: (id: string) => void
   onBackToProject: () => void
   onInvalidTask: () => void
+  onNewTask: (sessionId: string) => void
+  onViewTaskDraft: () => void
+  onBackFromTaskDraft: () => void
 }
 
 export function ProjectsPanel({
   selectedProjectId,
   selectedTaskId,
+  selectedTaskView,
+  selectedNewTaskSessionId,
   onSelectProject,
   onBackToProjects,
   onInvalidProject,
   onSelectTask,
   onBackToProject,
   onInvalidTask,
+  onNewTask,
+  onViewTaskDraft,
+  onBackFromTaskDraft,
 }: ProjectsPanelProps) {
   const [projects, setProjects] = useState<Project[]>([])
   const [loadErrors, setLoadErrors] = useState<LoadError[]>([])
@@ -107,9 +118,14 @@ export function ProjectsPanel({
         project={resolvedProject}
         onBack={onBackToProjects}
         selectedTaskId={selectedTaskId}
+        selectedTaskView={selectedTaskView}
+        selectedNewTaskSessionId={selectedNewTaskSessionId}
         onSelectTask={onSelectTask}
         onBackToProject={onBackToProject}
         onInvalidTask={onInvalidTask}
+        onNewTask={onNewTask}
+        onViewTaskDraft={onViewTaskDraft}
+        onBackFromTaskDraft={onBackFromTaskDraft}
       />
     )
   }

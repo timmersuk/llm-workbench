@@ -199,6 +199,60 @@ func (s *TaskStore) ReplaceConversationMessages(projectID, id, stage string, msg
 	return conv, nil
 }
 
+// GetTaskDraftConversation delegates straight to the wrapped
+// task.FileStore.
+func (s *TaskStore) GetTaskDraftConversation(projectID, sessionID string) (task.Conversation, error) {
+	return s.files.GetTaskDraftConversation(projectID, sessionID)
+}
+
+// taskDraftDir returns the directory holding a task-drafts session's
+// conversation.yaml, mirroring task.FileStore's own taskDraftDir layout —
+// the same rationale as core.taskDir above: `git add`-ing just this
+// directory scopes a commit to exactly this session's own change.
+func (c *core) taskDraftDir(projectID, sessionID string) string {
+	return filepath.Join(c.root, "projects", projectID, "task-drafts", sessionID)
+}
+
+// AppendTaskDraftConversationMessages appends via the wrapped
+// task.FileStore and enqueues the result to be committed on the push
+// worker's next tick.
+func (s *TaskStore) AppendTaskDraftConversationMessages(projectID, sessionID string, msgs ...task.ConversationMessage) (task.Conversation, error) {
+	var conv task.Conversation
+	err := s.core.withPending(
+		fmt.Sprintf("Append task draft conversation messages for %s/%s", projectID, sessionID),
+		func() string { return s.core.taskDraftDir(projectID, sessionID) },
+		func() error {
+			var err error
+			conv, err = s.files.AppendTaskDraftConversationMessages(projectID, sessionID, msgs...)
+			return err
+		},
+	)
+	if err != nil {
+		return task.Conversation{}, err
+	}
+	return conv, nil
+}
+
+// ReplaceTaskDraftConversationMessages overwrites via the wrapped
+// task.FileStore and enqueues the result to be committed on the push
+// worker's next tick.
+func (s *TaskStore) ReplaceTaskDraftConversationMessages(projectID, sessionID string, msgs []task.ConversationMessage) (task.Conversation, error) {
+	var conv task.Conversation
+	err := s.core.withPending(
+		fmt.Sprintf("Replace task draft conversation messages for %s/%s", projectID, sessionID),
+		func() string { return s.core.taskDraftDir(projectID, sessionID) },
+		func() error {
+			var err error
+			conv, err = s.files.ReplaceTaskDraftConversationMessages(projectID, sessionID, msgs)
+			return err
+		},
+	)
+	if err != nil {
+		return task.Conversation{}, err
+	}
+	return conv, nil
+}
+
 // FinalizeRequirements persists via the wrapped task.FileStore and enqueues
 // the result to be committed on the push worker's next tick.
 func (s *TaskStore) FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error) {

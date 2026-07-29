@@ -100,7 +100,7 @@ function stubNoContextOrPlan() {
 describe('TaskDetailPanel — stage-conditional rendering', () => {
   it('requirements stage renders GrillMePanel with the right props', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByTestId('grillme-panel')).toHaveTextContent('grillme:demo:task-a')
     expect(screen.queryByTestId('planningmode-panel')).not.toBeInTheDocument()
@@ -109,7 +109,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
 
   it('planning stage renders PlanningModePanel and a Revise Requirements button', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByTestId('planningmode-panel')).toHaveTextContent('planningmode:demo:task-a')
     expect(screen.getByRole('button', { name: 'Revise Requirements' })).toBeInTheDocument()
@@ -121,7 +121,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     const revised = makeTask('requirements')
     vi.mocked(api.reviseRequirements).mockResolvedValue(revised)
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
     await user.click(await screen.findByRole('button', { name: 'Revise Requirements' }))
 
     expect(await screen.findByTestId('grillme-panel')).toBeInTheDocument()
@@ -133,7 +133,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     stubNoContextOrPlan()
     vi.mocked(api.reviseRequirements).mockRejectedValue(new Error('task is not in the expected stage'))
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
     await user.click(await screen.findByRole('button', { name: 'Revise Requirements' }))
 
     expect(await screen.findByText('task is not in the expected stage')).toBeInTheDocument()
@@ -141,7 +141,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
 
   it.each(['implementation', 'review'] as const)('%s stage renders a Revise Plan button', async (stage) => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask(stage)} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask(stage)} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
     expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
@@ -151,25 +151,25 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
 
   it('implementation stage renders ExecutePanel; review stage does not', async () => {
     stubNoContextOrPlan()
-    const { unmount } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+    const { unmount } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
     expect(await screen.findByTestId('execute-panel')).toHaveTextContent('execute:demo:task-a')
     unmount()
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('review')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('review')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
     await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
     expect(screen.queryByTestId('execute-panel')).not.toBeInTheDocument()
   })
 
   it('review stage renders ReviewPanel with the right props', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('review')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('review')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByTestId('review-panel')).toHaveTextContent('review:demo:task-a')
   })
 
   it('pr_review stage renders PRReviewPanel with the right props and no Revise Plan button', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('pr_review')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('pr_review')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByTestId('pr-review-panel')).toHaveTextContent('pr-review:demo:task-a')
     expect(screen.queryByRole('button', { name: 'Revise Plan' })).not.toBeInTheDocument()
@@ -177,7 +177,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
 
   it('merged stage renders neither stage panel nor any Revise button', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('merged')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('merged')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
     expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
@@ -202,7 +202,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     const task = makeTask('merged', {
       pull_request: { url: 'https://github.com/org/repo/pull/7', number: 7, branch: 'task-exec/task-a/exec-002' },
     })
-    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     // Shows the latest verdict, not the earlier needs_changes one.
     expect(await screen.findByText(/Review complete — approved/)).toBeInTheDocument()
@@ -228,14 +228,14 @@ describe('TaskDetailPanel — Context/Plan sections', () => {
       status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
     })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByText('A finalized summary')).toBeInTheDocument()
   })
 
   it('omits the Context/Plan sections when both requests reject (not yet finalized)', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
     expect(screen.queryByText('Context')).not.toBeInTheDocument()
@@ -256,7 +256,7 @@ describe('TaskDetailPanel — Context/Plan sections', () => {
       status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
     })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByText('A finalized approach')).toBeInTheDocument()
     expect(screen.getByText('Step one')).toBeInTheDocument()
@@ -267,7 +267,7 @@ describe('TaskDetailPanel — summary/interview zone separation', () => {
   it('wraps the read-only summary and the GrillMe interview in separate containers', async () => {
     stubNoContextOrPlan()
     const task = makeTask('requirements', { objective: 'ship it' })
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} />)
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     const grillme = await screen.findByTestId('grillme-panel')
     const summary = container.querySelector('.task-summary')
@@ -282,7 +282,7 @@ describe('TaskDetailPanel — summary/interview zone separation', () => {
 
   it('omits the summary container entirely when there is nothing to summarize', async () => {
     stubNoContextOrPlan()
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
     expect(container.querySelector('.task-summary')).not.toBeInTheDocument()
@@ -297,7 +297,7 @@ describe('TaskDetailPanel — workspace status banner', () => {
       status: { behind_origin: { known: true, behind: 3 }, dirty: { known: true, dirty: false } },
     })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByText(/3 commits behind origin/)).toBeInTheDocument()
   })
@@ -309,7 +309,7 @@ describe('TaskDetailPanel — workspace status banner', () => {
       status: { behind_origin: { known: true, behind: 0 }, dirty: { known: true, dirty: true } },
     })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByText(/uncommitted changes/)).toBeInTheDocument()
   })
@@ -320,7 +320,7 @@ describe('TaskDetailPanel — workspace status banner', () => {
       repository_configured: true,
       status: { behind_origin: { known: true, behind: 0 }, dirty: { known: true, dirty: false } },
     })
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
     expect(screen.queryByText(/behind origin|uncommitted changes/)).not.toBeInTheDocument()
@@ -329,7 +329,7 @@ describe('TaskDetailPanel — workspace status banner', () => {
 
   it('shows nothing when there is no repository configured', async () => {
     stubNoContextOrPlan() // default stub already returns repository_configured: false
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
     expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
@@ -338,7 +338,7 @@ describe('TaskDetailPanel — workspace status banner', () => {
   it('shows nothing when the fetch rejects', async () => {
     stubNoContextOrPlan()
     vi.mocked(api.getWorkspaceStatus).mockRejectedValue(new Error('boom'))
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} />)
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
     expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
@@ -352,7 +352,7 @@ describe('TaskDetailPanel — execution outcome notices', () => {
       executions: [makeExecution({ status: 'failure', failure: { type: 'execution', message: 'Reached maximum number of turns (100)' } })],
     })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByText(/stopped after hitting its turn limit/)).toBeInTheDocument()
   })
@@ -363,7 +363,7 @@ describe('TaskDetailPanel — execution outcome notices', () => {
       executions: [makeExecution({ status: 'failure', failure: { type: 'resource', message: 'context deadline exceeded' } })],
     })
 
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByText(/context deadline exceeded/)).toBeInTheDocument()
   })
@@ -374,7 +374,7 @@ describe('TaskDetailPanel — execution outcome notices', () => {
       executions: [makeExecution({ status: 'success', output: { ...makeExecution().output, workspace_dirty: true } })],
     })
 
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     expect(await screen.findByText(/succeeded but left uncommitted changes/)).toBeInTheDocument()
     expect(container.querySelector('.workspace-status-banner')).toBeInTheDocument()
@@ -385,7 +385,7 @@ describe('TaskDetailPanel — execution outcome notices', () => {
     stubNoContextOrPlan()
     vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution({ status: 'success' })] })
 
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} />)
+    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('implementation')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('execute-panel')
     expect(container.querySelector('.execution-failure-banner')).not.toBeInTheDocument()

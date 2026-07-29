@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { finalizeKnowledge, finalizeReview, getReviewDiff, listExecutions } from './api'
 import { KnowledgeDraftForm } from './KnowledgeDraftForm'
 import { ReviewDraftForm } from './ReviewDraftForm'
+import { stageConversationOps } from './stageConversationOps'
 import { StageConversationPanel } from './StageConversationPanel'
 import type { Execution, KnowledgeConceptDraft, Review, ReviewDraft, Task } from './types'
 
@@ -100,9 +101,8 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
       )}
 
       <StageConversationPanel<ReviewDraft, KnowledgeConceptDraft>
-        projectId={projectId}
-        taskId={taskId}
-        stage="review"
+        conversationKey={`${projectId}:${taskId}:review`}
+        ops={stageConversationOps(projectId, taskId, 'review')}
         title="Review"
         description="Start the review to have the agent run the tests, review the diff, and walk the verification steps — then finalize an approved, needs-changes, or rejected verdict. It may also propose a knowledge concept worth recording along the way; accept or reject that independently of the review verdict."
         emptyDraft={EMPTY_DRAFT}

@@ -49,6 +49,20 @@ type Task struct {
 
 	References References `yaml:"references" json:"references"`
 
+	// DraftSessionID, when set, is the task-drafts session id (internal/api's
+	// task-drafts backend) whose pre-creation conversation produced this
+	// task — a permanent pointer to
+	// <projects root>/<projectId>/task-drafts/<DraftSessionID>/conversation.yaml,
+	// set once at Create time and never changed afterward. Absent (empty)
+	// for a task created before this mechanism existed, or hypothetically
+	// any other way. Two things read it: the read-only "view pre-creation
+	// conversation" screen (TaskDraftView.tsx), and GrillMe's first
+	// Requirements-stage turn, which folds that frozen transcript into its
+	// system prompt as an addendum (buildTaskDraftContext,
+	// internal/api/stage_conversation.go) so the interview doesn't re-ask
+	// what the human already settled before the task existed.
+	DraftSessionID string `yaml:"draft_session_id,omitempty" json:"draft_session_id,omitempty"`
+
 	// PullRequest is set once the (not-yet-built) "Push & Open PR" action
 	// has pushed this task's execution branch and opened a PR. Absent
 	// (nil) until then — a task has at most one open PR at a time by

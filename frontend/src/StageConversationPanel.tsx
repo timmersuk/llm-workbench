@@ -1,19 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
-import {
-  deleteStageMessage,
-  getStageConversation,
-  isAbortError,
-  listAgentExecutors,
-  listModels,
-  postStageMessage,
-  regenerateStageMessage,
-  startStageConversation,
-} from './api'
+import { isAbortError, listAgentExecutors, listModels } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ToolActivitySequence } from './ToolActivity'
-import type { ChatStreamEvent, ConversationMessage, ConversationToolActivity } from './types'
+import type { ChatStreamEvent, Conversation, ConversationMessage, ConversationToolActivity } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
@@ -138,10 +129,62 @@ export interface SecondaryDraftConfig<S> {
   onReject: (draft: S) => Promise<void>
 }
 
+// StageConversationOps is the five conversation operations a
+// StageConversationPanel drives — getConversation/postMessage/
+// startConversation/deleteMessage/regenerateMessage — factored out as
+// props instead of the panel hardcoding taskId+stage api.ts calls itself.
+// This is what lets the exact same panel back both a task's GrillMe/
+// Planning/Review stage conversations (stageConversationOps, api.ts, closing
+// over projectId/taskId/stage) and the pre-creation "New Task" chat
+// (taskDraftConversationOps, api.ts, closing over projectId/sessionId
+// instead) with no behavior change to the former. Every op omits
+// projectId/taskId(/stage) or projectId/sessionId — whichever a given
+// caller closes over — since the panel itself has no notion of what's being
+// conversed about, only that it can be gotten/posted-to/started/deleted-from/
+// regenerated.
+export interface StageConversationOps {
+  getConversation: () => Promise<Conversation>
+  postMessage: (
+    content: string,
+    model: string,
+    executor: string,
+    onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal,
+  ) => Promise<void>
+  startConversation: (
+    model: string,
+    executor: string,
+    onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal,
+  ) => Promise<void>
+  deleteMessage: (index: number) => Promise<Conversation>
+  regenerateMessage: (
+    index: number,
+    content: string,
+    model: string,
+    executor: string,
+    onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal,
+  ) => Promise<void>
+}
+
 interface StageConversationPanelProps<D, S = never> {
-  projectId: string
-  taskId: string
-  stage: string
+  // conversationKey uniquely identifies this conversation (e.g.
+  // `${projectId}:${taskId}:requirements` or `${projectId}:${sessionId}`) —
+  // used only to key the mount effect (so switching to a different
+  // conversation re-initializes) and to namespace this instance's DOM
+  // element ids; the panel itself never parses or otherwise depends on its
+  // shape.
+  conversationKey: string
+  ops: StageConversationOps
+  // readOnly renders a frozen, historical conversation: the message input,
+  // Edit/Regenerate/Delete actions, ask_question option buttons, and any
+  // pending Draft's action panel are all suppressed — Copy remains, since
+  // it can't mutate anything. Used by TaskDraftView.tsx to show a task's
+  // pre-creation "New Task" chat after the fact, where the conversation
+  // moved on (a task now exists) and must not be reopened or re-answered
+  // from this view.
+  readOnly?: boolean
   // title/description label this interview so it reads as a distinct,
   // interactive zone rather than more of the read-only summary above it
   // (TaskDetailPanel wraps the read-only fields and this panel in
@@ -200,9 +243,9 @@ const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', c
 // registered tool — a Draft, shown via renderDraft for the human to edit
 // before Finalize or discard (which just clears local state; no API call).
 export function StageConversationPanel<D, S = never>({
-  projectId,
-  taskId,
-  stage,
+  conversationKey,
+  ops,
+  readOnly = false,
   title,
   description,
   emptyDraft,
@@ -286,13 +329,21 @@ export function StageConversationPanel<D, S = never>({
       let loadedEmpty = false
 
       try {
-        const conv = await getStageConversation(projectId, taskId, stage)
+        const conv = await ops.getConversation()
         const loaded = conv.messages ?? []
         if (cancelled) {
           return
         }
         setMessages(loaded.map(toDisplayMessage))
         loadedEmpty = loaded.length === 0
+        // A read-only view (TaskDraftView.tsx) only ever shows the
+        // transcript — no pending Draft/question to rehydrate (there's
+        // nothing here to Finalize or answer), no model/executor picker,
+        // and never an auto-started turn against a frozen conversation.
+        if (readOnly) {
+          setInitializing(false)
+          return
+        }
         // Rehydrate the pending draft(s) from the most recent proposed tool
         // call of each kind — a reload or server restart must not lose a
         // proposal the human hasn't finalized or discarded yet, since it's
@@ -436,7 +487,7 @@ export function StageConversationPanel<D, S = never>({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, taskId, stage])
+  }, [conversationKey, readOnly])
 
   function updateLastMessage(update: (msg: DisplayMessage) => DisplayMessage) {
     setMessages((prev) => {
@@ -569,7 +620,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await postStageMessage(projectId, taskId, stage, text, selectedModel, executor, handleStreamEvent, controller.signal)
+      await ops.postMessage(text, selectedModel, executor, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         // A rejection here (as opposed to a mid-stream {error} SSE event,
@@ -619,7 +670,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await startStageConversation(projectId, taskId, stage, model, executorKey, handleStreamEvent, controller.signal)
+      await ops.startConversation(model, executorKey, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
@@ -682,7 +733,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await regenerateStageMessage(projectId, taskId, stage, index, content, selectedModel, executor, handleStreamEvent, controller.signal)
+      await ops.regenerateMessage(index, content, selectedModel, executor, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         // Same reasoning as sendMessage's catch: a rejection here means
@@ -732,7 +783,7 @@ export function StageConversationPanel<D, S = never>({
       return
     }
     try {
-      await deleteStageMessage(projectId, taskId, stage, index)
+      await ops.deleteMessage(index)
       setMessages((prev) => prev.filter((_, i) => i !== index))
       if (editingIndex === index) {
         setEditingIndex(null)
@@ -838,8 +889,9 @@ export function StageConversationPanel<D, S = never>({
   // notStarted is the pre-Start state of an autoStart=false panel (Review):
   // the mount effect has finished, the conversation is genuinely empty, and
   // nothing errored — so show the explicit Start button and withhold the
-  // reply box until the human fires the opening turn.
-  const notStarted = !autoStart && !initializing && messages.length === 0 && !loadError
+  // reply box until the human fires the opening turn. Never true in
+  // readOnly mode — a frozen conversation is never started from here.
+  const notStarted = !readOnly && !autoStart && !initializing && messages.length === 0 && !loadError
 
   return (
     <div className="stage-conversation">
@@ -848,40 +900,44 @@ export function StageConversationPanel<D, S = never>({
         <p className="stage-conversation-intro">{description}</p>
       </div>
 
-      <div className="chat-model-row">
-        <label htmlFor={`stage-executor-${stage}`}>Executor</label>
-        <select
-          id={`stage-executor-${stage}`}
-          value={executor}
-          onChange={(e) => setExecutor(e.target.value)}
-          disabled={executorOptions.length === 0}
-        >
-          {executorOptions.length === 0 && <option value="">No executor available</option>}
-          {executorOptions.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-
-        {!executor && executorOptions.some((opt) => opt.value === '') && (
-          <>
-            <label htmlFor={`stage-model-${stage}`}>Model</label>
-            <select id={`stage-model-${stage}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
-              {models.length === 0 && <option value="">No models available</option>}
-              {models.map((model) => (
-                <option key={model} value={model}>
-                  {model}
+      {!readOnly && (
+        <>
+          <div className="chat-model-row">
+            <label htmlFor={`stage-executor-${conversationKey}`}>Executor</label>
+            <select
+              id={`stage-executor-${conversationKey}`}
+              value={executor}
+              onChange={(e) => setExecutor(e.target.value)}
+              disabled={executorOptions.length === 0}
+            >
+              {executorOptions.length === 0 && <option value="">No executor available</option>}
+              {executorOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
                 </option>
               ))}
             </select>
-          </>
-        )}
-      </div>
 
-      {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
-      {!executor && executorOptions.some((opt) => opt.value === '') && modelsError && (
-        <p className="error">Could not load models: {modelsError}</p>
+            {!executor && executorOptions.some((opt) => opt.value === '') && (
+              <>
+                <label htmlFor={`stage-model-${conversationKey}`}>Model</label>
+                <select id={`stage-model-${conversationKey}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
+                  {models.length === 0 && <option value="">No models available</option>}
+                  {models.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
+
+          {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
+          {!executor && executorOptions.some((opt) => opt.value === '') && modelsError && (
+            <p className="error">Could not load models: {modelsError}</p>
+          )}
+        </>
       )}
 
       {loadError && <p className="error">Could not load conversation: {loadError}</p>}
@@ -918,7 +974,7 @@ export function StageConversationPanel<D, S = never>({
             )}
             {message.toolCallName === askQuestionToolName && <span className="tool-call-chip">Asked a question</span>}
             {message.error &&
-              (isMaxTurnsError(message.error) ? (
+              (isMaxTurnsError(message.error) && !readOnly ? (
                 <div className="error max-turns-notice">
                   <p>
                     This turn ran out of its turn budget before finishing — reply below to continue, or click Continue.
@@ -940,7 +996,7 @@ export function StageConversationPanel<D, S = never>({
               <button type="button" className="action-btn" title="Copy" aria-label="Copy" onClick={() => handleCopyMessage(message.content)}>
                 <CopyIcon />
               </button>
-              {message.role === 'user' && (
+              {!readOnly && message.role === 'user' && (
                 <button
                   type="button"
                   className="action-btn"
@@ -952,7 +1008,7 @@ export function StageConversationPanel<D, S = never>({
                   <EditIcon />
                 </button>
               )}
-              {message.role === 'assistant' && index > 0 && (
+              {!readOnly && message.role === 'assistant' && index > 0 && (
                 <button
                   type="button"
                   className="action-btn"
@@ -964,22 +1020,24 @@ export function StageConversationPanel<D, S = never>({
                   <RegenerateIcon />
                 </button>
               )}
-              <button
-                type="button"
-                className="action-btn"
-                title="Delete"
-                aria-label="Delete"
-                onClick={() => handleDeleteMessage(index)}
-                disabled={sending}
-              >
-                <DeleteIcon />
-              </button>
+              {!readOnly && (
+                <button
+                  type="button"
+                  className="action-btn"
+                  title="Delete"
+                  aria-label="Delete"
+                  onClick={() => handleDeleteMessage(index)}
+                  disabled={sending}
+                >
+                  <DeleteIcon />
+                </button>
+              )}
             </div>
           </div>
         ))}
       </div>
 
-      {!notStarted && (
+      {!notStarted && !readOnly && (
       <>
       {pendingQuestion && pendingQuestion.options.length > 0 && (
         // Structured alternative to reading the recommended answer out of
@@ -1056,7 +1114,7 @@ export function StageConversationPanel<D, S = never>({
       </>
       )}
 
-      {pendingDraft && (
+      {pendingDraft && !readOnly && (
         <div className="draft-review">
           <h4>Proposed draft</h4>
           {renderDraft(pendingDraft, setPendingDraft)}
@@ -1081,7 +1139,7 @@ export function StageConversationPanel<D, S = never>({
         </div>
       )}
 
-      {secondaryDraft && pendingSecondaryDraft && (
+      {secondaryDraft && pendingSecondaryDraft && !readOnly && (
         <div className="draft-review secondary-draft-review">
           <h4>{secondaryDraft.heading}</h4>
           {secondaryDraft.renderDraft(pendingSecondaryDraft, setPendingSecondaryDraft)}

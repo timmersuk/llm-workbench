@@ -52,6 +52,18 @@ type TaskStore interface {
 	GetConversation(projectID, id, stage string) (task.Conversation, error)
 	AppendConversationMessages(projectID, id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error)
 	ReplaceConversationMessages(projectID, id, stage string, msgs []task.ConversationMessage) (task.Conversation, error)
+
+	// GetTaskDraftConversation/AppendTaskDraftConversationMessages/
+	// ReplaceTaskDraftConversationMessages back the task-drafts backend
+	// (internal/api/task_draft_conversation.go) — the pre-creation "New
+	// Task" chat's persisted transcript, keyed by a client-minted sessionID
+	// rather than a task id (there is no task yet). Full parity with the
+	// three Conversation methods above, just rooted at
+	// <projectId>/task-drafts/<sessionID>/conversation.yaml instead of a
+	// task's own directory (docs/task schema v0.md §1).
+	GetTaskDraftConversation(projectID, sessionID string) (task.Conversation, error)
+	AppendTaskDraftConversationMessages(projectID, sessionID string, msgs ...task.ConversationMessage) (task.Conversation, error)
+	ReplaceTaskDraftConversationMessages(projectID, sessionID string, msgs []task.ConversationMessage) (task.Conversation, error)
 	FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error)
 	FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error)
 	FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error)
@@ -144,6 +156,12 @@ func NewRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 	mux.HandleFunc("GET /api/v1/projects/{id}", s.handleGetProject())
 	mux.HandleFunc("PUT /api/v1/projects/{id}", s.handleUpdateProject())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/workspace-status", s.handleWorkspaceStatus())
+
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-drafts/{sessionId}/conversation", s.handleGetTaskDraftConversation())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/task-drafts/{sessionId}/start", s.handleStartTaskDraftConversation())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/task-drafts/{sessionId}/messages", s.handlePostTaskDraftMessage())
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/task-drafts/{sessionId}/messages/{index}", s.handleDeleteTaskDraftMessage())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/task-drafts/{sessionId}/messages/{index}/regenerate", s.handleRegenerateTaskDraftMessage())
 
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", s.handleListProjectTasks())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", s.handleCreateProjectTask())

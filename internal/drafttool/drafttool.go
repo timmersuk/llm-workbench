@@ -17,6 +17,7 @@ package drafttool
 import "encoding/json"
 
 const (
+	ProposeTaskName      = "propose_task"
 	ProposeContextName   = "propose_context"
 	ProposePlanName      = "propose_plan"
 	ProposeReviewName    = "propose_review"
@@ -33,6 +34,26 @@ type Definition struct {
 	Description string
 	Schema      json.RawMessage
 }
+
+var proposeTaskSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "id": {"type": "string", "description": "A short, url-safe slug for the task, unique within the project (e.g. fix-login-bug). Propose one derived from the title, but this is exactly the kind of field the human is expected to review or override before creation."},
+    "title": {"type": "string"},
+    "objective": {"type": "string"},
+    "constraints": {"type": "array", "items": {"type": "string"}},
+    "assumptions": {"type": "array", "items": {"type": "string"}},
+    "success_criteria": {"type": "array", "items": {"type": "string"}},
+    "references": {
+      "type": "object",
+      "properties": {
+        "knowledge": {"type": "array", "items": {"type": "string"}, "description": "Knowledge concept ids (data/knowledge/ paths, .md suffix removed) relevant to this task."},
+        "repo": {"type": "array", "items": {"type": "string"}, "description": "Repositories relevant to this task, if narrower than the whole project."}
+      }
+    }
+  },
+  "required": ["id", "title", "objective"]
+}`)
 
 var proposeContextSchema = json.RawMessage(`{
   "type": "object",
@@ -124,6 +145,24 @@ var proposeKnowledgeSchema = json.RawMessage(`{
   "required": ["concept_id", "type", "body"]
 }`)
 
+// ProposeTask is the task-drafts (pre-creation "New Task" chat) Draft tool
+// definition — proposes a fully-populated draft task.yaml (id, title,
+// objective, constraints, assumptions, success criteria, references) for
+// the human to review/edit before the existing Create Task API is ever
+// called. Distinct from ProposeContext: this runs before a task exists at
+// all, so it also carries id/title (which task.yaml itself owns but
+// ProposeContext never touches, since GrillMe always starts from an
+// already-created task) and never touches context.yaml's narrative fields
+// (summary/background/files/detail/verification/open_questions) — those
+// stay GrillMe's job, run immediately after creation, informed by this
+// conversation's transcript (see the Requirements-stage prompt addendum,
+// internal/api/stage_conversation.go's buildTaskDraftContext).
+var ProposeTask = Definition{
+	Name:        ProposeTaskName,
+	Description: "Propose a fully-populated draft task (id, title, objective, constraints, assumptions, success criteria, references) for the human to review and edit before the task is actually created.",
+	Schema:      proposeTaskSchema,
+}
+
 // ProposeContext is the Requirements-stage Draft tool definition.
 var ProposeContext = Definition{
 	Name:        ProposeContextName,
@@ -185,5 +224,5 @@ var AskQuestion = Definition{
 // All returns every known Draft tool definition, in a stable order — used
 // by cmd/draftmcp to build its static tools/list response.
 func All() []Definition {
-	return []Definition{ProposeContext, ProposePlan, ProposeReview, ProposeKnowledge, AskQuestion}
+	return []Definition{ProposeTask, ProposeContext, ProposePlan, ProposeReview, ProposeKnowledge, AskQuestion}
 }

@@ -28,6 +28,17 @@ Only `task.yaml` is required at creation. A task's id is client-specified at
 creation time and unique only within its owning project — the same id may
 be reused by tasks in different projects.
 
+A project can also hold `task-drafts/<sessionId>/conversation.yaml`
+(`data/projects/<projectId>/task-drafts/<sessionId>/conversation.yaml`) —
+the persisted transcript of a "New Task" chat, keyed by a client-minted
+session id rather than a task id, since it exists *before* any task does.
+It uses the same `Conversation`/`ConversationMessage` shape as a task's own
+`conversation-<stage>.yaml` (§3 below is silent on it since it isn't a task
+artifact at all — it's siblings with, not nested inside, `tasks/`). A task
+created from one of these sessions keeps a permanent `draft_session_id`
+pointer back to it (see task.yaml below); the session itself is never
+deleted or moved once the task exists.
+
 ---
 
 ## 2. Core Task Definition (task.yaml)
@@ -54,6 +65,17 @@ success_criteria: []
 references:
   knowledge: []
   repo: []
+
+draft_session_id: ""  # optional — set at creation time when this task came
+                       # from the chat-driven "New Task" flow (a propose_task
+                       # Draft, confirmed/edited by the human before Create).
+                       # Points at the frozen pre-creation conversation
+                       # (<projectId>/task-drafts/<draft_session_id>/conversation.yaml)
+                       # that produced it; never changes afterward. Absent for
+                       # a task with no such conversation. GrillMe's first
+                       # requirements-stage turn folds that transcript into
+                       # its prompt as an addendum so it isn't re-interviewed
+                       # from scratch.
 
 pull_request:  # optional, absent until Milestone 7's "Push & Open PR" action
   url: ""      # runs (mechanism landed in PR 2; no route/UI to trigger it
