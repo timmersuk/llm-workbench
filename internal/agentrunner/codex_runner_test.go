@@ -1,7 +1,6 @@
 package agentrunner
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -96,7 +95,7 @@ func TestDraftToolInstruction_NamesToolAndServer(t *testing.T) {
 }
 
 func TestProcessCodexRunEvent_StreamsTextDelta(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var streamed string
 
@@ -111,10 +110,10 @@ func TestProcessCodexRunEvent_StreamsTextDelta(t *testing.T) {
 }
 
 func TestProcessCodexRunEvent_AccumulatesAgentMessageText(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
-	ev := &types.ItemCompleted{Item: &types.AgentMessage{Text: "hello "}}
+	ev := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "hello "}}
 	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
@@ -122,14 +121,18 @@ func TestProcessCodexRunEvent_AccumulatesAgentMessageText(t *testing.T) {
 }
 
 func TestProcessCodexRunEvent_SeparatesTextFromDistinctAgentMessages(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
-	first := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Running the test suite first."}}
-	_, err := processCodexRunEvent(first, []string{"propose_plan"}, &content, &out, nil, nil, nil)
+	_, err := processCodexRunEvent(&types.ItemStarted{Item: &types.AgentMessage{}}, []string{"propose_plan"}, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	first := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "Running the test suite first."}}
+	_, err = processCodexRunEvent(first, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 
-	second := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Tests pass, moving on."}}
+	_, err = processCodexRunEvent(&types.ItemStarted{Item: &types.AgentMessage{}}, []string{"propose_plan"}, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	second := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "Tests pass, moving on."}}
 	_, err = processCodexRunEvent(second, []string{"propose_plan"}, &content, &out, nil, nil, nil)
 	require.NoError(t, err)
 
@@ -137,7 +140,7 @@ func TestProcessCodexRunEvent_SeparatesTextFromDistinctAgentMessages(t *testing.
 }
 
 func TestProcessCodexRunEvent_CapturesMatchingMCPToolCall(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	ev := &types.ItemCompleted{Item: &types.MCPToolCall{
@@ -158,7 +161,7 @@ func TestProcessCodexRunEvent_CapturesMatchingMCPToolCall(t *testing.T) {
 // shape (docs/milestones/done/milestone9.md): a session can offer more than one
 // Draft tool at once, and a call to either is recognized as the proposal.
 func TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	ev := &types.ItemCompleted{Item: &types.MCPToolCall{
@@ -174,7 +177,7 @@ func TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 }
 
 func TestProcessCodexRunEvent_IgnoresNonMatchingMCPToolCall(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	ev := &types.ItemCompleted{Item: &types.MCPToolCall{ToolName: "activate_project", Input: []byte(`{}`)}}
@@ -191,7 +194,7 @@ func TestProcessCodexRunEvent_IgnoresNonMatchingMCPToolCall(t *testing.T) {
 // separate Read/Grep/Glob tools) is now surfaced the same way
 // processCodexExecuteEvent already does for Execute.
 func TestProcessCodexRunEvent_CommandExecutionForwardsAsToolActivity(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var calls []string
 	var results []string
@@ -215,7 +218,7 @@ func TestProcessCodexRunEvent_CommandExecutionForwardsAsToolActivity(t *testing.
 // activity, not be silently dropped the way ClaudeRunner's processMessage
 // used to drop everything but the Draft match.
 func TestProcessCodexRunEvent_NonMatchingMCPToolCallForwardsAsToolActivity(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var calls, results int
 
@@ -238,7 +241,7 @@ func TestProcessCodexRunEvent_NonMatchingMCPToolCallForwardsAsToolActivity(t *te
 // also fire onToolCall/onToolResult — Tool Activity is explicitly distinct
 // from a Draft (CONTEXT.md).
 func TestProcessCodexRunEvent_DraftMCPToolCallNeverForwardedAsActivity(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var calls int
 
@@ -253,7 +256,7 @@ func TestProcessCodexRunEvent_DraftMCPToolCallNeverForwardedAsActivity(t *testin
 }
 
 func TestProcessCodexRunEvent_TurnCompletedSuccess(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	content.WriteString("final answer")
 	var out RunOutput
 
@@ -264,7 +267,7 @@ func TestProcessCodexRunEvent_TurnCompletedSuccess(t *testing.T) {
 }
 
 func TestProcessCodexRunEvent_TurnCompletedFailedStatus(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	done, err := processCodexRunEvent(&types.TurnCompleted{Status: "failed"}, []string{"propose_plan"}, &content, &out, nil, nil, nil)
@@ -273,7 +276,7 @@ func TestProcessCodexRunEvent_TurnCompletedFailedStatus(t *testing.T) {
 }
 
 func TestProcessCodexRunEvent_TurnFailed(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	done, err := processCodexRunEvent(&types.TurnFailed{Message: "boom"}, []string{"propose_plan"}, &content, &out, nil, nil, nil)
@@ -283,14 +286,18 @@ func TestProcessCodexRunEvent_TurnFailed(t *testing.T) {
 }
 
 func TestProcessCodexExecuteEvent_SeparatesTextFromDistinctAgentMessages(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 
-	first := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Running the test suite first."}}
-	_, err := processCodexExecuteEvent(first, &content, &out, func(ExecuteEvent) error { return nil })
+	_, err := processCodexExecuteEvent(&types.ItemStarted{Item: &types.AgentMessage{}}, &content, &out, func(ExecuteEvent) error { return nil })
+	require.NoError(t, err)
+	first := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "Running the test suite first."}}
+	_, err = processCodexExecuteEvent(first, &content, &out, func(ExecuteEvent) error { return nil })
 	require.NoError(t, err)
 
-	second := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Tests pass, moving on."}}
+	_, err = processCodexExecuteEvent(&types.ItemStarted{Item: &types.AgentMessage{}}, &content, &out, func(ExecuteEvent) error { return nil })
+	require.NoError(t, err)
+	second := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "Tests pass, moving on."}}
 	_, err = processCodexExecuteEvent(second, &content, &out, func(ExecuteEvent) error { return nil })
 	require.NoError(t, err)
 
@@ -298,14 +305,18 @@ func TestProcessCodexExecuteEvent_SeparatesTextFromDistinctAgentMessages(t *test
 }
 
 func TestProcessCodexExecuteEvent_SeparatesTextFromDistinctAgentMessagesWhenOnEventNil(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 
-	first := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Running the test suite first."}}
-	_, err := processCodexExecuteEvent(first, &content, &out, nil)
+	_, err := processCodexExecuteEvent(&types.ItemStarted{Item: &types.AgentMessage{}}, &content, &out, nil)
+	require.NoError(t, err)
+	first := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "Running the test suite first."}}
+	_, err = processCodexExecuteEvent(first, &content, &out, nil)
 	require.NoError(t, err)
 
-	second := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Tests pass, moving on."}}
+	_, err = processCodexExecuteEvent(&types.ItemStarted{Item: &types.AgentMessage{}}, &content, &out, nil)
+	require.NoError(t, err)
+	second := &types.ItemUpdated{Delta: &types.AgentMessageDelta{TextChunk: "Tests pass, moving on."}}
 	_, err = processCodexExecuteEvent(second, &content, &out, nil)
 	require.NoError(t, err)
 
@@ -313,7 +324,7 @@ func TestProcessCodexExecuteEvent_SeparatesTextFromDistinctAgentMessagesWhenOnEv
 }
 
 func TestProcessCodexExecuteEvent_CommandExecutionEmitsCallAndResult(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -338,7 +349,7 @@ func TestProcessCodexExecuteEvent_CommandExecutionEmitsCallAndResult(t *testing.
 }
 
 func TestProcessCodexExecuteEvent_CommandExecutionFailureMarksError(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -353,7 +364,7 @@ func TestProcessCodexExecuteEvent_CommandExecutionFailureMarksError(t *testing.T
 }
 
 func TestProcessCodexExecuteEvent_FileChangeEmitsCallAndResult(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -374,7 +385,7 @@ func TestProcessCodexExecuteEvent_FileChangeEmitsCallAndResult(t *testing.T) {
 }
 
 func TestProcessCodexExecuteEvent_MCPToolCallEmitsCallAndResult(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -396,7 +407,7 @@ func TestProcessCodexExecuteEvent_MCPToolCallEmitsCallAndResult(t *testing.T) {
 }
 
 func TestProcessCodexExecuteEvent_TurnCompletedSetsMetrics(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	content.WriteString("done")
 	var out ExecuteOutput
 
@@ -412,7 +423,7 @@ func TestProcessCodexExecuteEvent_TurnCompletedSetsMetrics(t *testing.T) {
 }
 
 func TestProcessCodexExecuteEvent_TurnFailed(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 
 	done, err := processCodexExecuteEvent(&types.TurnFailed{Message: "worktree gone"}, &content, &out, nil)

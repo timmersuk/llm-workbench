@@ -172,7 +172,7 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	}
 
 	var out RunOutput
-	var content strings.Builder
+	var content assistantText
 	for ev := range events {
 		done, err := processCodexRunEvent(ev, names, &content, &out, onDelta, in.OnToolCall, in.OnToolResult)
 		if err != nil {
@@ -257,7 +257,7 @@ func (r *CodexRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func
 	}
 
 	var out ExecuteOutput
-	var content strings.Builder
+	var content assistantText
 	for ev := range events {
 		done, err := processCodexExecuteEvent(ev, &content, &out, onEvent)
 		if err != nil {
@@ -428,21 +428,6 @@ func tomlQuote(s string) string {
 	return b.String()
 }
 
-// appendAgentMessageText appends one completed AgentMessage item's text to
-// content, which accumulates across an entire turn (Run's/Execute's loop).
-// Codex's thread stream emits a separate ItemCompleted{Item: *AgentMessage}
-// event for each complete remark the agent makes between tool calls, so
-// without a paragraph break here two consecutive AgentMessages would
-// concatenate directly into one run-on line once rendered as markdown (see
-// claude_runner.go's identical fix for processMessage/processExecuteMessage,
-// where the same content builder is shared across separate AssistantMessages).
-func appendAgentMessageText(content *strings.Builder, text string) {
-	if content.Len() > 0 {
-		content.WriteString("\n\n")
-	}
-	content.WriteString(text)
-}
-
 // processCodexRunEvent folds one types.ThreadEvent from a codex thread
 // into content/out for Run, mirroring claude_runner.go's processMessage.
 // toolNames are the Draft tool(s) this turn offered (empty for free-chat
@@ -458,18 +443,29 @@ func appendAgentMessageText(content *strings.Builder, text string) {
 // already carries the whole call-and-result together, so onToolCall/
 // onToolResult are simply invoked back to back, no correlation state
 // needed.
-func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error, onToolCall func(name, argsJSON string), onToolResult func(name, result string, isError bool)) (done bool, err error) {
+func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *assistantText, out *RunOutput, onDelta func(chat.Delta) error, onToolCall func(name, argsJSON string), onToolResult func(name, result string, isError bool)) (done bool, err error) {
 	switch e := ev.(type) {
+	case *types.ItemStarted:
+		// ItemStarted for a new AgentMessage item is codex's equivalent of
+		// claude_runner.go's message_start StreamEvent — the live-stream
+		// signal that a new round's remarks are about to begin, arriving
+		// before that item's own AgentMessageDelta chunks (see
+		// assistantText.startNewRound).
+		if _, ok := e.Item.(*types.AgentMessage); ok {
+			content.startNewRound()
+		}
 	case *types.ItemUpdated:
-		if delta, ok := e.Delta.(*types.AgentMessageDelta); ok && onDelta != nil {
-			if err := onDelta(chat.Delta{Content: delta.TextChunk}); err != nil {
+		if delta, ok := e.Delta.(*types.AgentMessageDelta); ok {
+			if err := content.appendDelta(delta.TextChunk, onDelta); err != nil {
 				return true, err
 			}
 		}
 	case *types.ItemCompleted:
+		// AgentMessage's text is not handled here — it already accumulated
+		// live via ItemUpdated/AgentMessageDelta (assistantText.appendDelta
+		// above), which is both the complete and authoritative source (see
+		// assistantText's doc comment).
 		switch item := e.Item.(type) {
-		case *types.AgentMessage:
-			appendAgentMessageText(content, item.Text)
 		case *types.CommandExecution:
 			if onToolCall != nil {
 				onToolCall("Bash", item.Command)
@@ -532,24 +528,29 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *str
 // for Execute, mirroring claude_runner.go's processExecuteMessage: every
 // tool action (shell command, file change, MCP tool call) is surfaced as
 // a tool_call/tool_result ExecuteEvent pair, not just prose.
-func processCodexExecuteEvent(ev types.ThreadEvent, content *strings.Builder, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (done bool, err error) {
+func processCodexExecuteEvent(ev types.ThreadEvent, content *assistantText, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (done bool, err error) {
 	switch e := ev.(type) {
+	case *types.ItemStarted:
+		// See processCodexRunEvent's identical comment: this is codex's
+		// message_start equivalent, arriving before the item's own
+		// AgentMessageDelta chunks.
+		if _, ok := e.Item.(*types.AgentMessage); ok {
+			content.startNewRound()
+		}
 	case *types.ItemUpdated:
-		if delta, ok := e.Delta.(*types.AgentMessageDelta); ok && onEvent != nil {
-			if err := onEvent(ExecuteEvent{Kind: "text", Text: delta.TextChunk}); err != nil {
+		if delta, ok := e.Delta.(*types.AgentMessageDelta); ok {
+			if err := content.appendExecuteText(delta.TextChunk, onEvent); err != nil {
 				return true, err
 			}
 		}
 	case *types.ItemCompleted:
+		// AgentMessage's text is not handled here — see
+		// processCodexRunEvent's identical comment; it already accumulated
+		// live via ItemUpdated/AgentMessageDelta above.
 		if onEvent == nil {
-			if msg, ok := e.Item.(*types.AgentMessage); ok {
-				appendAgentMessageText(content, msg.Text)
-			}
 			break
 		}
 		switch item := e.Item.(type) {
-		case *types.AgentMessage:
-			appendAgentMessageText(content, item.Text)
 		case *types.CommandExecution:
 			if err := onEvent(ExecuteEvent{Kind: "tool_call", ToolName: "Bash", ToolInput: item.Command}); err != nil {
 				return true, err

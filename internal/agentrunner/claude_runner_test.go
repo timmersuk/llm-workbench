@@ -27,55 +27,67 @@ func TestClaudeRunner_TryLockRejectsConcurrentSameKey(t *testing.T) {
 	assert.True(t, r.tryLock("task-a:planning"), "unlocking must free the key for reuse")
 }
 
+// textDeltaEvent builds the content_block_delta StreamEvent a real `claude`
+// CLI session emits for one chunk of streamed assistant text.
+func textDeltaEvent(text string) *claudecode.StreamEvent {
+	return &claudecode.StreamEvent{Event: map[string]any{
+		"type":  claudecode.StreamEventTypeContentBlockDelta,
+		"delta": map[string]any{"text": text},
+	}}
+}
+
+// messageStartEvent builds the message_start StreamEvent that opens a new
+// assistant-message round — always sent before that round's own text
+// deltas (see assistantText.startNewRound).
+func messageStartEvent() *claudecode.StreamEvent {
+	return &claudecode.StreamEvent{Event: map[string]any{"type": claudecode.StreamEventTypeMessageStart}}
+}
+
 func TestProcessMessage_AccumulatesText(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
-	msg := &claudecode.AssistantMessage{
-		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "hello "}},
-	}
-	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
+	done, err := processMessage(textDeltaEvent("hello "), []string{"propose_plan"}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "hello ", content.String())
 }
 
 func TestProcessMessage_SeparatesTextFromDistinctAssistantMessages(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
-	first := &claudecode.AssistantMessage{
-		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "Good — this is a clean extraction."}},
-	}
-	_, err := processMessage(first, nil, &content, &out, nil, nil)
+	_, err := processMessage(messageStartEvent(), nil, &content, &out, nil, nil)
+	require.NoError(t, err)
+	_, err = processMessage(textDeltaEvent("Good — this is a clean extraction."), nil, &content, &out, nil, nil)
 	require.NoError(t, err)
 
-	second := &claudecode.AssistantMessage{
-		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "This looks like a faithful mechanical extraction."}},
-	}
-	_, err = processMessage(second, nil, &content, &out, nil, nil)
+	_, err = processMessage(messageStartEvent(), nil, &content, &out, nil, nil)
+	require.NoError(t, err)
+	_, err = processMessage(textDeltaEvent("This looks like a faithful mechanical extraction."), nil, &content, &out, nil, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Good — this is a clean extraction.\n\nThis looks like a faithful mechanical extraction.", content.String())
 }
 
-func TestProcessMessage_DoesNotSeparateMultipleTextBlocksWithinSameMessage(t *testing.T) {
-	var content strings.Builder
+// TestProcessMessage_DoesNotSeparateConsecutiveDeltasWithinSameRound locks
+// in the other half of the boundary rule: two text deltas with no
+// intervening message_start belong to the same round and must concatenate
+// directly, with no paragraph break inserted between them.
+func TestProcessMessage_DoesNotSeparateConsecutiveDeltasWithinSameRound(t *testing.T) {
+	var content assistantText
 	var out RunOutput
 
-	msg := &claudecode.AssistantMessage{
-		Content: []claudecode.ContentBlock{
-			&claudecode.TextBlock{Text: "hello "},
-			&claudecode.TextBlock{Text: "world"},
-		},
-	}
-	_, err := processMessage(msg, nil, &content, &out, nil, nil)
+	_, err := processMessage(textDeltaEvent("hello "), nil, &content, &out, nil, nil)
 	require.NoError(t, err)
+	_, err = processMessage(textDeltaEvent("world"), nil, &content, &out, nil, nil)
+	require.NoError(t, err)
+
 	assert.Equal(t, "hello world", content.String())
 }
 
 func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	msg := &claudecode.AssistantMessage{
@@ -98,7 +110,7 @@ func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
 }
 
 func TestProcessMessage_IgnoresNonMatchingToolCall(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	msg := &claudecode.AssistantMessage{
@@ -115,7 +127,7 @@ func TestProcessMessage_IgnoresNonMatchingToolCall(t *testing.T) {
 // forwarded through hooks.onCall, not silently dropped the way it was
 // before this ADR (the claude CLI path "intentionally ignored" it).
 func TestProcessMessage_ForwardsNonDraftToolCallToHooks(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var calls []string
 	hooks := &toolActivityHooks{
@@ -142,7 +154,7 @@ func TestProcessMessage_ForwardsNonDraftToolCallToHooks(t *testing.T) {
 // hooks.onCall — Tool Activity (CONTEXT.md) is explicitly "distinct from a
 // Draft."
 func TestProcessMessage_DraftToolCallNeverForwardedAsActivity(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var calls int
 	hooks := &toolActivityHooks{onCall: func(string, string) { calls++ }, pending: make(map[string]string)}
@@ -165,7 +177,7 @@ func TestProcessMessage_DraftToolCallNeverForwardedAsActivity(t *testing.T) {
 // matching ToolUseBlock was seen) is what lets onResult still report which
 // tool this result belongs to.
 func TestProcessMessage_ForwardsToolResultCorrelatedByID(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	type result struct {
 		name    string
@@ -198,7 +210,7 @@ func TestProcessMessage_ForwardsToolResultCorrelatedByID(t *testing.T) {
 // OpenAI-SDK executors' reasoning_content already uses, rather than being
 // silently dropped by processMessage's switch.
 func TestProcessMessage_ThinkingBlockForwardsAsReasoningDelta(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var received []chat.Delta
 
@@ -220,7 +232,7 @@ func TestProcessMessage_ThinkingBlockForwardsAsReasoningDelta(t *testing.T) {
 // RunInput.Tools — comparing against the bare name silently drops every
 // Draft proposal.
 func TestProcessMessage_RequiresFullyQualifiedMcpName(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	msg := &claudecode.AssistantMessage{
@@ -236,7 +248,7 @@ func TestProcessMessage_RequiresFullyQualifiedMcpName(t *testing.T) {
 // tool at once (propose_review, propose_knowledge), and a call to either
 // one is recognized as the turn's proposal.
 func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	msg := &claudecode.AssistantMessage{
@@ -254,7 +266,7 @@ func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 }
 
 func TestProcessMessage_KeepsFirstToolCallOnly(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	out := RunOutput{ToolCall: &chat.ToolCall{ID: "first", Type: "function"}}
 
 	msg := &claudecode.AssistantMessage{
@@ -270,7 +282,7 @@ func TestProcessMessage_KeepsFirstToolCallOnly(t *testing.T) {
 }
 
 func TestProcessMessage_ResultMessageEndsTurnSuccessfully(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	content.WriteString("final text")
 	var out RunOutput
 
@@ -281,7 +293,7 @@ func TestProcessMessage_ResultMessageEndsTurnSuccessfully(t *testing.T) {
 }
 
 func TestProcessMessage_ResultMessageReportsError(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 
 	done, err := processMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, []string{"propose_plan"}, &content, &out, nil, nil)
@@ -291,7 +303,7 @@ func TestProcessMessage_ResultMessageReportsError(t *testing.T) {
 }
 
 func TestProcessMessage_StreamDeltaInvokesOnDelta(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var received []chat.Delta
 
@@ -309,7 +321,7 @@ func TestProcessMessage_StreamDeltaInvokesOnDelta(t *testing.T) {
 }
 
 func TestProcessMessage_StreamDeltaPropagatesOnDeltaError(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	wantErr := errors.New("delta failed")
 
@@ -350,7 +362,7 @@ func TestStreamReasoningDeltaText_ExtractsThinkingField(t *testing.T) {
 }
 
 func TestProcessMessage_StreamReasoningDeltaInvokesOnDeltaAsReasoning(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out RunOutput
 	var received []chat.Delta
 
@@ -368,32 +380,27 @@ func TestProcessMessage_StreamReasoningDeltaInvokesOnDeltaAsReasoning(t *testing
 }
 
 func TestProcessExecuteMessage_AccumulatesText(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 
-	msg := &claudecode.AssistantMessage{
-		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "implementing... "}},
-	}
-	done, err := processExecuteMessage(msg, &content, &out, nil)
+	done, err := processExecuteMessage(textDeltaEvent("implementing... "), &content, &out, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "implementing... ", content.String())
 }
 
 func TestProcessExecuteMessage_SeparatesTextFromDistinctAssistantMessages(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 
-	first := &claudecode.AssistantMessage{
-		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "Running the test suite first."}},
-	}
-	_, err := processExecuteMessage(first, &content, &out, nil)
+	_, err := processExecuteMessage(messageStartEvent(), &content, &out, nil)
+	require.NoError(t, err)
+	_, err = processExecuteMessage(textDeltaEvent("Running the test suite first."), &content, &out, nil)
 	require.NoError(t, err)
 
-	second := &claudecode.AssistantMessage{
-		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "Tests pass, moving on."}},
-	}
-	_, err = processExecuteMessage(second, &content, &out, nil)
+	_, err = processExecuteMessage(messageStartEvent(), &content, &out, nil)
+	require.NoError(t, err)
+	_, err = processExecuteMessage(textDeltaEvent("Tests pass, moving on."), &content, &out, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Running the test suite first.\n\nTests pass, moving on.", content.String())
@@ -405,7 +412,7 @@ func TestProcessExecuteMessage_SeparatesTextFromDistinctAssistantMessages(t *tes
 // tool — Execute has no Draft tool at all, and dropping Write/Edit/Bash
 // calls would defeat the point of streaming a live execution trace.
 func TestProcessExecuteMessage_EmitsEveryToolCall(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -429,7 +436,7 @@ func TestProcessExecuteMessage_EmitsEveryToolCall(t *testing.T) {
 }
 
 func TestProcessExecuteMessage_EmitsToolResultFromUserMessage(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -452,7 +459,7 @@ func TestProcessExecuteMessage_EmitsToolResultFromUserMessage(t *testing.T) {
 }
 
 func TestProcessExecuteMessage_ToolResultDefaultsNotErrorWhenNil(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -471,7 +478,7 @@ func TestProcessExecuteMessage_ToolResultDefaultsNotErrorWhenNil(t *testing.T) {
 }
 
 func TestProcessExecuteMessage_ResultMessagePopulatesRealMetrics(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	content.WriteString("done implementing")
 	var out ExecuteOutput
 
@@ -494,7 +501,7 @@ func TestProcessExecuteMessage_ResultMessagePopulatesRealMetrics(t *testing.T) {
 }
 
 func TestProcessExecuteMessage_ResultMessageLeavesMetricsZeroWhenUnavailable(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 
 	done, err := processExecuteMessage(&claudecode.ResultMessage{DurationMs: 1000}, &content, &out, nil)
@@ -505,7 +512,7 @@ func TestProcessExecuteMessage_ResultMessageLeavesMetricsZeroWhenUnavailable(t *
 }
 
 func TestProcessExecuteMessage_ResultMessageReportsError(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 
 	done, err := processExecuteMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, &content, &out, nil)
@@ -515,7 +522,7 @@ func TestProcessExecuteMessage_ResultMessageReportsError(t *testing.T) {
 }
 
 func TestProcessExecuteMessage_StreamDeltaEmitsTextEvent(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 
@@ -539,7 +546,7 @@ func TestProcessExecuteMessage_StreamDeltaEmitsTextEvent(t *testing.T) {
 // Kind (ExecutePanel has no case for it) — the same "typed but not yet
 // rendered" posture ChatStreamEvent.ToolActivity had before this ADR.
 func TestProcessExecuteMessage_ThinkingBlockEmitsReasoningEvent(t *testing.T) {
-	var content strings.Builder
+	var content assistantText
 	var out ExecuteOutput
 	var events []ExecuteEvent
 

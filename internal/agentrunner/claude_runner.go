@@ -223,7 +223,7 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 
 	hooks := &toolActivityHooks{onCall: in.OnToolCall, onResult: in.OnToolResult, pending: make(map[string]string)}
 	var out RunOutput
-	var content strings.Builder
+	var content assistantText
 	for msg := range client.ReceiveMessages(runCtx) {
 		done, err := processMessage(msg, toolNames(in.Tools), &content, &out, onDelta, hooks)
 		if err != nil {
@@ -288,7 +288,7 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 	}
 
 	var out ExecuteOutput
-	var content strings.Builder
+	var content assistantText
 	for msg := range client.ReceiveMessages(runCtx) {
 		done, err := processExecuteMessage(msg, &content, &out, onEvent)
 		if err != nil {
@@ -598,6 +598,100 @@ type toolActivityHooks struct {
 	pending  map[string]string // toolUseID -> name, for non-Draft calls only
 }
 
+// assistantText accumulates one turn's assistant text purely from the live
+// incremental delta stream — the single source both the persisted Content
+// string (out.Content) and the live relay to the caller (onDelta/onEvent)
+// are built from, so there is exactly one implementation of "where do
+// paragraph breaks go" instead of two that can silently drift apart. That
+// drift is exactly how the run-on-paragraph bug this replaced happened: an
+// earlier fix added a paragraph break only where the buffered, final
+// AssistantMessage/AgentMessage text was assembled, never touching the
+// separate live-delta relay, so a still-streaming turn kept rendering as
+// one run-on paragraph even though the persisted version (built from the
+// fixed path) was already correct. The buffered final message is no longer
+// read for text at all — WithPartialStreaming (claudecode) and codex's
+// streamed item deltas both guarantee incremental deltas reconstruct the
+// final text exactly, so the buffered blocks are only still needed for
+// data that's genuinely nowhere else (tool-use blocks, thinking blocks).
+type assistantText struct {
+	strings.Builder
+	pendingBreak bool
+}
+
+// startNewRound marks that a paragraph break is due before this round's
+// first text delta, once one arrives — called the moment the stream
+// signals a new assistant-message/agent-message round has begun (Claude's
+// message_start StreamEvent; Codex's ItemStarted for a new AgentMessage
+// item), which always arrives before that round's own text deltas.
+func (a *assistantText) startNewRound() {
+	a.pendingBreak = true
+}
+
+// consumeBreak reports whether a paragraph break is due before the next
+// text write, clearing pendingBreak either way — but only actually calls
+// for a break if there's prior content to separate from, so the turn's
+// very first round never gets a leading break.
+func (a *assistantText) consumeBreak() bool {
+	if !a.pendingBreak {
+		return false
+	}
+	a.pendingBreak = false
+	return a.Len() > 0
+}
+
+// appendDelta writes text (preceded by a paragraph break, if one is due)
+// to the accumulated Content, relaying the identical bytes through onDelta
+// if non-nil — onDelta may be nil (content still accumulates; nothing is
+// relayed), matching Run's existing contract for callers that don't stream.
+func (a *assistantText) appendDelta(text string, onDelta func(chat.Delta) error) error {
+	if text == "" {
+		return nil
+	}
+	if a.consumeBreak() {
+		a.WriteString("\n\n")
+		if onDelta != nil {
+			if err := onDelta(chat.Delta{Content: "\n\n"}); err != nil {
+				return err
+			}
+		}
+	}
+	a.WriteString(text)
+	if onDelta != nil {
+		return onDelta(chat.Delta{Content: text})
+	}
+	return nil
+}
+
+// appendExecuteText mirrors appendDelta for Execute's onEvent callback
+// shape (ExecuteEvent{Kind: "text"}) instead of Run's onDelta/chat.Delta.
+func (a *assistantText) appendExecuteText(text string, onEvent func(ExecuteEvent) error) error {
+	if text == "" {
+		return nil
+	}
+	if a.consumeBreak() {
+		a.WriteString("\n\n")
+		if onEvent != nil {
+			if err := onEvent(ExecuteEvent{Kind: "text", Text: "\n\n"}); err != nil {
+				return err
+			}
+		}
+	}
+	a.WriteString(text)
+	if onEvent != nil {
+		return onEvent(ExecuteEvent{Kind: "text", Text: text})
+	}
+	return nil
+}
+
+// isMessageStart reports whether ev is the message_start StreamEvent that
+// opens a new assistant-message round — the live-stream signal for "a new
+// round is beginning," available before any of that round's own text
+// deltas arrive (see assistantText.startNewRound).
+func isMessageStart(ev *claudecode.StreamEvent) bool {
+	evType, _ := ev.Event["type"].(string)
+	return evType == claudecode.StreamEventTypeMessageStart
+}
+
 // processMessage folds one message from a claudecode.Client's message
 // stream into content/out, and reports whether the turn is complete
 // (msg was a ResultMessage). toolNames are the bare names of every Draft
@@ -611,41 +705,25 @@ type toolActivityHooks struct {
 // either callback nil, for callers that don't care. Split out from Run's
 // loop so it's testable against hand-built claudecode.Message values
 // without a live subprocess.
-func processMessage(msg claudecode.Message, toolNames []string, content *strings.Builder, out *RunOutput, onDelta func(chat.Delta) error, hooks *toolActivityHooks) (done bool, err error) {
+func processMessage(msg claudecode.Message, toolNames []string, content *assistantText, out *RunOutput, onDelta func(chat.Delta) error, hooks *toolActivityHooks) (done bool, err error) {
 	switch m := msg.(type) {
 	case *claudecode.StreamEvent:
-		if onDelta == nil {
+		if isMessageStart(m) {
+			content.startNewRound()
 			break
 		}
 		if text, ok := streamDeltaText(m); ok {
-			if err := onDelta(chat.Delta{Content: text}); err != nil {
+			if err := content.appendDelta(text, onDelta); err != nil {
 				return true, err
 			}
-		} else if reasoning, ok := streamReasoningDeltaText(m); ok {
+		} else if reasoning, ok := streamReasoningDeltaText(m); ok && onDelta != nil {
 			if err := onDelta(chat.Delta{ReasoningContent: reasoning}); err != nil {
 				return true, err
 			}
 		}
 	case *claudecode.AssistantMessage:
-		// startedText marks whether this AssistantMessage has already
-		// written a TextBlock to content — the CLI's tool-use loop emits a
-		// separate AssistantMessage for each round of reasoning between
-		// tool calls, and content is one builder shared across the whole
-		// turn (Run's loop), so without a paragraph break here two
-		// consecutive turns' remarks concatenate directly into one
-		// run-on line (e.g. "...changes.This looks like...") once rendered
-		// as markdown. Scoped to "new message", not "new block", so
-		// multiple TextBlocks within the same message still concatenate
-		// directly as before.
-		startedText := false
 		for _, block := range m.Content {
 			switch b := block.(type) {
-			case *claudecode.TextBlock:
-				if !startedText && content.Len() > 0 {
-					content.WriteString("\n\n")
-				}
-				startedText = true
-				content.WriteString(b.Text)
 			case *claudecode.ThinkingBlock:
 				if onDelta != nil {
 					if err := onDelta(chat.Delta{ReasoningContent: b.Thinking}); err != nil {
@@ -733,35 +811,25 @@ func matchQualifiedToolName(qualifiedName string, names []string) (string, bool)
 // silently drops everything else), this surfaces every tool call and its
 // result — an Execute run's real actions (files written, commands run) are
 // the point, not incidental.
-func processExecuteMessage(msg claudecode.Message, content *strings.Builder, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (done bool, err error) {
+func processExecuteMessage(msg claudecode.Message, content *assistantText, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (done bool, err error) {
 	switch m := msg.(type) {
 	case *claudecode.StreamEvent:
-		if onEvent == nil {
+		if isMessageStart(m) {
+			content.startNewRound()
 			break
 		}
 		if text, ok := streamDeltaText(m); ok {
-			if err := onEvent(ExecuteEvent{Kind: "text", Text: text}); err != nil {
+			if err := content.appendExecuteText(text, onEvent); err != nil {
 				return true, err
 			}
-		} else if reasoning, ok := streamReasoningDeltaText(m); ok {
+		} else if reasoning, ok := streamReasoningDeltaText(m); ok && onEvent != nil {
 			if err := onEvent(ExecuteEvent{Kind: "reasoning", Text: reasoning}); err != nil {
 				return true, err
 			}
 		}
 	case *claudecode.AssistantMessage:
-		// See processMessage's identical startedText comment: content is one
-		// builder shared across the whole Execute run, so without a
-		// paragraph break here separate AssistantMessages' remarks
-		// concatenate into one run-on line once rendered as markdown.
-		startedText := false
 		for _, block := range m.Content {
 			switch b := block.(type) {
-			case *claudecode.TextBlock:
-				if !startedText && content.Len() > 0 {
-					content.WriteString("\n\n")
-				}
-				startedText = true
-				content.WriteString(b.Text)
 			case *claudecode.ThinkingBlock:
 				if onEvent != nil {
 					if err := onEvent(ExecuteEvent{Kind: "reasoning", Text: b.Thinking}); err != nil {
