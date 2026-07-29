@@ -79,6 +79,80 @@ doesn't have to be re-derived or re-litigated later.
   nothing to close, so a type assertion means they need no no-op stub the
   way adding this to the `AgentRunner` interface would have forced.
 
+## Server app extraction & cmd/tray
+
+* `internal/serverapp` (`serverapp.go`) holds everything that used to live
+  directly in `cmd/server/main.go`: `Config`, `LoadConfig() Config`, and
+  `Run(ctx context.Context, cfg Config) error` (plus unexported helpers —
+  `repoDirName`, `configureLogging`, `defaultDraftMCPPath`,
+  `defaultModelCompleter`), moved unchanged apart from the field renames
+  below. This exists so `cmd/tray` (below) can host the exact same server
+  in-process alongside a systray icon, reusing `Run`'s graceful-shutdown
+  path (Graceful shutdown, above) with zero new shutdown-signal logic.
+  `cmd/server/main.go` is now a thin wrapper: `signal.NotifyContext`, call
+  `serverapp.LoadConfig()`, stamp its own build-time `BuildID` var onto the
+  returned `Config`, call `serverapp.Run(ctx, cfg)`, `logrus.Fatal` on a
+  non-nil error — the only `os.Exit`/`logrus.Fatal` point remains this
+  `main()`, never `Run` itself.
+* `Config`'s fields are exported (`HTTPAddr`, `ReposRoot`, `BuildID`, ...),
+  unlike the pre-extraction `cmd/server`-private `config` struct — it's now
+  a cross-package boundary type both `cmd/server` and `cmd/tray` construct
+  and read directly (`cmd/tray` derives its poll/browser URL from
+  `cfg.HTTPAddr`, see below), not an internal implementation detail worth
+  hiding. `BuildID` is deliberately not populated by `LoadConfig` itself
+  (it isn't read from the environment) — each thin `main()` keeps its own
+  package-level `var BuildID = "dev"`, overridden via its own
+  `-X main.BuildID=$(BUILD_ID)` linker flag (Makefile), and copies it onto
+  the `Config` `LoadConfig` returned before calling `Run`.
+* `cmd/tray` is a second, Windows-first binary that runs the same server
+  as `cmd/server` directly in its own process (no supervised service, no
+  child process) alongside a systray icon, replacing the previous
+  requirement that an operator remember `HTTP_ADDR`'s port and open a
+  browser tab by hand. It owns no shutdown logic of its own: Quit cancels
+  the same `context.Context` passed to `serverapp.Run` and blocks on that
+  call returning (bounded by `cfg.ShutdownTimeout` plus a margin) before
+  removing the tray icon, so the drain/`CloseAll` path is exactly the one
+  `TestRun_ShutsDownGracefullyOnContextCancel` (`internal/serverapp`)
+  already covers.
+  * Health is driven purely by polling `GET /healthcheck` every 5s
+    (`cmd/tray/main.go`'s `pollLoop`) into a 3-state indicator
+    (`cmd/tray/state.go`'s `State`: `StateHealthy`/`StateDegraded`/
+    `StateUnreachable`) — any single missed or malformed poll immediately
+    reverts to `StateUnreachable`, deliberately with no debounce. "Open in
+    browser" is enabled only while `StateHealthy`.
+  * `cmd/tray/hostport.go`'s `resolveHostPort`/`baseURL` derive the
+    poll/browser target from `Config.HTTPAddr`, substituting `localhost`
+    for an empty or wildcard host (`""`, `"0.0.0.0"`, `"::"` — what
+    `net.Listen` treats as "every interface" but is meaningless to poll or
+    browse to directly).
+  * Pure logic (state mapping, host/port resolution, tooltip
+    truncation/formatting) is unit-tested per this file's `## Testing`
+    section; the systray glue itself (menu construction, icon wiring,
+    Quit's blocking wait, crash-vs-intentional-shutdown detection) is thin
+    by design and only manually verified — see this task's own plan for
+    the manual verification steps.
+  * Two new runtime dependencies, both justified per the "prefer open
+    standards / minimal dependencies" invariant (`docs/architectural
+    invariants.md`) rather than added by default: `fyne.io/systray` (an
+    actively-maintained `getlantern/systray` fork; plain Win32 syscalls on
+    Windows, no CGO, and no GTK dependency, unlike the original) for the
+    tray icon/menu itself, and `github.com/pkg/browser` for cross-platform
+    "open a URL in the default browser", avoiding hand-rolled per-OS
+    `exec.Command` calls (`rundll32`/`open`/`xdg-open`) that this repo's
+    no-build-tag, Windows-first-but-cross-platform-compiling decision
+    would otherwise require maintaining directly.
+  * `cmd/tray/assets/{healthy,degraded,unreachable}.ico` are checked-in
+    binaries (solid-color filled circles, PNG-in-ICO), embedded via
+    `//go:embed` in `cmd/tray/icons.go`. They were produced by a one-off,
+    uncommitted Go script — regenerate similarly if the icon design ever
+    changes; there is no build-time generation step.
+  * Windows-first, same as the windows-background-service task this one
+    depends on: no `GOOS` build tag (the binary compiles cross-platform),
+    but no non-Windows systray behavior is designed, tested, or claimed.
+    `cmd/tray` also keeps the default console subsystem, so a console
+    window appears alongside the tray icon — a known gap against the
+    "lightweight affordance" framing, out of scope for this task.
+
 ## Storage & file layout
 
 * Production persistence is git-backed: `internal/gitstore.Store`
@@ -421,11 +495,13 @@ doesn't have to be re-derived or re-litigated later.
   embedded into the Go binary via `//go:embed all:dist`
   (`internal/web/assets.go`). The `Makefile`'s `frontend` target must run
   before `go build` — there is no runtime dependency on Node/pnpm.
-* `BuildID` is a package-level `var BuildID = "dev"` in `cmd/server/main.go`,
-  overridden at build time via `-ldflags "-X main.BuildID=$(BUILD_ID)"`
-  (`Makefile`), defaulting to `git rev-parse --short HEAD`. It's threaded
-  through the stack as a plain string (e.g. `NewRouter(..., buildId string)`)
-  and never re-derived downstream.
+* `BuildID` is a package-level `var BuildID = "dev"` in `cmd/server/main.go`
+  (and, identically, `cmd/tray/main.go` — see Server app extraction & cmd/tray
+  above), overridden at build time via `-ldflags "-X main.BuildID=$(BUILD_ID)"`
+  (`Makefile`, one `-X` flag per binary), defaulting to
+  `git rev-parse --short HEAD`. It's threaded through the stack as a plain
+  string (e.g. `NewRouter(..., buildId string)`) and never re-derived
+  downstream.
 
 ## Frontend conventions
 
