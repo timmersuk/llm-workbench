@@ -78,7 +78,7 @@ describe('NewTaskPanel — initial load', () => {
 })
 
 describe('NewTaskPanel — propose_task draft and confirmation', () => {
-  async function sendAndReceiveToolCall(argsObject: Record<string, unknown>) {
+  async function sendAndReceiveToolCall(argsObject: Record<string, unknown>, onCreated: (task: Task) => void = vi.fn()) {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
     vi.mocked(api.postTaskDraftMessage).mockImplementation((_p, _s, _c, _m, _e, onEvent) => {
@@ -86,7 +86,7 @@ describe('NewTaskPanel — propose_task draft and confirmation', () => {
       return Promise.resolve()
     })
 
-    render(<NewTaskPanel projectId={projectId} sessionId={sessionId} onCreated={vi.fn()} />)
+    render(<NewTaskPanel projectId={projectId} sessionId={sessionId} onCreated={onCreated} />)
     await user.click(await screen.findByRole('button', { name: 'Start' }))
 
     await user.type(screen.getByPlaceholderText('Reply...'), 'That is everything')
@@ -118,15 +118,18 @@ describe('NewTaskPanel — propose_task draft and confirmation', () => {
     const createdTask = makeTask()
     vi.mocked(api.createProjectTask).mockResolvedValue(createdTask)
 
-    const user = await sendAndReceiveToolCall({
-      id: 'fix-login-bug',
-      title: 'Fix login bug',
-      objective: 'ship a fix',
-      constraints: ['no new deps'],
-      assumptions: [],
-      success_criteria: ['login succeeds with valid credentials'],
-      references: { knowledge: [], repo: [] },
-    })
+    const user = await sendAndReceiveToolCall(
+      {
+        id: 'fix-login-bug',
+        title: 'Fix login bug',
+        objective: 'ship a fix',
+        constraints: ['no new deps'],
+        assumptions: [],
+        success_criteria: ['login succeeds with valid credentials'],
+        references: { knowledge: [], repo: [] },
+      },
+      onCreated,
+    )
 
     await user.click(screen.getByRole('button', { name: 'Finalize' }))
 
