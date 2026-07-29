@@ -74,7 +74,7 @@ func (s *Server) handleFinalizeRequirements() http.HandlerFunc {
 
 		var draft task.RequirementsDraft
 		if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -121,7 +121,7 @@ func (s *Server) handleFinalizePlan() http.HandlerFunc {
 
 		var plan task.Plan
 		if err := json.NewDecoder(r.Body).Decode(&plan); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -162,7 +162,7 @@ func (s *Server) handleFinalizeReview() http.HandlerFunc {
 
 		var draft task.ReviewDraft
 		if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 

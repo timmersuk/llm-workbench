@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { closeChatSession, isAbortError, listAgentExecutors, listModels, streamChatCompletion } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { ChatHistoryEntry, ChatStreamEvent } from './types'
@@ -347,21 +348,42 @@ export function ChatPanel() {
             <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
             {message.error && <p className="error">{message.error}</p>}
             <div className="message-actions">
-              <button type="button" className="action-btn" onClick={() => handleCopyMessage(message.content)}>
-                Copy
+              <button type="button" className="action-btn" title="Copy" aria-label="Copy" onClick={() => handleCopyMessage(message.content)}>
+                <CopyIcon />
               </button>
               {message.role === 'user' && (
-                <button type="button" className="action-btn" onClick={() => handleEditMessage(index)} disabled={sending}>
-                  Edit
+                <button
+                  type="button"
+                  className="action-btn"
+                  title="Edit and continue from here"
+                  aria-label="Edit"
+                  onClick={() => handleEditMessage(index)}
+                  disabled={sending}
+                >
+                  <EditIcon />
                 </button>
               )}
               {message.role === 'assistant' && index > 0 && (
-                <button type="button" className="action-btn" onClick={() => handleRegenerateMessage(index)} disabled={sending}>
-                  Regenerate
+                <button
+                  type="button"
+                  className="action-btn"
+                  title="Regenerate"
+                  aria-label="Regenerate"
+                  onClick={() => handleRegenerateMessage(index)}
+                  disabled={sending}
+                >
+                  <RegenerateIcon />
                 </button>
               )}
-              <button type="button" className="action-btn" onClick={() => handleDeleteMessage(index)} disabled={sending}>
-                Delete
+              <button
+                type="button"
+                className="action-btn"
+                title="Delete"
+                aria-label="Delete"
+                onClick={() => handleDeleteMessage(index)}
+                disabled={sending}
+              >
+                <DeleteIcon />
               </button>
             </div>
           </div>

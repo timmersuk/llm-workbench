@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
@@ -176,7 +179,70 @@ func NewRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 
 	mux.Handle("GET /", newFrontendHandler(s.FrontendFS))
 
-	return mux
+	return loggingMiddleware(mux)
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the status code
+// actually written — net/http doesn't expose it after the fact, and
+// loggingMiddleware needs it to log each request's real outcome. Defaults
+// to 200: a handler that calls Write without ever calling WriteHeader gets
+// an implicit 200 from net/http, so this mirrors that default rather than
+// misreporting an unset status as 0.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Flush makes statusRecorder itself satisfy http.Flusher by delegating to
+// the wrapped ResponseWriter, when that concrete writer supports it.
+// Without this, every SSE handler's own `w.(http.Flusher)` type assertion
+// (e.g. beginStageStream, stage_conversation.go) fails once wrapped:
+// embedding the http.ResponseWriter interface only promotes the methods
+// that interface itself declares, not Flush — a method the concrete
+// http.ResponseWriter value underneath satisfies but the ResponseWriter
+// interface type never mentions. Every streaming endpoint would otherwise
+// 500 with "streaming unsupported" as soon as this middleware wraps it.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// loggingMiddleware logs one structured line per request — method, path,
+// status, duration — the request-level visibility this API otherwise has
+// none of (every handler's own logging, e.g. stage_conversation.go's
+// persistence-failure logs, is best-effort and handler-specific). Level
+// follows the response status (Info for 2xx/3xx, Warn for 4xx, Error for
+// 5xx) so scanning for Warn+ surfaces every failing request without
+// wading through healthy traffic. Matches the WithFields structured-
+// logging convention (docs/engineering conventions.md's Logging section)
+// rather than a printf-style access-log line.
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		fields := logrus.Fields{
+			"method":      r.Method,
+			"path":        r.URL.Path,
+			"status":      rec.status,
+			"duration_ms": time.Since(start).Milliseconds(),
+		}
+		switch {
+		case rec.status >= http.StatusInternalServerError:
+			logrus.WithFields(fields).Error("http request")
+		case rec.status >= http.StatusBadRequest:
+			logrus.WithFields(fields).Warn("http request")
+		default:
+			logrus.WithFields(fields).Info("http request")
+		}
+	})
 }
 
 // subsystemHealth is one entry in healthcheckResponse.Subsystems.

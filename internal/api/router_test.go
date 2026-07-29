@@ -140,6 +140,60 @@ func TestRouter_ProjectTasksEndToEnd(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "TASK-0001")
 }
 
+// TestRouter_ErrorResponsesUseTheJSONEnvelope exercises a real 404 through
+// the full router (not just writeAPIError directly, json_test.go's job) —
+// confirms writeGetError's fs.ErrNotExist branch actually reaches the
+// client as the documented {"error":{"code","message"}} shape end to end.
+func TestRouter_ErrorResponsesUseTheJSONEnvelope(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "nonexistent").Return(nil, fs.ErrNotExist)
+
+	router := NewRouter(projects, new(mockTaskStore), new(mockKnowledgeStore), nil, "", nil, nil, testFrontendFS(), "test-build")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/nonexistent", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"error":{"code":"not_found","message":"not found"}}`, w.Body.String())
+}
+
+// flusherProbeHandler reports (via ok) whether the ResponseWriter it
+// receives satisfies http.Flusher — the regression this guards is
+// loggingMiddleware's statusRecorder silently breaking every SSE handler
+// downstream (all of them assert this themselves and 500 with "streaming
+// unsupported" otherwise, see beginStageStream).
+func flusherProbeHandler(ok *bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		_, *ok = w.(http.Flusher)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func TestLoggingMiddleware_PreservesTheWrappedWriterAsAFlusher(t *testing.T) {
+	var sawFlusher bool
+	handler := loggingMiddleware(flusherProbeHandler(&sawFlusher))
+
+	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	w := httptest.NewRecorder() // itself implements http.Flusher
+	handler.ServeHTTP(w, req)
+
+	assert.True(t, sawFlusher, "statusRecorder must satisfy http.Flusher so SSE handlers downstream still detect streaming support")
+}
+
+func TestLoggingMiddleware_RecordsTheStatusTheHandlerActuallyWrote(t *testing.T) {
+	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
 func TestRouter_ProjectTasks_ProjectNotFoundBeforeTaskStoreTouched(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "nonexistent").Return(nil, fs.ErrNotExist)

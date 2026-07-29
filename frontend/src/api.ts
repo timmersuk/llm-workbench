@@ -48,6 +48,29 @@ export function isAbortError(err: unknown): boolean {
 // forever with no sign anything's wrong, rather than surfacing an error.
 const GET_TIMEOUT_MS = 15000
 
+// parseAPIError extracts the human-readable message from a failed
+// response, preferring real information over a generic status line:
+// writeAPIError's {"error":{"code","message"}} envelope
+// (internal/api/json.go) if the body parses as that shape; the raw text
+// otherwise, provided there is some (a handler that failed before reaching
+// writeAPIError, or a non-API error page — still worth showing verbatim
+// rather than swallowing); fallback only when the body is empty, or valid
+// JSON that isn't this envelope (a generic dump like `{}` is less useful
+// than the fallback line). Never throws itself, so every caller can safely
+// await it inside its own throw.
+async function parseAPIError(res: Response, fallback: string): Promise<string> {
+  const text = await res.text().catch(() => '')
+  if (!text) {
+    return fallback
+  }
+  try {
+    const parsed = JSON.parse(text) as { error?: { message?: string } }
+    return parsed.error?.message || fallback
+  } catch {
+    return text
+  }
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   let res: Response
   try {
@@ -59,7 +82,7 @@ async function getJSON<T>(path: string): Promise<T> {
     throw err
   }
   if (!res.ok) {
-    throw new Error(`${path} returned ${res.status}`)
+    throw new Error(await parseAPIError(res, `${path} returned ${res.status}`))
   }
   return res.json() as Promise<T>
 }
@@ -71,8 +94,7 @@ async function mutateJSON<T>(method: 'POST' | 'PUT', path: string, body: unknown
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    const message = await res.text().catch(() => '')
-    throw new Error(message || `${method} ${path} returned ${res.status}`)
+    throw new Error(await parseAPIError(res, `${method} ${path} returned ${res.status}`))
   }
   return res.json() as Promise<T>
 }
@@ -247,8 +269,11 @@ export function listAgentExecutors(): Promise<AgentExecutorsListResult> {
 // and startExecution (emitting ExecuteStreamEvent, internal/api/execution.go)
 // — generic over T since the wire shape differs per endpoint.
 async function streamSSE<T>(res: Response, onEvent: (event: T) => void): Promise<void> {
-  if (!res.ok || !res.body) {
-    throw new Error(`request failed with status ${res.status}`)
+  if (!res.ok) {
+    throw new Error(await parseAPIError(res, `request failed with status ${res.status}`))
+  }
+  if (!res.body) {
+    throw new Error('request failed: no response body')
   }
 
   const reader = res.body.getReader()
@@ -313,7 +338,7 @@ export async function closeChatSession(sessionKey: string): Promise<void> {
     body: JSON.stringify({ session_key: sessionKey }),
   })
   if (!res.ok) {
-    throw new Error(`closing chat session returned ${res.status}`)
+    throw new Error(await parseAPIError(res, `closing chat session returned ${res.status}`))
   }
 }
 
@@ -381,8 +406,7 @@ export async function deleteStageMessage(projectId: string, taskId: string, stag
     method: 'DELETE',
   })
   if (!res.ok) {
-    const message = await res.text().catch(() => '')
-    throw new Error(message || `deleting message returned ${res.status}`)
+    throw new Error(await parseAPIError(res, `deleting message returned ${res.status}`))
   }
   return res.json() as Promise<Conversation>
 }

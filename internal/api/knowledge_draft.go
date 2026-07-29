@@ -81,18 +81,18 @@ func (s *Server) handleFinalizeKnowledge() http.HandlerFunc {
 
 		var req finalizeKnowledgeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 		if req.ConceptID == "" {
-			http.Error(w, "concept_id is required", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "concept_id is required")
 			return
 		}
 
 		switch req.Decision {
 		case knowledgeDecisionAccepted:
 			if req.Type == "" {
-				http.Error(w, "type is required to accept a knowledge proposal", http.StatusBadRequest)
+				writeAPIError(w, http.StatusBadRequest, "type is required to accept a knowledge proposal")
 				return
 			}
 			concept := knowledge.Concept{Type: req.Type, Frontmatter: req.Frontmatter, Body: req.Body}
@@ -104,7 +104,7 @@ func (s *Server) handleFinalizeKnowledge() http.HandlerFunc {
 		case knowledgeDecisionRejected:
 			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision})
 		default:
-			http.Error(w, fmt.Sprintf("invalid decision %q", req.Decision), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid decision %q", req.Decision))
 		}
 	}
 }

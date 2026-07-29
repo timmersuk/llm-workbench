@@ -199,7 +199,7 @@ func (s *Server) handleGetStageConversation() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		if _, ok := stageTool(stage); !ok {
-			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid stage %q", stage))
 			return
 		}
 
@@ -257,7 +257,7 @@ func (s *Server) resolveStageStreamTarget(w http.ResponseWriter, executorKey, pr
 	}
 	runner, ok := s.AgentRunners[executorKey]
 	if !ok {
-		http.Error(w, fmt.Sprintf("unknown executor %q", executorKey), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown executor %q", executorKey))
 		return stageStreamTarget{}, false
 	}
 
@@ -288,7 +288,7 @@ func (s *Server) resolveStageStreamTarget(w http.ResponseWriter, executorKey, pr
 func beginStageStream(w http.ResponseWriter) (func(chatStreamEvent), bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "streaming unsupported")
 		return nil, false
 	}
 
@@ -340,13 +340,13 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		stage := r.PathValue("stage")
 		tools, ok := stageTool(stage)
 		if !ok {
-			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid stage %q", stage))
 			return
 		}
 
 		var req stageMessageRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -429,13 +429,13 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		stage := r.PathValue("stage")
 		tools, ok := stageTool(stage)
 		if !ok {
-			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid stage %q", stage))
 			return
 		}
 
 		var req stageStartRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -455,7 +455,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 			return
 		}
 		if len(existing.Messages) > 0 {
-			http.Error(w, "conversation already started", http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, "conversation already started")
 			return
 		}
 
@@ -508,13 +508,13 @@ func (s *Server) handleDeleteStageMessage() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
 		if _, ok := stageTool(stage); !ok {
-			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid stage %q", stage))
 			return
 		}
 
 		index, err := strconv.Atoi(r.PathValue("index"))
 		if err != nil {
-			http.Error(w, "invalid message index", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid message index")
 			return
 		}
 
@@ -541,7 +541,7 @@ func (s *Server) handleDeleteStageMessage() http.HandlerFunc {
 			return
 		}
 		if index < 0 || index >= len(existing.Messages) {
-			http.Error(w, fmt.Sprintf("message index %d out of range", index), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("message index %d out of range", index))
 			return
 		}
 
@@ -579,19 +579,19 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		stage := r.PathValue("stage")
 		tools, ok := stageTool(stage)
 		if !ok {
-			http.Error(w, fmt.Sprintf("invalid stage %q", stage), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid stage %q", stage))
 			return
 		}
 
 		index, err := strconv.Atoi(r.PathValue("index"))
 		if err != nil {
-			http.Error(w, "invalid message index", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid message index")
 			return
 		}
 
 		var req stageRegenerateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -611,11 +611,11 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 			return
 		}
 		if index < 0 || index >= len(existing.Messages) {
-			http.Error(w, fmt.Sprintf("message index %d out of range", index), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("message index %d out of range", index))
 			return
 		}
 		if existing.Messages[index].Role != "user" {
-			http.Error(w, "can only regenerate/edit from a user message", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "can only regenerate/edit from a user message")
 			return
 		}
 
