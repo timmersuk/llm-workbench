@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listExecutions, listReviews, reviseRequirements, revisePlan } from './api'
 import { ExecutePanel } from './ExecutePanel'
+import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
 import { PRReviewPanel } from './PRReviewPanel'
@@ -40,6 +41,11 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
   // easy to miss since a failed run leaves stage unchanged and the panel
   // scrolled below other content).
   const [latestExecution, setLatestExecution] = useState<Execution | null>(null)
+  // executions backs the always-visible execution history/log list below —
+  // unlike ExecutePanel's own copy (which needs to append a just-finished
+  // run live, mid-stream), this is a plain re-fetch on task change, since a
+  // human reaching for this is reloading the task view, not mid-run.
+  const [executions, setExecutions] = useState<Execution[]>([])
 
   useEffect(() => {
     setContext(null)
@@ -57,10 +63,12 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
 
   useEffect(() => {
     setLatestExecution(null)
+    setExecutions([])
     listExecutions(projectId, task.id)
       .then((result) => {
-        const executions = result.executions ?? []
-        setLatestExecution(executions.length > 0 ? executions[executions.length - 1] : null)
+        const list = result.executions ?? []
+        setExecutions(list)
+        setLatestExecution(list.length > 0 ? list[list.length - 1] : null)
       })
       .catch(() => undefined) // no prior attempts, or the list failed to load — no banner either way
   }, [projectId, task.id])
@@ -333,6 +341,19 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack }: TaskDe
               </a>
             </p>
           )}
+        </div>
+      )}
+
+      {/* ExecutePanel (stage 'implementation') already shows this same list
+          itself, live-appending a just-finished run — showing it again here
+          too would duplicate it. Every later stage (review, pr_review,
+          merged) has no other execution-history view at all, and that's
+          exactly when a human is most likely to want to check what a past
+          attempt actually did. */}
+      {task.stage !== 'implementation' && executions.length > 0 && (
+        <div className="task-interview">
+          <h4>Execution history</h4>
+          <ExecutionHistoryList projectId={projectId} taskId={task.id} executions={executions} />
         </div>
       )}
     </div>

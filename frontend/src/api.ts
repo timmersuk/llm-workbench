@@ -8,6 +8,7 @@ import type {
   CreateProjectRequest,
   CreateTaskRequest,
   ExecuteStreamEvent,
+  ExecutionLog,
   ExecutionsListResult,
   FinalizeKnowledgeResponse,
   FinalizeReviewResponse,
@@ -451,4 +452,13 @@ export function listExecutions(projectId: string, taskId: string): Promise<Execu
 // handleGetContinuableExecution/resolveFailureContinuation.
 export function getContinuableExecution(projectId: string, taskId: string): Promise<ContinuableExecutionResult> {
   return getJSON<ContinuableExecutionResult>(`${taskPath(projectId, taskId)}/executions/continuable`)
+}
+
+// getExecutionLog returns one past execution attempt's full recorded event
+// stream (internal/api/execution.go's handleGetExecutionLog) — fetched on
+// demand (e.g. when a human expands a past attempt in ExecutePanel), not
+// bundled into listExecutions, since a long unattended run's log can be
+// large.
+export function getExecutionLog(projectId: string, taskId: string, executionId: string): Promise<ExecutionLog> {
+  return getJSON<ExecutionLog>(`${taskPath(projectId, taskId)}/executions/${executionId}/log`)
 }

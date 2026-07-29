@@ -64,6 +64,7 @@ type TaskStore interface {
 
 	CreateExecutionLog(projectID, id, executionID string) error
 	AppendExecutionLogEvent(projectID, id, executionID string, ev task.ExecutionLogEvent) error
+	GetExecutionLog(projectID, id, executionID string) (task.ExecutionLog, error)
 }
 
 // KnowledgeStore resolves, lists, and writes OKF concept documents under
@@ -162,6 +163,7 @@ func NewRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/execute", s.handleStartExecution())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions", s.handleListExecutions())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions/continuable", s.handleGetContinuableExecution())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions/{executionId}/log", s.handleGetExecutionLog())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", s.handleListReviews())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", s.handleReviewDiff())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", s.handlePushPR())

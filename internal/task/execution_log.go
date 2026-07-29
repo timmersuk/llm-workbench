@@ -35,13 +35,13 @@ var ErrExecutionLogAlreadyExists = errors.New("execution log already exists")
 // failing test's assertion is usually at the *end* of its output, not the
 // start.
 type ExecutionLogEvent struct {
-	Kind       string    `yaml:"kind"`
-	Text       string    `yaml:"text,omitempty"`
-	ToolName   string    `yaml:"tool_name,omitempty"`
-	ToolInput  string    `yaml:"tool_input,omitempty"`
-	ToolResult string    `yaml:"tool_result,omitempty"`
-	IsError    bool      `yaml:"is_error,omitempty"`
-	CreatedAt  time.Time `yaml:"created_at"`
+	Kind       string    `yaml:"kind" json:"kind"`
+	Text       string    `yaml:"text,omitempty" json:"text,omitempty"`
+	ToolName   string    `yaml:"tool_name,omitempty" json:"tool_name,omitempty"`
+	ToolInput  string    `yaml:"tool_input,omitempty" json:"tool_input,omitempty"`
+	ToolResult string    `yaml:"tool_result,omitempty" json:"tool_result,omitempty"`
+	IsError    bool      `yaml:"is_error,omitempty" json:"is_error,omitempty"`
+	CreatedAt  time.Time `yaml:"created_at" json:"created_at"`
 }
 
 // MarshalYAML forces Text/ToolInput/ToolResult through yamlutil.Quoted —
@@ -72,8 +72,17 @@ func (e ExecutionLogEvent) MarshalYAML() (interface{}, error) {
 // they happened. Unlike Conversation, there is no Role/turn concept: an
 // execution runs unattended, so nothing here is ever "from a human."
 type ExecutionLog struct {
-	ExecutionID string              `yaml:"execution_id"`
-	Events      []ExecutionLogEvent `yaml:"events"`
+	ExecutionID string `yaml:"execution_id" json:"execution_id"`
+	// Backfilled marks a log reconstructed after the fact from an archived
+	// `claude` CLI session transcript (~/.claude/projects/.../*.jsonl)
+	// rather than captured live by AppendExecutionLogEvent as the execution
+	// actually ran — true only for the handful of executions recorded
+	// before this capture feature existed, whose logs a one-off migration
+	// rebuilt from the executor's own session history. Omitted (false, the
+	// zero value) for every log captured live, which is every log going
+	// forward.
+	Backfilled bool                `yaml:"backfilled,omitempty" json:"backfilled,omitempty"`
+	Events     []ExecutionLogEvent `yaml:"events" json:"events"`
 }
 
 func executionLogPath(dir, executionID string) string {

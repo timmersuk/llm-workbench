@@ -826,3 +826,21 @@ td button {
   color: var(--error);
 }
 
+.execution-history li > details > summary {
+  cursor: pointer;
+}
+
+/* The status color applies to the summary line only — the expanded log
+   body underneath resets to normal text color so tool activity/output
+   isn't tinted red/green along with the status line. */
+.execution-log {
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.execution-log-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 4px 0;
+}
+
