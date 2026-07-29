@@ -17,7 +17,8 @@ import (
 	"strings"
 
 	"github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
+
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // ErrInvalidConceptID is returned when a concept id is empty, absolute, or
@@ -90,7 +91,7 @@ func parseConcept(content string) (Concept, error) {
 	}
 
 	var fm map[string]any
-	if err := yaml.Unmarshal([]byte(match[1]), &fm); err != nil {
+	if err := yamlutil.Unmarshal([]byte(match[1]), &fm); err != nil {
 		return Concept{}, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
@@ -228,7 +229,7 @@ func (s *FileStore) Put(conceptID string, c Concept) error {
 	}
 	fm["type"] = c.Type
 
-	fmBytes, err := yaml.Marshal(fm)
+	fmBytes, err := yamlutil.Marshal(fm)
 	if err != nil {
 		return fmt.Errorf("encoding frontmatter for %s: %w", conceptID, err)
 	}

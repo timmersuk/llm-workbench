@@ -83,6 +83,7 @@ func seedPRReviewTask(t *testing.T, store *task.FileStore, id, reviewNotes strin
 	require.NoError(t, err)
 	_, err = store.FinalizePlan("demo-project", id, task.Plan{Approach: "do it"})
 	require.NoError(t, err)
+	require.NoError(t, store.CreateExecutionLog("demo-project", id, "exec-001"))
 	_, err = store.RecordExecution("demo-project", id, task.Execution{
 		ExecutionID: "exec-001",
 		Status:      task.ExecutionStatusSuccess,

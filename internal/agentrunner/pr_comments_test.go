@@ -5,7 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 func TestMergePRComments_SortsChronologicallyAcrossAllThreeSources(t *testing.T) {
@@ -25,7 +26,7 @@ func TestMergePRComments_SortsChronologicallyAcrossAllThreeSources(t *testing.T)
 	require.NoError(t, err)
 
 	var entries []prCommentEntry
-	require.NoError(t, yaml.Unmarshal([]byte(out), &entries))
+	require.NoError(t, yamlutil.Unmarshal([]byte(out), &entries))
 	require.Len(t, entries, 3)
 
 	assert.Equal(t, "comment", entries[0].Kind)
@@ -49,7 +50,7 @@ func TestMergePRComments_EmptySources_ReturnsEmptyList(t *testing.T) {
 	require.NoError(t, err)
 
 	var entries []prCommentEntry
-	require.NoError(t, yaml.Unmarshal([]byte(out), &entries))
+	require.NoError(t, yamlutil.Unmarshal([]byte(out), &entries))
 	assert.Empty(t, entries)
 }
 

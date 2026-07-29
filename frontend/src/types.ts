@@ -50,11 +50,13 @@ export interface CreateTaskRequest {
   references: TaskReferences
 }
 
-// UpdateTaskRequest is the body for editing a task in place — its id and
-// project are fixed by the URL and can never change.
+// UpdateTaskRequest is the body for editing a task in place — its id,
+// project, and stage are fixed by the URL/workflow and can never change
+// here. Stage only ever moves through the dedicated Finalize/Revise
+// actions (see finalizeRequirements/finalizePlan/finalizeReview/etc.
+// below), never through this generic update.
 export interface UpdateTaskRequest {
   title: string
-  stage: TaskStage
   objective: string
   constraints: string[]
   assumptions: string[]
@@ -320,6 +322,30 @@ export interface ExecutionsListResult {
 // there's nothing eligible to continue from right now (resolveFailureContinuation).
 export interface ContinuableExecutionResult {
   execution_id: string
+}
+
+// ExecutionLogEvent/ExecutionLog mirror internal/task/execution_log.go's
+// ExecutionLogEvent/ExecutionLog — one execution attempt's full, untruncated
+// recorded event stream (executions/exec-NNN.log.yaml), fetched on demand via
+// getExecutionLog rather than bundled into ExecutionsListResult.
+export interface ExecutionLogEvent {
+  kind: 'text' | 'tool_call' | 'tool_result'
+  text?: string
+  tool_name?: string
+  tool_input?: string
+  tool_result?: string
+  is_error?: boolean
+  created_at: string
+}
+
+// backfilled is true only for the handful of executions recorded before
+// this capture feature existed, whose logs a one-off migration
+// reconstructed from the executor's own archived session transcript rather
+// than capturing them live as the run happened.
+export interface ExecutionLog {
+  execution_id: string
+  backfilled?: boolean
+  events: ExecutionLogEvent[]
 }
 
 // ExecuteStreamEvent mirrors internal/api/execution.go's

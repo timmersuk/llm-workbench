@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
+
+	"github.com/timmersuk/llm-workbench/internal/yamlutil"
 )
 
 // ErrInvalidID is returned when an id is empty or contains path
@@ -21,6 +22,19 @@ var ErrInvalidID = errors.New("invalid task id")
 // existing task within this store's root. Ids are client-specified and not
 // disambiguated — a collision is a real conflict the caller must resolve.
 var ErrAlreadyExists = errors.New("task already exists")
+
+// ErrStageImmutable is returned by Update when the body's stage doesn't
+// match the task's current stage. Stage only ever moves through the
+// guarded Finalize*/Revise*/MarkPRMerged transitions in lifecycle.go, each
+// of which checks the task's current stage before changing it and commits
+// the new value itself — Update is the generic "edit task in place" path
+// and must never be a second, unguarded way to change Stage (it would
+// bypass every one of those checks and let gitstore commit the jump as if
+// it were legitimate). A body that simply echoes the task's current stage
+// (the common case: a client re-submitting the full object it just read)
+// is not an error, matching ErrIDMismatch's "omitted or already-correct is
+// fine, wrong is not" treatment below.
+var ErrStageImmutable = errors.New("stage can only be changed via workflow actions (Finalize/Revise/MarkPRMerged), not a direct update")
 
 // ErrIDMismatch is returned by Update when the body's id doesn't match the
 // id being updated. A task's id (and project) never change after creation.
@@ -172,10 +186,13 @@ func (s *FileStore) Create(projectID string, t Task) (Task, error) {
 	return t, nil
 }
 
-// Update overwrites the task at id with t's fields, preserving id and
-// CreatedAt from the existing task.yaml and bumping UpdatedAt. If t.ID is
-// set, it must match id (ErrIDMismatch) — a task's id, like its project,
-// never changes after creation. Project is always server-set to projectID.
+// Update overwrites the task at id with t's fields, preserving id,
+// CreatedAt, and Stage from the existing task.yaml and bumping UpdatedAt.
+// If t.ID is set, it must match id (ErrIDMismatch) — a task's id, like its
+// project, never changes after creation. Project is always server-set to
+// projectID. If t.Stage is set, it must match the existing stage
+// (ErrStageImmutable) — Stage only ever changes through lifecycle.go's
+// guarded transitions, never through this generic update path.
 func (s *FileStore) Update(projectID, id string, t Task) (Task, error) {
 	if err := validateID(projectID); err != nil {
 		return Task{}, err
@@ -191,10 +208,14 @@ func (s *FileStore) Update(projectID, id string, t Task) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
+	if t.Stage != "" && t.Stage != existing.Stage {
+		return Task{}, fmt.Errorf("updating task %s: %w", id, ErrStageImmutable)
+	}
 
 	t.ID = id
 	t.Project = projectID
 	t.CreatedAt = existing.CreatedAt
+	t.Stage = existing.Stage
 	t.UpdatedAt = time.Now().UTC()
 
 	if err := s.writeTask(projectID, t); err != nil {
@@ -209,7 +230,7 @@ func (s *FileStore) writeTask(projectID string, t Task) error {
 		return fmt.Errorf("creating task directory %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(t)
+	data, err := yamlutil.Marshal(t)
 	if err != nil {
 		return fmt.Errorf("encoding task %s: %w", t.ID, err)
 	}
@@ -229,7 +250,7 @@ func (s *FileStore) readTask(projectID, id string) (Task, error) {
 	}
 
 	var t Task
-	if err := yaml.Unmarshal(data, &t); err != nil {
+	if err := yamlutil.Unmarshal(data, &t); err != nil {
 		return Task{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return t, nil

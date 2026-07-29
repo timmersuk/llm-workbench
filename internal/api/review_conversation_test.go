@@ -103,6 +103,7 @@ func seedReviewableTaskWithOutput(t *testing.T, store *task.FileStore, id string
 	require.NoError(t, err)
 	_, err = store.FinalizePlan("demo-project", id, task.Plan{Approach: "do it", EstimatedComplexity: "low"}) // planning -> implementation
 	require.NoError(t, err)
+	require.NoError(t, store.CreateExecutionLog("demo-project", id, "exec-001"))
 	_, err = store.RecordExecution("demo-project", id, task.Execution{ExecutionID: "exec-001", Status: task.ExecutionStatusSuccess, Output: output}) // implementation -> review
 	require.NoError(t, err)
 }

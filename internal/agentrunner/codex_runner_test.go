@@ -121,6 +121,21 @@ func TestProcessCodexRunEvent_AccumulatesAgentMessageText(t *testing.T) {
 	assert.Equal(t, "hello ", content.String())
 }
 
+func TestProcessCodexRunEvent_SeparatesTextFromDistinctAgentMessages(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+
+	first := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Running the test suite first."}}
+	_, err := processCodexRunEvent(first, []string{"propose_plan"}, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+
+	second := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Tests pass, moving on."}}
+	_, err = processCodexRunEvent(second, []string{"propose_plan"}, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Running the test suite first.\n\nTests pass, moving on.", content.String())
+}
+
 func TestProcessCodexRunEvent_CapturesMatchingMCPToolCall(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
@@ -265,6 +280,36 @@ func TestProcessCodexRunEvent_TurnFailed(t *testing.T) {
 	assert.True(t, done)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
+}
+
+func TestProcessCodexExecuteEvent_SeparatesTextFromDistinctAgentMessages(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+
+	first := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Running the test suite first."}}
+	_, err := processCodexExecuteEvent(first, &content, &out, func(ExecuteEvent) error { return nil })
+	require.NoError(t, err)
+
+	second := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Tests pass, moving on."}}
+	_, err = processCodexExecuteEvent(second, &content, &out, func(ExecuteEvent) error { return nil })
+	require.NoError(t, err)
+
+	assert.Equal(t, "Running the test suite first.\n\nTests pass, moving on.", content.String())
+}
+
+func TestProcessCodexExecuteEvent_SeparatesTextFromDistinctAgentMessagesWhenOnEventNil(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+
+	first := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Running the test suite first."}}
+	_, err := processCodexExecuteEvent(first, &content, &out, nil)
+	require.NoError(t, err)
+
+	second := &types.ItemCompleted{Item: &types.AgentMessage{Text: "Tests pass, moving on."}}
+	_, err = processCodexExecuteEvent(second, &content, &out, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Running the test suite first.\n\nTests pass, moving on.", content.String())
 }
 
 func TestProcessCodexExecuteEvent_CommandExecutionEmitsCallAndResult(t *testing.T) {

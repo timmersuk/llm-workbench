@@ -53,6 +53,7 @@ const (
 	grillMeSystemPrompt = `You are GrillMe, interviewing the user to sharpen a task's requirements.
 
 Rules for this interview:
+- Before exploring the repo or asking anything, check the "Decisions already settled in this conversation" list below (if present) and this conversation's own history. If the point you're about to research or ask about is already there, it is final — do not re-research or re-ask it, just proceed as if it were still true. Fresh repo research turning up nothing (e.g. an empty Glob/Grep) is not by itself evidence of an open question.
 - If you have tools available (Read/Grep/Glob), explore the project's repository first and answer your own questions from the code wherever you can. Only ask the human what the code cannot tell you.
 - Ask exactly one question per turn. Never batch multiple questions into one message.
 - When a question has a small set of sensible answers, call ask_question with those options, your recommended one, and a short reason why — put the question text itself in your normal reply, not in the tool call. Present the recommendation as a default the user can accept or redirect, not a decision already made. If the question is genuinely open-ended (no useful fixed set of answers), just ask it in your reply text without calling ask_question.
@@ -64,6 +65,7 @@ Rules for this interview:
 	planningModeSystemPrompt = `You are Planning Mode, interviewing the user to produce a structured execution plan.
 
 Rules for this interview:
+- Before exploring the repo or asking anything, check the "Decisions already settled in this conversation" list below (if present) and this conversation's own history. If the point you're about to research or ask about is already there, it is final — do not re-research or re-ask it, just proceed as if it were still true. Fresh repo research turning up nothing (e.g. an empty Glob/Grep) is not by itself evidence of an open question.
 - If you have tools available (Read/Grep/Glob), explore the project's repository first and answer your own questions from the code wherever you can. Only ask the human what the code cannot tell you.
 - Ask exactly one question per turn. Never batch multiple questions into one message.
 - When a question has a small set of sensible answers, call ask_question with those options, your recommended one, and a short reason why — put the question text itself in your normal reply, not in the tool call. Present the recommendation as a default the user can accept or redirect, not a decision already made. If the question is genuinely open-ended (no useful fixed set of answers), just ask it in your reply text without calling ask_question.
@@ -373,11 +375,13 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		// configured repository is tolerated for Requirements/Planning (an
 		// empty workspace, a text-only turn); any other resolution failure
 		// aborts the turn as an SSE error, since headers are already sent.
-		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage)
-		if runErr != nil {
-			streamErr = runErr
-		} else if history, convErr := target.store.GetConversation(target.projectId, taskId, stage); convErr != nil {
+		history, convErr := target.store.GetConversation(target.projectId, taskId, stage)
+		var run stageRun
+		var runErr error
+		if convErr != nil {
 			streamErr = fmt.Errorf("loading conversation history: %w", convErr)
+		} else if run, runErr = s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage, history); runErr != nil {
+			streamErr = runErr
 		} else {
 			assistantContent, proposed, activity, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     taskId + ":" + stage,
@@ -465,7 +469,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		var activity []task.ConversationToolActivity
 		var streamErr error
 
-		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage)
+		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage, existing)
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -630,7 +634,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		var activity []task.ConversationToolActivity
 		var streamErr error
 
-		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage)
+		run, runErr := s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage, task.Conversation{Messages: historyPrefix})
 		if runErr != nil {
 			streamErr = runErr
 		} else {
@@ -768,6 +772,43 @@ func conversationHistoryToChatMessages(conv task.Conversation) []chat.Message {
 	return out
 }
 
+// resolvedDecisionsSummary extracts a compact "already settled" list from
+// conv, appended to the system prompt so the model has a cheap, explicit
+// checklist to consult before re-deriving or re-asking something instead of
+// relying solely on it noticing the answer buried in a long,
+// tool-activity-heavy transcript (observed in practice: the same interview
+// re-asked both an "own vs. supervise the process" fork and an
+// icon-sourcing question it had already settled many turns earlier). Only
+// ask_question turns count as a settled decision — propose_context/
+// propose_plan/propose_review calls are drafts of the whole artifact, not a
+// single resolved point, so they're excluded. Returns "" when there are no
+// ask_question turns yet (a fresh or short conversation), so a normal
+// interview's prompt is unchanged.
+func resolvedDecisionsSummary(conv task.Conversation) string {
+	var decisions []string
+	for i, m := range conv.Messages {
+		if m.Role != "assistant" || m.ToolCall == nil || m.ToolCall.Name != "ask_question" {
+			continue
+		}
+		if i+1 >= len(conv.Messages) || conv.Messages[i+1].Role != "user" {
+			continue
+		}
+		if answer := strings.TrimSpace(conv.Messages[i+1].Content); answer != "" {
+			decisions = append(decisions, answer)
+		}
+	}
+	if len(decisions) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n## Decisions already settled in this conversation\nThese are final — do not re-research or re-ask any of them unless the user reopens one:\n")
+	for _, d := range decisions {
+		fmt.Fprintf(&b, "- %s\n", d)
+	}
+	return b.String()
+}
+
 // buildStagePrompt seeds the interview's system prompt with the task's own
 // fields, the owning project's fields, and the resolved body text of every
 // knowledge concept either references (CONTEXT.md's GrillMe/Planning Mode
@@ -887,9 +928,16 @@ func (s *Server) appendWorkspaceAdvisories(ctx context.Context, systemPrompt str
 // against the execution's isolated worktree with bash enabled and the
 // execution's diff + verification steps appended to the prompt — so the agent
 // can actually run the tests and check the real change (Milestone 6).
-func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, store TaskStore, projectId string, t task.Task, stage string) (stageRun, error) {
+//
+// history is the exact message slice the caller is about to hand the runner
+// as RunInput.History (the full persisted conversation for a normal turn, or
+// the truncated prefix a Regenerate/Edit is replaying) — resolvedDecisionsSummary
+// is derived from it rather than a fresh store fetch so the settled-decisions
+// list never disagrees with what the model is actually being shown.
+func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, store TaskStore, projectId string, t task.Task, stage string, history task.Conversation) (stageRun, error) {
 	systemPrompt := s.buildStagePrompt(t, proj, stage)
 	systemPrompt = s.appendWorkspaceAdvisories(ctx, systemPrompt, proj.Repositories)
+	systemPrompt += resolvedDecisionsSummary(history)
 
 	if stage != task.StageReview {
 		ws, err := agentrunner.ResolveWorkspace(ctx, s.ReposRoot, proj.Repositories)

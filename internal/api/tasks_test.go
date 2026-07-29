@@ -203,6 +203,23 @@ func TestHandleUpdateProjectTask_IDMismatch(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestHandleUpdateProjectTask_StageChangeRejected(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
+
+	tasks := new(mockTaskStore)
+	tasks.On("Update", "demo-project", "TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Project: "demo-project", Stage: task.StageMerged}).
+		Return(nil, task.ErrStageImmutable)
+
+	req := newTaskRequest(t, http.MethodPut, "/api/v1/projects/demo-project/tasks/TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Stage: task.StageMerged})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	w := httptest.NewRecorder()
+	(&Server{Projects: projects, Tasks: tasks}).handleUpdateProjectTask()(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 func TestHandleUpdateProjectTask_NotFound(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)

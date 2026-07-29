@@ -1,6 +1,7 @@
 package task
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -145,10 +146,12 @@ func TestFileStore_AppendConversationMessages_SeparateFilesPerStage(t *testing.T
 	assert.Equal(t, "planning chat", planConv.Messages[0].Content)
 }
 
-// gopkg.in/yaml.v3 (v3.0.1, no fix available) fails to round-trip a string
-// whose first character is a newline: it marshals without error but the
-// resulting file errors on Unmarshal. Raw LLM output commonly starts with
-// a blank line, so content must be trimmed before it's persisted.
+// Originally a regression test for a gopkg.in/yaml.v3 bug (fixed by the
+// migration to yamlutil/goccy, internal/yamlutil): a string whose first
+// character is a newline used to marshal without error but fail on
+// Unmarshal. The trim itself is kept as deliberate hygiene now (Raw LLM
+// output commonly starts with a blank line), and this still locks in that
+// trimmed content round-trips correctly.
 func TestFileStore_AppendConversationMessages_TrimsContentToAvoidYAMLRoundTripBug(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
@@ -166,15 +169,13 @@ func TestFileStore_AppendConversationMessages_TrimsContentToAvoidYAMLRoundTripBu
 }
 
 // TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips
-// locks in ConversationToolActivity.MarshalYAML's fix for a second, distinct
-// yaml.v3 round-trip bug from the one above: raw tool output whose lines
-// themselves start with a leading space (git diff --stat, test runner
-// summaries, ls -l, ...) forces yaml.v3's block-literal encoder to add an
-// explicit indentation indicator (e.g. "|4-"), and yaml.v3 (still v3.0.1,
-// no fix available) writes the body one space short of what that indicator
-// requires — producing a file that fails to parse back with "did not find
-// expected key". Forcing Arguments/Result to double-quoted style sidesteps
-// the ambiguity entirely.
+// was originally a regression test for a second, distinct gopkg.in/yaml.v3
+// round-trip bug from the one above (fixed by the migration to
+// yamlutil/goccy): raw tool output whose lines themselves start with a
+// leading space (git diff --stat, test runner summaries, ls -l, ...) used
+// to force yaml.v3's block-literal encoder into a self-inconsistent
+// encoding that failed to parse back. Kept as a permanent regression
+// guard on this exact content shape.
 func TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
@@ -199,6 +200,66 @@ func TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesR
 	require.Len(t, reloaded.Messages, 1)
 	require.Len(t, reloaded.Messages[0].ToolActivity, 1)
 	assert.Equal(t, diffStatOutput, reloaded.Messages[0].ToolActivity[0].Result)
+}
+
+// TestFileStore_AppendConversationMessages_ContentWithLeadingSpaceLinesRoundTrips
+// covers the same leading-space-lines shape as
+// TestFileStore_AppendConversationMessages_ToolActivityWithLeadingSpaceLinesRoundTrips,
+// except this is ordinary LLM prose, not tool output: any reply that
+// quotes something already-indented (a git diff --stat, an ls -l, a
+// fenced code block) has lines starting with a leading space. Under
+// yaml.v3 this was a live, un-guarded bug in Content's encoding — unlike
+// ToolActivity, Content had no double-quoted-style workaround at the
+// time. The migration to yamlutil/goccy fixes it at the encoder level;
+// this test is the permanent regression guard.
+func TestFileStore_AppendConversationMessages_ContentWithLeadingSpaceLinesRoundTrips(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	quotedDiffStat := "Here's what changed:\n\n" +
+		" internal/api/foo.go | 2 +-\n" +
+		" internal/api/bar.go | 4 ++--"
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StageReview,
+		ConversationMessage{Role: "assistant", Content: quotedDiffStat + "\n"})
+	require.NoError(t, err)
+
+	reloaded, err := store.GetConversation("demo-project", "task-a", StageReview)
+	require.NoError(t, err, "the persisted file must itself be readable back")
+	require.Len(t, reloaded.Messages, 1)
+	assert.Equal(t, quotedDiffStat, reloaded.Messages[0].Content, "trailing whitespace is trimmed by design (existing TrimSpace behavior); the leading-space content lines must still round-trip intact")
+}
+
+// TestFileStore_AppendConversationMessages_DoesNotRewritePriorMessages proves
+// the append is genuinely append-only at the byte level (no read-modify-
+// rewrite of the whole file): bytes already on disk from an earlier call
+// are untouched by a later one, the same property
+// AppendExecutionLogEvent's tests lock in — a crash mid-write can only
+// ever risk the newest message, never anything written before it.
+func TestFileStore_AppendConversationMessages_DoesNotRewritePriorMessages(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StageRequirements,
+		ConversationMessage{Role: "user", Content: "first"})
+	require.NoError(t, err)
+
+	path := conversationPath(store.taskDir("demo-project", "task-a"), StageRequirements)
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StageRequirements,
+		ConversationMessage{Role: "assistant", Content: "second"})
+	require.NoError(t, err)
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.True(t, len(after) > len(before))
+	assert.Equal(t, before, after[:len(before)], "bytes written by the first append must be untouched by the second")
 }
 
 func TestFileStore_AppendConversationMessages_RejectsInvalidStage(t *testing.T) {

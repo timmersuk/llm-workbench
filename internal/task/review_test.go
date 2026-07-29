@@ -13,6 +13,7 @@ import (
 func newReviewTask(t *testing.T, store *FileStore, id string) Task {
 	t.Helper()
 	newImplementationTask(t, store, id)
+	require.NoError(t, store.CreateExecutionLog("demo-project", id, "exec-001"))
 	_, err := store.RecordExecution("demo-project", id, Execution{
 		ExecutionID: "exec-001",
 		Status:      ExecutionStatusSuccess,

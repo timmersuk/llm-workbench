@@ -30,6 +30,7 @@ func TestFileStore_NextExecutionID_StartsAtExec001AndIncrements(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "exec-001", id)
 
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
 	_, err = store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-001", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
 	require.NoError(t, err)
 
@@ -42,6 +43,7 @@ func TestFileStore_RecordExecution_AppendOnlyRejectsDuplicateID(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a")
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
 
 	_, err := store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-001", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
 	require.NoError(t, err)
@@ -54,6 +56,7 @@ func TestFileStore_RecordExecution_SuccessAdvancesStageToReview(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a")
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
 
 	_, err := store.RecordExecution("demo-project", "task-a", Execution{
 		ExecutionID: "exec-001",
@@ -71,6 +74,7 @@ func TestFileStore_RecordExecution_FailurePartialNeverAdvancesStage(t *testing.T
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a")
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
 
 	_, err := store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-001", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
 	require.NoError(t, err)
@@ -80,6 +84,11 @@ func TestFileStore_RecordExecution_FailurePartialNeverAdvancesStage(t *testing.T
 	assert.Equal(t, StageImplementation, tk.Stage)
 }
 
+// TestFileStore_RecordExecution_SuccessWrongStageErrorsAndWritesNothing
+// deliberately does not create an execution log — a wrong-stage call must
+// report ErrWrongStage, not be masked by the (also true here)
+// ErrExecutionLogMissing condition; see RecordExecution's doc comment on
+// why the stage guard runs first.
 func TestFileStore_RecordExecution_SuccessWrongStageErrorsAndWritesNothing(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
@@ -93,6 +102,35 @@ func TestFileStore_RecordExecution_SuccessWrongStageErrorsAndWritesNothing(t *te
 	executions, err := store.ListExecutions("demo-project", "task-a")
 	require.NoError(t, err)
 	assert.Empty(t, executions, "a rejected success attempt must not leave an orphaned execution record")
+}
+
+// TestFileStore_RecordExecution_MissingLogErrorsAndWritesNothing exercises
+// the log-existence gate on its own: a task correctly at StageImplementation
+// (so the stage guard passes) with no exec-NNN.log.yaml ever created for
+// this execution_id must be rejected, for every status — success, failure,
+// and partial alike, since the whole point is that a crash with no
+// evidence at all must never silently pass as recorded.
+func TestFileStore_RecordExecution_MissingLogErrorsAndWritesNothing(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newImplementationTask(t, store, "task-a")
+
+	_, err := store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-001", Status: ExecutionStatusSuccess})
+	require.ErrorIs(t, err, ErrExecutionLogMissing)
+
+	_, err = store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-001", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
+	require.ErrorIs(t, err, ErrExecutionLogMissing)
+
+	_, err = store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-001", Status: ExecutionStatusPartial, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
+	require.ErrorIs(t, err, ErrExecutionLogMissing)
+
+	executions, err := store.ListExecutions("demo-project", "task-a")
+	require.NoError(t, err)
+	assert.Empty(t, executions, "a rejected attempt must not leave an orphaned execution record")
+
+	tk, err := store.Get("demo-project", "task-a")
+	require.NoError(t, err)
+	assert.Equal(t, StageImplementation, tk.Stage, "a rejected success attempt must not advance Stage either")
 }
 
 func TestFileStore_ListExecutions_EmptyWhenNoAttemptsRecorded(t *testing.T) {
@@ -109,6 +147,8 @@ func TestFileStore_ListExecutions_SortedByExecutionID(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a")
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-002"))
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
 
 	_, err := store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-002", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
 	require.NoError(t, err)
@@ -126,6 +166,8 @@ func TestFileStore_ListExecutions_SortedNumericallyPastThreeDigits(t *testing.T)
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a")
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-1000"))
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-999"))
 
 	_, err := store.RecordExecution("demo-project", "task-a", Execution{ExecutionID: "exec-1000", Status: ExecutionStatusFailure, Failure: &ExecutionFailure{Type: FailureTypeExecution}})
 	require.NoError(t, err)
@@ -146,6 +188,7 @@ func TestFileStore_RecordExecution_SetsTaskIDAndCreatedAtServerSide(t *testing.T
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a")
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
 
 	recorded, err := store.RecordExecution("demo-project", "task-a", Execution{
 		ExecutionID: "exec-001",
@@ -166,6 +209,7 @@ func TestFileStore_RecordExecution_ReviewFeedbackRoundTrips(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 	newImplementationTask(t, store, "task-a")
+	require.NoError(t, store.CreateExecutionLog("demo-project", "task-a", "exec-001"))
 
 	_, err := store.RecordExecution("demo-project", "task-a", Execution{
 		ExecutionID: "exec-001",

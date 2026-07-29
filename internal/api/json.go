@@ -40,7 +40,8 @@ func writeMutationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, task.ErrInvalidID), errors.Is(err, project.ErrInvalidID),
 		errors.Is(err, project.ErrMissingName), errors.Is(err, task.ErrIDMismatch),
-		errors.Is(err, task.ErrInvalidStage), errors.Is(err, knowledge.ErrInvalidConceptID):
+		errors.Is(err, task.ErrInvalidStage), errors.Is(err, task.ErrStageImmutable),
+		errors.Is(err, knowledge.ErrInvalidConceptID):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, task.ErrAlreadyExists), errors.Is(err, project.ErrAlreadyExists),
 		errors.Is(err, task.ErrWrongStage):

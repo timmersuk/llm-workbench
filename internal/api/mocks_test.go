@@ -139,6 +139,25 @@ func (m *mockTaskStore) NextExecutionID(projectID, id string) (string, error) {
 	return args.String(0), args.Error(1)
 }
 
+func (m *mockTaskStore) CreateExecutionLog(projectID, id, executionID string) error {
+	args := m.Called(projectID, id, executionID)
+	return args.Error(0)
+}
+
+func (m *mockTaskStore) AppendExecutionLogEvent(projectID, id, executionID string, ev task.ExecutionLogEvent) error {
+	args := m.Called(projectID, id, executionID, ev)
+	return args.Error(0)
+}
+
+func (m *mockTaskStore) GetExecutionLog(projectID, id, executionID string) (task.ExecutionLog, error) {
+	args := m.Called(projectID, id, executionID)
+	var log task.ExecutionLog
+	if v := args.Get(0); v != nil {
+		log = v.(task.ExecutionLog)
+	}
+	return log, args.Error(1)
+}
+
 func (m *mockTaskStore) RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error) {
 	args := m.Called(projectID, id, exec)
 	var recorded task.Execution

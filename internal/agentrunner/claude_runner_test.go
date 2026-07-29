@@ -39,6 +39,40 @@ func TestProcessMessage_AccumulatesText(t *testing.T) {
 	assert.Equal(t, "hello ", content.String())
 }
 
+func TestProcessMessage_SeparatesTextFromDistinctAssistantMessages(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+
+	first := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "Good — this is a clean extraction."}},
+	}
+	_, err := processMessage(first, nil, &content, &out, nil, nil)
+	require.NoError(t, err)
+
+	second := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "This looks like a faithful mechanical extraction."}},
+	}
+	_, err = processMessage(second, nil, &content, &out, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Good — this is a clean extraction.\n\nThis looks like a faithful mechanical extraction.", content.String())
+}
+
+func TestProcessMessage_DoesNotSeparateMultipleTextBlocksWithinSameMessage(t *testing.T) {
+	var content strings.Builder
+	var out RunOutput
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{
+			&claudecode.TextBlock{Text: "hello "},
+			&claudecode.TextBlock{Text: "world"},
+		},
+	}
+	_, err := processMessage(msg, nil, &content, &out, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "hello world", content.String())
+}
+
 func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
 	var content strings.Builder
 	var out RunOutput
@@ -343,6 +377,25 @@ func TestProcessExecuteMessage_AccumulatesText(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "implementing... ", content.String())
+}
+
+func TestProcessExecuteMessage_SeparatesTextFromDistinctAssistantMessages(t *testing.T) {
+	var content strings.Builder
+	var out ExecuteOutput
+
+	first := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "Running the test suite first."}},
+	}
+	_, err := processExecuteMessage(first, &content, &out, nil)
+	require.NoError(t, err)
+
+	second := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.TextBlock{Text: "Tests pass, moving on."}},
+	}
+	_, err = processExecuteMessage(second, &content, &out, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Running the test suite first.\n\nTests pass, moving on.", content.String())
 }
 
 // TestProcessExecuteMessage_EmitsEveryToolCall locks in the behavior that

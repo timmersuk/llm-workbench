@@ -249,7 +249,7 @@ func TestResolveStageRun_ReviewStageIncludesAdvisoryNoteFromSharedCheckout(t *te
 	require.NoError(t, err)
 
 	proj := project.Project{Repositories: []string{"github.com/x/myrepo"}, DefaultBranch: "main"}
-	run, err := (&Server{ReposRoot: reposRoot, KnowledgeStore: new(mockKnowledgeStore), Projects: new(mockProjectStore)}).resolveStageRun(context.Background(), proj, store, "demo-project", tk, task.StageReview)
+	run, err := (&Server{ReposRoot: reposRoot, KnowledgeStore: new(mockKnowledgeStore), Projects: new(mockProjectStore)}).resolveStageRun(context.Background(), proj, store, "demo-project", tk, task.StageReview, task.Conversation{})
 	require.NoError(t, err)
 	assert.Contains(t, run.SystemPrompt, "uncommitted changes")
 }
@@ -798,6 +798,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesAsSSEError(t *testing.T) {
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
 
 	knowledgeReader := new(mockKnowledgeStore)
@@ -807,7 +808,9 @@ func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesA
 	// reposRoot) is real misconfiguration, unlike an absent-by-design
 	// repository (ErrNoRepository, covered by the no-repository test
 	// below) -> ResolveWorkspace still fails fatally, before the runner is
-	// ever invoked.
+	// ever invoked. Conversation history is now loaded before resolveStageRun
+	// runs (resolvedDecisionsSummary needs it), so that call must be mocked
+	// too even though this test's failure is about workspace resolution.
 	projects.On("Get", "demo-project").Return(project.Project{
 		ID: "demo-project", Name: "Demo", Repositories: []string{"github.com/timmersuk/does-not-exist"},
 	}, nil)

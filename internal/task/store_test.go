@@ -282,6 +282,45 @@ func TestFileStore_Update_RejectsIDMismatch(t *testing.T) {
 	assert.ErrorIs(t, err, ErrIDMismatch)
 }
 
+func TestFileStore_Update_RejectsStageChange(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.Create(demoProject, Task{ID: "task-a", Title: "First"})
+	require.NoError(t, err)
+
+	_, err = store.Update(demoProject, "task-a", Task{ID: "task-a", Title: "Updated", Stage: StagePlanning})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStageImmutable)
+}
+
+func TestFileStore_Update_TolerantOfEchoedCurrentStage(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	_, err := store.Create(demoProject, Task{ID: "task-a", Title: "First"})
+	require.NoError(t, err)
+
+	// A client that read the task and posts the full object back (the
+	// common case for an "edit in place" form) includes its own current
+	// stage — that must not be treated as an attempted change.
+	updated, err := store.Update(demoProject, "task-a", Task{ID: "task-a", Title: "Updated", Stage: StageRequirements})
+	require.NoError(t, err)
+	assert.Equal(t, StageRequirements, updated.Stage)
+}
+
+func TestFileStore_Update_IgnoresOmittedStageAndKeepsCurrent(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+
+	created, err := store.Create(demoProject, Task{ID: "task-a", Title: "First"})
+	require.NoError(t, err)
+
+	updated, err := store.Update(demoProject, "task-a", Task{ID: "task-a", Title: "Updated"})
+	require.NoError(t, err)
+	assert.Equal(t, created.Stage, updated.Stage)
+}
+
 func TestFileStore_Update_RejectsPathTraversal(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)

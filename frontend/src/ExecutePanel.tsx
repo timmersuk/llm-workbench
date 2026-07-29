@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, startExecution } from './api'
+import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { ToolActivityEntry } from './ToolActivity'
 import { ToolActivitySequence } from './ToolActivity'
@@ -277,19 +278,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         </fieldset>
       )}
 
-      {pastExecutions.length > 0 && (
-        <ul className="execution-history">
-          {pastExecutions.map((e) => (
-            <li key={e.execution_id} className={`execution-status execution-status-${e.status}`}>
-              {e.execution_id}: {e.status}
-              {e.output.git_branch && <> &middot; {e.output.git_branch}</>}
-              {(e.output.commits?.length ?? 0) > 0 && <> &middot; {e.output.commits.length} commit(s)</>}
-              {e.failure && <> &middot; {e.failure.message}</>}
-              {e.output.workspace_dirty && <> &middot; workspace still has uncommitted changes</>}
-            </li>
-          ))}
-        </ul>
-      )}
+      <ExecutionHistoryList projectId={projectId} taskId={taskId} executions={pastExecutions} />
 
       {trace.length > 0 && (
         <div className="chat-history" ref={historyRef}>

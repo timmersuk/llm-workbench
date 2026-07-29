@@ -601,9 +601,24 @@ func processMessage(msg claudecode.Message, toolNames []string, content *strings
 			}
 		}
 	case *claudecode.AssistantMessage:
+		// startedText marks whether this AssistantMessage has already
+		// written a TextBlock to content — the CLI's tool-use loop emits a
+		// separate AssistantMessage for each round of reasoning between
+		// tool calls, and content is one builder shared across the whole
+		// turn (Run's loop), so without a paragraph break here two
+		// consecutive turns' remarks concatenate directly into one
+		// run-on line (e.g. "...changes.This looks like...") once rendered
+		// as markdown. Scoped to "new message", not "new block", so
+		// multiple TextBlocks within the same message still concatenate
+		// directly as before.
+		startedText := false
 		for _, block := range m.Content {
 			switch b := block.(type) {
 			case *claudecode.TextBlock:
+				if !startedText && content.Len() > 0 {
+					content.WriteString("\n\n")
+				}
+				startedText = true
 				content.WriteString(b.Text)
 			case *claudecode.ThinkingBlock:
 				if onDelta != nil {
@@ -708,9 +723,18 @@ func processExecuteMessage(msg claudecode.Message, content *strings.Builder, out
 			}
 		}
 	case *claudecode.AssistantMessage:
+		// See processMessage's identical startedText comment: content is one
+		// builder shared across the whole Execute run, so without a
+		// paragraph break here separate AssistantMessages' remarks
+		// concatenate into one run-on line once rendered as markdown.
+		startedText := false
 		for _, block := range m.Content {
 			switch b := block.(type) {
 			case *claudecode.TextBlock:
+				if !startedText && content.Len() > 0 {
+					content.WriteString("\n\n")
+				}
+				startedText = true
 				content.WriteString(b.Text)
 			case *claudecode.ThinkingBlock:
 				if onEvent != nil {
