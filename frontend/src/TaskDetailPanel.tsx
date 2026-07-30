@@ -6,6 +6,7 @@ import { GrillMePanel } from './GrillMePanel'
 import { PlanningModePanel } from './PlanningModePanel'
 import { PRReviewPanel } from './PRReviewPanel'
 import { ReviewPanel } from './ReviewPanel'
+import { TimelinePanel } from './TimelinePanel'
 import type { Execution, Review, Task, TaskContext, TaskPlan, WorkspaceStatusResult } from './types'
 
 interface TaskDetailPanelProps {
@@ -30,6 +31,11 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
   const [plan, setPlan] = useState<TaskPlan | null>(null)
   const [reviseError, setReviseError] = useState<string | null>(null)
   const [revising, setRevising] = useState(false)
+  // reviseReason is the optional, skippable explanation shown alongside
+  // Revise Requirements/Plan — recorded on the resulting StageTransition and
+  // surfaced later in TimelinePanel. Shared between both actions since only
+  // one is ever rendered at a time (gated by task.stage below).
+  const [reviseReason, setReviseReason] = useState('')
   // review backs the terminal "merged" screen: the latest verdict's notes
   // (the approving review from back at the review stage — merged never
   // itself writes a new one). Loaded only at stage merged (see effect
@@ -106,6 +112,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
     setReviseError(null)
     try {
       setTask(await action())
+      setReviseReason('')
     } catch (err) {
       setReviseError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -262,6 +269,8 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
         </div>
       )}
 
+      <TimelinePanel projectId={projectId} taskId={task.id} />
+
       {reviseError && <p className="error">{reviseError}</p>}
 
       {task.stage === 'requirements' && (
@@ -288,10 +297,17 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
             }}
           />
           <div className="stage-actions">
+            <textarea
+              className="revise-reason-input"
+              placeholder="Optional: why send this back? (shown in the timeline)"
+              value={reviseReason}
+              onChange={(e) => setReviseReason(e.target.value)}
+              disabled={revising}
+            />
             <button
               type="button"
               disabled={revising}
-              onClick={() => handleRevise(() => reviseRequirements(projectId, task.id))}
+              onClick={() => handleRevise(() => reviseRequirements(projectId, task.id, reviseReason))}
             >
               Revise Requirements
             </button>
@@ -343,7 +359,14 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
 
       {(task.stage === 'implementation' || task.stage === 'review') && (
         <div className="stage-actions">
-          <button type="button" disabled={revising} onClick={() => handleRevise(() => revisePlan(projectId, task.id))}>
+          <textarea
+            className="revise-reason-input"
+            placeholder="Optional: why send this back? (shown in the timeline)"
+            value={reviseReason}
+            onChange={(e) => setReviseReason(e.target.value)}
+            disabled={revising}
+          />
+          <button type="button" disabled={revising} onClick={() => handleRevise(() => revisePlan(projectId, task.id, reviseReason))}>
             Revise Plan
           </button>
         </div>

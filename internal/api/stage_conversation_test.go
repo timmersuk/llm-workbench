@@ -73,17 +73,19 @@ func TestHandleGetStageConversation_OK(t *testing.T) {
 	assert.Equal(t, "hi", got.Messages[0].Content)
 }
 
-// TestHandleGetStageConversation_StageMismatch locks in the URL/actual-stage
-// guard (docs/milestones/done/milestone7.md PR 5): stageTool() only checks that
-// "requirements" names a real Conversation stage, not that it matches this
-// task's actual current stage — a task already at implementation must not
-// serve its now-stale requirements conversation.
-func TestHandleGetStageConversation_StageMismatch(t *testing.T) {
+// TestHandleGetStageConversation_AllowsNonCurrentStage locks in that this
+// read no longer requires stage to match the task's current Stage (unlike
+// the mutating stage-conversation handlers, which still enforce
+// requireCurrentStage) — a task now at implementation must still be able to
+// serve its past requirements conversation, e.g. for a timeline entry
+// linking back to why an earlier stage was revisited.
+func TestHandleGetStageConversation_AllowsNonCurrentStage(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).
+		Return(task.Conversation{Stage: task.StageRequirements, Messages: []task.ConversationMessage{{Role: "user", Content: "past turn"}}}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/conversation", nil)
 	req.SetPathValue("projectId", "demo-project")
@@ -92,8 +94,8 @@ func TestHandleGetStageConversation_StageMismatch(t *testing.T) {
 	w := httptest.NewRecorder()
 	(&Server{Projects: projects, Tasks: tasks}).handleGetStageConversation()(w, req)
 
-	assert.Equal(t, http.StatusConflict, w.Code)
-	tasks.AssertNotCalled(t, "GetConversation", "demo-project", "demo-project", "demo-project", mock.Anything, mock.Anything)
+	require.Equal(t, http.StatusOK, w.Code)
+	tasks.AssertNotCalled(t, "Get", mock.Anything, mock.Anything)
 }
 
 // newStageMessageWorkspace creates a temp reposRoot containing a single

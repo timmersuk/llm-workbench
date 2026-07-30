@@ -293,8 +293,17 @@ func (s *FileStore) RecordExecution(projectID, id string, exec Execution) (Execu
 	}
 
 	if exec.Status == ExecutionStatusSuccess {
+		fromStage := t.Stage
 		t.Stage = StageReview
 		t.UpdatedAt = time.Now().UTC()
+		if err := s.AppendStageTransition(projectID, id, StageTransition{
+			FromStage:   fromStage,
+			ToStage:     t.Stage,
+			Trigger:     TransitionTriggerExecutionSuccess,
+			ExecutionID: exec.ExecutionID,
+		}); err != nil {
+			return Execution{}, err
+		}
 		if err := s.writeTask(projectID, t); err != nil {
 			return Execution{}, err
 		}

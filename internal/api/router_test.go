@@ -240,8 +240,8 @@ func TestRouter_GrillMeAndPlanningModeRoutesRegistered(t *testing.T) {
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{Stage: task.StageRequirements}, nil)
 	tasks.On("FinalizeRequirements", "demo-project", "TASK-0001", task.RequirementsDraft{}).Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("FinalizePlan", "demo-project", "TASK-0001", task.Plan{}).Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
-	tasks.On("ReviseToRequirements", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
-	tasks.On("ReviseToPlanning", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
+	tasks.On("ReviseToRequirements", "demo-project", "TASK-0001", "").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("ReviseToPlanning", "demo-project", "TASK-0001", "").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 
 	router := NewRouter(projects, tasks, new(mockKnowledgeStore), nil, "", nil, nil, testFrontendFS(), "test-build")
 

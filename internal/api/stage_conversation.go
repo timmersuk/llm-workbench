@@ -195,6 +195,13 @@ type stageStartRequest struct {
 }
 
 // handleGetStageConversation returns a stage's persisted message history.
+// Unlike the mutating stage-conversation handlers (post/start/delete/
+// regenerate message), this doesn't require stage to be the task's current
+// Stage: it's a pure read, and the timeline (TimelinePanel.tsx) needs to
+// link back to a since-reopened stage's conversation (e.g. viewing the
+// "planning" transcript after the task has since moved on to "review").
+// GetConversation already tolerates "no messages" gracefully for a stage
+// the task never actually reached.
 func (s *Server) handleGetStageConversation() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stage := r.PathValue("stage")
@@ -210,16 +217,6 @@ func (s *Server) handleGetStageConversation() http.HandlerFunc {
 		}
 
 		taskId := r.PathValue("taskId")
-		t, err := store.Get(projectId, taskId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
-		if err := requireCurrentStage(t, stage); err != nil {
-			writeGetError(w, err)
-			return
-		}
-
 		conv, err := store.GetConversation(projectId, taskId, stage)
 		if err != nil {
 			writeGetError(w, err)

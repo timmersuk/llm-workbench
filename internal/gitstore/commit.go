@@ -350,14 +350,14 @@ func (s *TaskStore) RecordPullRequest(projectID, id string, pr task.PullRequest)
 
 // ReviseToRequirements persists via the wrapped task.FileStore and enqueues
 // the result to be committed on the push worker's next tick.
-func (s *TaskStore) ReviseToRequirements(projectID, id string) (task.Task, error) {
+func (s *TaskStore) ReviseToRequirements(projectID, id, reason string) (task.Task, error) {
 	var t task.Task
 	err := s.core.withPending(
 		fmt.Sprintf("Revise %s/%s to requirements", projectID, id),
 		func() string { return s.core.taskDir(projectID, id) },
 		func() error {
 			var err error
-			t, err = s.files.ReviseToRequirements(projectID, id)
+			t, err = s.files.ReviseToRequirements(projectID, id, reason)
 			return err
 		},
 	)
@@ -369,14 +369,14 @@ func (s *TaskStore) ReviseToRequirements(projectID, id string) (task.Task, error
 
 // ReviseToPlanning persists via the wrapped task.FileStore and enqueues the
 // result to be committed on the push worker's next tick.
-func (s *TaskStore) ReviseToPlanning(projectID, id string) (task.Task, error) {
+func (s *TaskStore) ReviseToPlanning(projectID, id, reason string) (task.Task, error) {
 	var t task.Task
 	err := s.core.withPending(
 		fmt.Sprintf("Revise %s/%s to planning", projectID, id),
 		func() string { return s.core.taskDir(projectID, id) },
 		func() error {
 			var err error
-			t, err = s.files.ReviseToPlanning(projectID, id)
+			t, err = s.files.ReviseToPlanning(projectID, id, reason)
 			return err
 		},
 	)
@@ -450,4 +450,14 @@ func (s *TaskStore) GetExecutionLog(projectID, id, executionID string) (task.Exe
 // ListReviews delegates straight to the wrapped task.FileStore.
 func (s *TaskStore) ListReviews(projectID, id string) ([]task.Review, error) {
 	return s.files.ListReviews(projectID, id)
+}
+
+// ListStageTransitions delegates straight to the wrapped task.FileStore —
+// a read, no git or locking involved (the writes happen inside
+// FinalizeRequirements/FinalizePlan/FinalizeReview/MarkPRMerged/
+// ReviseToRequirements/ReviseToPlanning/RecordExecution above, each of
+// which already commits the whole task directory via withPending, so
+// transitions.yaml rides along in the same commit automatically).
+func (s *TaskStore) ListStageTransitions(projectID, id string) ([]task.StageTransition, error) {
+	return s.files.ListStageTransitions(projectID, id)
 }

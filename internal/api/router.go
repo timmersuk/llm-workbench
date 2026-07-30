@@ -69,13 +69,14 @@ type TaskStore interface {
 	FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error)
 	MarkPRMerged(projectID, id string) (task.Task, error)
 	RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error)
-	ReviseToRequirements(projectID, id string) (task.Task, error)
-	ReviseToPlanning(projectID, id string) (task.Task, error)
+	ReviseToRequirements(projectID, id, reason string) (task.Task, error)
+	ReviseToPlanning(projectID, id, reason string) (task.Task, error)
 
 	NextExecutionID(projectID, id string) (string, error)
 	RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error)
 	ListExecutions(projectID, id string) ([]task.Execution, error)
 	ListReviews(projectID, id string) ([]task.Review, error)
+	ListStageTransitions(projectID, id string) ([]task.StageTransition, error)
 
 	CreateExecutionLog(projectID, id, executionID string) error
 	AppendExecutionLogEvent(projectID, id, executionID string, ev task.ExecutionLogEvent) error
@@ -186,6 +187,7 @@ func NewRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions/continuable", s.handleGetContinuableExecution())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/executions/{executionId}/log", s.handleGetExecutionLog())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/reviews", s.handleListReviews())
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/stage-transitions", s.handleListStageTransitions())
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", s.handleReviewDiff())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", s.handlePushPR())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/merged", s.handleMarkPRMerged())

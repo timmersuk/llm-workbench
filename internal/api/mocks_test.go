@@ -143,8 +143,8 @@ func (m *mockTaskStore) FinalizePlan(projectID, id string, plan task.Plan) (task
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) ReviseToRequirements(projectID, id string) (task.Task, error) {
-	args := m.Called(projectID, id)
+func (m *mockTaskStore) ReviseToRequirements(projectID, id, reason string) (task.Task, error) {
+	args := m.Called(projectID, id, reason)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -152,8 +152,8 @@ func (m *mockTaskStore) ReviseToRequirements(projectID, id string) (task.Task, e
 	return t, args.Error(1)
 }
 
-func (m *mockTaskStore) ReviseToPlanning(projectID, id string) (task.Task, error) {
-	args := m.Called(projectID, id)
+func (m *mockTaskStore) ReviseToPlanning(projectID, id, reason string) (task.Task, error) {
+	args := m.Called(projectID, id, reason)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
@@ -219,6 +219,15 @@ func (m *mockTaskStore) ListReviews(projectID, id string) ([]task.Review, error)
 		reviews = v.([]task.Review)
 	}
 	return reviews, args.Error(1)
+}
+
+func (m *mockTaskStore) ListStageTransitions(projectID, id string) ([]task.StageTransition, error) {
+	args := m.Called(projectID, id)
+	var transitions []task.StageTransition
+	if v := args.Get(0); v != nil {
+		transitions = v.([]task.StageTransition)
+	}
+	return transitions, args.Error(1)
 }
 
 func (m *mockTaskStore) MarkPRMerged(projectID, id string) (task.Task, error) {

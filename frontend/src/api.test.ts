@@ -17,6 +17,7 @@ import {
   listModels,
   listProjectTasks,
   listProjects,
+  listStageTransitions,
   postStageMessage,
   postTaskDraftMessage,
   regenerateTaskDraftMessage,
@@ -149,6 +150,15 @@ describe('getJSON-backed requests', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors', { signal: expect.any(AbortSignal) })
   })
 
+  it('listStageTransitions hits the right path and returns the parsed body', async () => {
+    const body = { stage_transitions: [{ task_id: 'task-a', from_stage: 'review', to_stage: 'planning', trigger: 'revise_planning', created_at: '' }] }
+    const fetchMock = stubFetch(jsonResponse(body))
+    await expect(listStageTransitions('demo', 'task-a')).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo/tasks/task-a/stage-transitions', {
+      signal: expect.any(AbortSignal),
+    })
+  })
+
   it('listAgentExecutors surfaces a friendly message when the request times out', async () => {
     const timeoutSignal = AbortSignal.abort(new DOMException('signal timed out', 'TimeoutError'))
     vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeoutSignal)
@@ -250,21 +260,39 @@ describe('mutateJSON-backed requests', () => {
     expect(init).toMatchObject({ method: 'POST' })
   })
 
-  it('reviseRequirements POSTs an empty JSON body to the requirements/revise path', async () => {
+  it('reviseRequirements POSTs an empty reason to the requirements/revise path when omitted', async () => {
     const fetchMock = stubFetch(jsonResponse({}))
     await reviseRequirements('demo', 'task-a')
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/projects/demo/tasks/task-a/requirements/revise',
-      expect.objectContaining({ method: 'POST', body: '{}' }),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: '' }) }),
     )
   })
 
-  it('revisePlan POSTs an empty JSON body to the plan/revise path', async () => {
+  it('reviseRequirements POSTs the given reason', async () => {
+    const fetchMock = stubFetch(jsonResponse({}))
+    await reviseRequirements('demo', 'task-a', 'the plan missed X')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/projects/demo/tasks/task-a/requirements/revise',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'the plan missed X' }) }),
+    )
+  })
+
+  it('revisePlan POSTs an empty reason to the plan/revise path when omitted', async () => {
     const fetchMock = stubFetch(jsonResponse({}))
     await revisePlan('demo', 'task-a')
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/projects/demo/tasks/task-a/plan/revise',
-      expect.objectContaining({ method: 'POST', body: '{}' }),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: '' }) }),
+    )
+  })
+
+  it('revisePlan POSTs the given reason', async () => {
+    const fetchMock = stubFetch(jsonResponse({}))
+    await revisePlan('demo', 'task-a', 'I wanted icons, not words')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/projects/demo/tasks/task-a/plan/revise',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'I wanted icons, not words' }) }),
     )
   })
 })

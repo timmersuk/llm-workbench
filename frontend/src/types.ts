@@ -503,6 +503,42 @@ export interface ReviewDiffResult {
   patch: string
 }
 
+// StageTransitionTrigger mirrors task.TransitionTrigger* (internal/task/stage_transition.go)
+// — the fixed vocabulary of ways a task's Stage can move.
+export type StageTransitionTrigger =
+  | 'finalize_requirements'
+  | 'finalize_plan'
+  | 'finalize_review'
+  | 'execution_success'
+  | 'mark_pr_merged'
+  | 'revise_requirements'
+  | 'revise_planning'
+
+// StageTransition mirrors task.StageTransition (internal/task/stage_transition.go)
+// — one Stage move, appended to transitions.yaml. review_id/execution_id link
+// to the review/execution that drove the move; reason is only ever set on a
+// revise_* transition, and only when the human supplied one. TimelinePanel.tsx
+// renders these merged with the full reviews list to show a task's real path
+// through its lifecycle, including reversals.
+export interface StageTransition {
+  task_id: string
+  from_stage: string
+  to_stage: string
+  trigger: StageTransitionTrigger
+  review_id?: string
+  execution_id?: string
+  reason?: string
+  created_at: string
+}
+
+// StageTransitionsListResult mirrors handleListStageTransitions' response —
+// every transition for a task, oldest first. Nullable for the same reason
+// executions/reviews are: a task with no transitions yet has no
+// transitions.yaml at all.
+export interface StageTransitionsListResult {
+  stage_transitions: StageTransition[] | null
+}
+
 // BehindOriginStatus/DirtyStatus mirror gitutil.BehindOriginStatus/DirtyStatus
 // (internal/gitutil/gitutil.go) — known is false when the check couldn't be
 // completed (offline, checkout doesn't exist yet, no upstream configured,
