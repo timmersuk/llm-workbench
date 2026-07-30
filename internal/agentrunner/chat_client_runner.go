@@ -102,14 +102,14 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	// surfaces separately as res.StopCall, not as a tool_call/tool_result
 	// event.
 	if in.OnToolCall != nil {
-		cfg.OnToolCall = func(name, argumentsJSON string) error {
-			in.OnToolCall(name, argumentsJSON)
+		cfg.OnToolCall = func(id, name, argumentsJSON string) error {
+			in.OnToolCall(id, name, argumentsJSON)
 			return nil
 		}
 	}
 	if in.OnToolResult != nil {
-		cfg.OnToolResult = func(name, result string, isError bool) error {
-			in.OnToolResult(name, result, isError)
+		cfg.OnToolResult = func(id, name, result string, isError bool) error {
+			in.OnToolResult(id, name, result, isError)
 			return nil
 		}
 	}
@@ -199,11 +199,11 @@ func (r *ChatClientRunner) Execute(ctx context.Context, in ExecuteInput, onEvent
 	}
 	var onDelta func(chat.Delta) error
 	if onEvent != nil {
-		cfg.OnToolCall = func(name, argumentsJSON string) error {
-			return onEvent(ExecuteEvent{Kind: "tool_call", ToolName: name, ToolInput: argumentsJSON})
+		cfg.OnToolCall = func(id, name, argumentsJSON string) error {
+			return onEvent(ExecuteEvent{Kind: "tool_call", ID: id, ToolName: name, ToolInput: argumentsJSON})
 		}
-		cfg.OnToolResult = func(name, result string, isError bool) error {
-			return onEvent(ExecuteEvent{Kind: "tool_result", ToolResult: result, IsError: isError})
+		cfg.OnToolResult = func(id, name, result string, isError bool) error {
+			return onEvent(ExecuteEvent{Kind: "tool_result", ID: id, ToolResult: result, IsError: isError})
 		}
 		onDelta = func(d chat.Delta) error {
 			if d.Content == "" {

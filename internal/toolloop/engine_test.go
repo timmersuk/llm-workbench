@@ -262,14 +262,17 @@ func TestOnToolCallAndOnToolResultFire(t *testing.T) {
 
 	var calls []string
 	var results []string
+	var callIDs, resultIDs []string
 	res, err := New(f).Run(context.Background(), Config{
 		Workspace: dir, Tools: ReadOnlyTools(), MaxTurns: 5,
-		OnToolCall: func(name, args string) error {
+		OnToolCall: func(id, name, args string) error {
 			calls = append(calls, name+":"+args)
+			callIDs = append(callIDs, id)
 			return nil
 		},
-		OnToolResult: func(name, result string, isError bool) error {
+		OnToolResult: func(id, name, result string, isError bool) error {
 			results = append(results, fmt.Sprintf("%s:%v:%s", name, isError, result))
+			resultIDs = append(resultIDs, id)
 			return nil
 		},
 	}, baseMessages(), nil)
@@ -284,6 +287,9 @@ func TestOnToolCallAndOnToolResultFire(t *testing.T) {
 	}
 	if len(results) != 1 || !strings.Contains(results[0], "hello") || strings.Contains(results[0], "true") {
 		t.Fatalf("OnToolResult not fired correctly: %v", results)
+	}
+	if len(callIDs) != 1 || callIDs[0] != "c1" || len(resultIDs) != 1 || resultIDs[0] != "c1" {
+		t.Fatalf("expected the call and its result to share the call's real id \"c1\", got callIDs=%v resultIDs=%v", callIDs, resultIDs)
 	}
 }
 
@@ -334,7 +340,7 @@ func TestOnToolCallErrorAbortsLoop(t *testing.T) {
 	wantErr := errors.New("nope")
 	_, err := New(f).Run(context.Background(), Config{
 		Tools: ReadOnlyTools(), MaxTurns: 5,
-		OnToolCall: func(string, string) error { return wantErr },
+		OnToolCall: func(string, string, string) error { return wantErr },
 	}, baseMessages(), nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected OnToolCall error to abort, got %v", err)

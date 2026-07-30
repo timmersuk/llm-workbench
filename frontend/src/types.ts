@@ -175,6 +175,9 @@ export interface ChatStreamEvent {
   reasoning_content?: string
   tool_call?: { name: string; arguments: string }
   tool_activity?: {
+    // id correlates a "call" phase event to its later "result" — see
+    // ToolActivityEntry's doc comment (frontend/src/ToolActivity.tsx).
+    id: string
     phase: 'call' | 'result'
     name: string
     arguments?: string
@@ -383,6 +386,11 @@ export interface ContinuableExecutionResult {
 // recorded event stream (executions/exec-NNN.log.yaml), fetched on demand via
 // getExecutionLog rather than bundled into ExecutionsListResult.
 export interface ExecutionLogEvent {
+  // id correlates a "tool_call" event to its later "tool_result" — see
+  // ToolActivityEntry's doc comment (frontend/src/ToolActivity.tsx).
+  // Persisted (unlike the live-only ids elsewhere), since a replayed log
+  // has no other structure to attach a result to its real call.
+  id?: string
   kind: 'text' | 'tool_call' | 'tool_result'
   text?: string
   tool_name?: string
@@ -410,6 +418,9 @@ export interface ExecutionLog {
 // frontend learns the outcome without a second request.
 export interface ExecuteStreamEvent {
   type: 'text' | 'tool_call' | 'tool_result' | 'error' | 'done'
+  // id is set on "tool_call"/"tool_result" — see ToolActivityEntry's doc
+  // comment (frontend/src/ToolActivity.tsx).
+  id?: string
   content?: string
   tool_name?: string
   tool_input?: string

@@ -106,20 +106,30 @@ func TestExecuteEventToLogEvent_ExcludesReasoning(t *testing.T) {
 func TestExecuteEventToLogEvent_MapsOtherKindsInFull(t *testing.T) {
 	cases := []agentrunner.ExecuteEvent{
 		{Kind: "text", Text: "hello"},
-		{Kind: "tool_call", ToolName: "Bash", ToolInput: "go test ./..."},
-		{Kind: "tool_result", ToolResult: "ok", IsError: false},
-		{Kind: "tool_result", ToolResult: "boom", IsError: true},
+		{Kind: "tool_call", ID: "call-1", ToolName: "Bash", ToolInput: "go test ./..."},
+		{Kind: "tool_result", ID: "call-1", ToolResult: "ok", IsError: false},
+		{Kind: "tool_result", ID: "call-2", ToolResult: "boom", IsError: true},
 	}
 	for _, ev := range cases {
 		got, ok := executeEventToLogEvent(ev)
 		require.True(t, ok)
 		assert.Equal(t, ev.Kind, got.Kind)
+		assert.Equal(t, ev.ID, got.ID)
 		assert.Equal(t, ev.Text, got.Text)
 		assert.Equal(t, ev.ToolName, got.ToolName)
 		assert.Equal(t, ev.ToolInput, got.ToolInput)
 		assert.Equal(t, ev.ToolResult, got.ToolResult)
 		assert.Equal(t, ev.IsError, got.IsError)
 	}
+}
+
+// TestExecuteEventToWire_IncludesID proves the SSE wire shape also carries
+// the correlation id — a live client needs it too, not just the persisted
+// log, since it independently rebuilds trace blocks from the same stream
+// (frontend/src/ExecutePanel.tsx).
+func TestExecuteEventToWire_IncludesID(t *testing.T) {
+	got := executeEventToWire(agentrunner.ExecuteEvent{Kind: "tool_call", ID: "call-1", ToolName: "Bash", ToolInput: "go test ./..."})
+	assert.Equal(t, "call-1", got.ID)
 }
 
 func TestHandleStartExecution_UnknownExecutor(t *testing.T) {

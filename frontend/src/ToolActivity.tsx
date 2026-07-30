@@ -18,6 +18,14 @@ const LIVE_VISIBLE_COUNT = 3
 const PREVIEW_MAX_CHARS = 60
 
 export interface ToolActivityEntry {
+  // id correlates this call to its later result — the provider's own
+  // per-call id (e.g. the claude CLI's ToolUseID), threaded through so a
+  // result can attach to the exact call it belongs to rather than
+  // assuming results always arrive in the same order calls were declared
+  // (false for a provider that can declare several calls before returning
+  // any of their results — see toolActivityBlocks.ts). Render-only: never
+  // persisted upstream of this type.
+  id?: string
   name: string
   arguments?: string
   result?: string

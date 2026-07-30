@@ -241,7 +241,7 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 		}
 	}
 
-	hooks := &toolActivityHooks{onCall: in.OnToolCall, onResult: in.OnToolResult, pending: make(map[string]string)}
+	hooks := &toolActivityHooks{onCall: in.OnToolCall, onResult: in.OnToolResult, pending: make(pendingToolCalls)}
 	var out RunOutput
 	var content assistantText
 	for msg := range client.ReceiveMessages(runCtx) {
@@ -309,8 +309,9 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 
 	var out ExecuteOutput
 	var content assistantText
+	pending := make(pendingToolCalls)
 	for msg := range client.ReceiveMessages(runCtx) {
-		done, err := processExecuteMessage(msg, &content, &out, onEvent)
+		done, err := processExecuteMessage(msg, &content, &out, onEvent, pending)
 		if err != nil {
 			return out, err
 		}
@@ -602,20 +603,39 @@ func toolNames(tools []chat.Tool) []string {
 	return names
 }
 
+// pendingToolCalls correlates a ToolUseBlock to its later ToolResultBlock
+// by ToolUseID — the claude CLI reports a call and its result in two
+// separate messages (an AssistantMessage, then a later UserMessage) with
+// no other shared identity, so this is the one place that correlation
+// happens. Used identically by processMessage (Run) and
+// processExecuteMessage (Execute), since both walk the exact same
+// underlying message shape — a single shared implementation rather than
+// two independently-written copies that can drift (as processExecuteMessage
+// once did: it had no correlation at all).
+type pendingToolCalls map[string]string // ToolUseID -> name
+
+// track records a call awaiting its result.
+func (p pendingToolCalls) track(id, name string) { p[id] = name }
+
+// resolve returns and forgets the name tracked for id — id is the
+// ToolResultBlock's own ToolUseID, unconditionally trusted as a match
+// since the CLI never reuses one within a session.
+func (p pendingToolCalls) resolve(id string) string {
+	name := p[id]
+	delete(p, id)
+	return name
+}
+
 // toolActivityHooks carries the callbacks (and cross-message correlation
 // state) needed to surface a claude CLI turn's intermediate tool calls and
 // results live, as processMessage walks the message stream (docs/adr/0018).
-// Unlike the toolloop.Engine, which executes a call and gets its result in
-// the same step, the CLI reports a ToolUseBlock and its matching
-// ToolResultBlock in two separate messages (an AssistantMessage, then a
-// later UserMessage) — pending correlates them by toolUseID so onResult can
-// still report the tool's name. nil onCall/onResult (the RunInput fields
-// left unset) mean the caller doesn't want this — processMessage checks
-// each independently before invoking it.
+// nil onCall/onResult (the RunInput fields left unset) mean the caller
+// doesn't want this — processMessage checks each independently before
+// invoking it.
 type toolActivityHooks struct {
-	onCall   func(name, argsJSON string)
-	onResult func(name, result string, isError bool)
-	pending  map[string]string // toolUseID -> name, for non-Draft calls only
+	onCall   func(id, name, argsJSON string)
+	onResult func(id, name, result string, isError bool)
+	pending  pendingToolCalls
 }
 
 // assistantText accumulates one turn's assistant text purely from the live
@@ -776,10 +796,10 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 					if err != nil {
 						return true, fmt.Errorf("encoding tool call arguments: %w", err)
 					}
-					hooks.onCall(b.Name, string(args))
+					hooks.onCall(b.ToolUseID, b.Name, string(args))
 				}
 				if hooks != nil && hooks.pending != nil {
-					hooks.pending[b.ToolUseID] = b.Name
+					hooks.pending.track(b.ToolUseID, b.Name)
 				}
 			}
 		}
@@ -796,10 +816,9 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 			if !ok {
 				continue
 			}
-			name := hooks.pending[b.ToolUseID]
-			delete(hooks.pending, b.ToolUseID)
+			name := hooks.pending.resolve(b.ToolUseID)
 			isError := b.IsError != nil && *b.IsError
-			hooks.onResult(name, toolResultText(b.Content), isError)
+			hooks.onResult(b.ToolUseID, name, toolResultText(b.Content), isError)
 		}
 	case *claudecode.ResultMessage:
 		out.Content = content.String()
@@ -830,8 +849,11 @@ func matchQualifiedToolName(qualifiedName string, names []string) (string, bool)
 // processMessage (which only surfaces one Draft-matching ToolUseBlock and
 // silently drops everything else), this surfaces every tool call and its
 // result — an Execute run's real actions (files written, commands run) are
-// the point, not incidental.
-func processExecuteMessage(msg claudecode.Message, content *assistantText, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (done bool, err error) {
+// the point, not incidental. pending correlates each ToolResultBlock back
+// to its ToolUseID (see pendingToolCalls) — the same correlation
+// processMessage needs and for the same reason, just consumed by ID alone
+// here since ExecuteEvent's "tool_result" kind carries no tool name.
+func processExecuteMessage(msg claudecode.Message, content *assistantText, out *ExecuteOutput, onEvent func(ExecuteEvent) error, pending pendingToolCalls) (done bool, err error) {
 	switch m := msg.(type) {
 	case *claudecode.StreamEvent:
 		if isMessageStart(m) {
@@ -857,6 +879,9 @@ func processExecuteMessage(msg claudecode.Message, content *assistantText, out *
 					}
 				}
 			case *claudecode.ToolUseBlock:
+				if pending != nil {
+					pending.track(b.ToolUseID, b.Name)
+				}
 				if onEvent == nil {
 					continue
 				}
@@ -864,7 +889,7 @@ func processExecuteMessage(msg claudecode.Message, content *assistantText, out *
 				if err != nil {
 					return true, fmt.Errorf("encoding tool call input: %w", err)
 				}
-				if err := onEvent(ExecuteEvent{Kind: "tool_call", ToolName: b.Name, ToolInput: string(input)}); err != nil {
+				if err := onEvent(ExecuteEvent{Kind: "tool_call", ID: b.ToolUseID, ToolName: b.Name, ToolInput: string(input)}); err != nil {
 					return true, err
 				}
 			}
@@ -879,8 +904,11 @@ func processExecuteMessage(msg claudecode.Message, content *assistantText, out *
 			if !ok {
 				continue
 			}
+			if pending != nil {
+				pending.resolve(b.ToolUseID)
+			}
 			isError := b.IsError != nil && *b.IsError
-			if err := onEvent(ExecuteEvent{Kind: "tool_result", ToolResult: toolResultText(b.Content), IsError: isError}); err != nil {
+			if err := onEvent(ExecuteEvent{Kind: "tool_result", ID: b.ToolUseID, ToolResult: toolResultText(b.Content), IsError: isError}); err != nil {
 				return true, err
 			}
 		}
