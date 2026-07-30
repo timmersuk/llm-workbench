@@ -124,13 +124,7 @@ func handleRequest(req rpcRequest, out *bufio.Writer, store knowledgetool.Store)
 			handleKnowledgeToolCall(out, req.ID, store, params)
 			return
 		}
-		logrus.WithField("tool", params.Name).Info("draftmcp: proposal tool called")
-		respond(out, req.ID, map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": "proposal received: " + params.Name},
-			},
-			"isError": false,
-		})
+		handleDraftToolCall(out, req.ID, params)
 	default:
 		logrus.WithField("method", req.Method).Debug("draftmcp: unhandled method")
 		if len(req.ID) > 0 {
@@ -154,6 +148,57 @@ func appendToolListEntry(tools []map[string]any, name, description string, schem
 		"name":        name,
 		"description": description,
 		"inputSchema": decoded,
+	})
+}
+
+// draftDefinitionsByName indexes drafttool.All() by name for
+// handleDraftToolCall's per-tool schema lookup.
+var draftDefinitionsByName = func() map[string]drafttool.Definition {
+	m := make(map[string]drafttool.Definition, len(drafttool.All()))
+	for _, d := range drafttool.All() {
+		m[d.Name] = d
+	}
+	return m
+}()
+
+// handleDraftToolCall validates a Draft proposal's arguments against its
+// own JSON Schema (internal/drafttool) before acknowledging it. A call
+// whose required fields don't match — e.g. one silently missing because
+// the model's JSON generation glitched — is rejected with isError: true
+// instead: the codex thread's own loop feeds that back to the model and
+// lets it retry, rather than CodexRunner (which reads the proposal
+// straight off the event stream, not this response — see codex_runner.go's
+// doc comment) capturing a malformed payload. Mirrors claude_runner.go's
+// draftToolHandlerFor for the same drafttool schemas. An unrecognized name
+// (never happens in practice — every advertised proposal tool comes from
+// drafttool.All()) falls through to the unconditional ack, failing open
+// rather than blocking every proposal.
+func handleDraftToolCall(out *bufio.Writer, id json.RawMessage, params toolCallParams) {
+	logrus.WithField("tool", params.Name).Info("draftmcp: proposal tool called")
+	if def, ok := draftDefinitionsByName[params.Name]; ok {
+		var args map[string]any
+		if len(params.Arguments) > 0 {
+			if err := json.Unmarshal(params.Arguments, &args); err != nil {
+				respond(out, id, map[string]any{
+					"content": []map[string]any{{"type": "text", "text": "decoding arguments: " + err.Error()}},
+					"isError": true,
+				})
+				return
+			}
+		}
+		if err := def.Validate(args); err != nil {
+			respond(out, id, map[string]any{
+				"content": []map[string]any{{"type": "text", "text": fmt.Sprintf(
+					"%s proposal rejected: %s. Retry %s with a corrected payload matching its schema.", params.Name, err, params.Name,
+				)}},
+				"isError": true,
+			})
+			return
+		}
+	}
+	respond(out, id, map[string]any{
+		"content": []map[string]any{{"type": "text", "text": "proposal received: " + params.Name}},
+		"isError": false,
 	})
 }
 

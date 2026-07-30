@@ -70,7 +70,7 @@ func TestRun_ToolsList(t *testing.T) {
 }
 
 func TestRun_ToolsCall_Acknowledges(t *testing.T) {
-	in := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"propose_context","arguments":{"objective":"do the thing"}}}` + "\n")
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"propose_context","arguments":{"objective":"do the thing","context":{"summary":"s"}}}}` + "\n")
 	var out bytes.Buffer
 	run(in, &out, nil)
 
@@ -80,6 +80,20 @@ func TestRun_ToolsCall_Acknowledges(t *testing.T) {
 	require.Equal(t, false, result["isError"])
 	content := result["content"].([]any)
 	require.Len(t, content, 1)
+}
+
+// TestRun_ToolsCall_RejectsSchemaInvalidArgs covers the corruption class
+// that motivated validating proposals at all: a required field (here
+// propose_plan's "steps") silently missing from otherwise-valid JSON.
+func TestRun_ToolsCall_RejectsSchemaInvalidArgs(t *testing.T) {
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"propose_plan","arguments":{"approach":"do it","estimated_complexity":"low"}}}` + "\n")
+	var out bytes.Buffer
+	run(in, &out, nil)
+
+	msgs := decodeLines(t, &out)
+	require.Len(t, msgs, 1)
+	result := msgs[0]["result"].(map[string]any)
+	require.Equal(t, true, result["isError"])
 }
 
 func TestRun_ToolsList_NoKnowledgeRoot_OmitsKnowledgeTools(t *testing.T) {

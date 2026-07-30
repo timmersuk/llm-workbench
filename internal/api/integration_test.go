@@ -670,7 +670,7 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 }
 
 func TestIntegration_StageMessageStreamsProposedDraftAsToolCallEvent(t *testing.T) {
-	upstream := fakeUpstreamProposingToolCall(t, proposeContextToolName, `{"objective":"ship login"}`)
+	upstream := fakeUpstreamProposingToolCall(t, proposeContextToolName, `{"objective":"ship login","context":{"summary":"s"}}`)
 	defer upstream.Close()
 	baseURL, _ := newIntegrationServer(t, upstream)
 
@@ -696,7 +696,7 @@ func TestIntegration_StageMessageStreamsProposedDraftAsToolCallEvent(t *testing.
 		if ev.ToolCall != nil {
 			sawToolCall = true
 			assert.Equal(t, proposeContextToolName, ev.ToolCall.Name)
-			assert.Equal(t, `{"objective":"ship login"}`, ev.ToolCall.Arguments)
+			assert.Equal(t, `{"objective":"ship login","context":{"summary":"s"}}`, ev.ToolCall.Arguments)
 		}
 	}
 	require.True(t, sawToolCall, "expected a tool_call SSE event in the response body")

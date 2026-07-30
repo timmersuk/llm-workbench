@@ -197,6 +197,31 @@ func TestProcessCodexRunEvent_IgnoresNonMatchingMCPToolCall(t *testing.T) {
 	assert.Nil(t, out.ToolCall)
 }
 
+// TestProcessCodexRunEvent_RejectedDraftDoesNotBlockLaterRetry locks in the
+// fix for the "latch onto the first call" bug: a Draft call draftmcp
+// rejected (Status "failed", from handleDraftToolCall's isError: true) must
+// not prevent a later, valid retry from being captured.
+func TestProcessCodexRunEvent_RejectedDraftDoesNotBlockLaterRetry(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	toolNames := []string{"propose_plan"}
+
+	rejected := &types.ItemCompleted{Item: &types.MCPToolCall{
+		ID: "call-1", ToolName: "propose_plan", Input: []byte(`{"approach":"missing steps"}`), Status: "failed",
+	}}
+	_, err := processCodexRunEvent(rejected, toolNames, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	assert.Nil(t, out.ToolCall, "a rejected call must never populate out.ToolCall")
+
+	retry := &types.ItemCompleted{Item: &types.MCPToolCall{
+		ID: "call-2", ToolName: "propose_plan", Input: []byte(`{"approach":"fixed","steps":["a"]}`), Status: "completed",
+	}}
+	_, err = processCodexRunEvent(retry, toolNames, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out.ToolCall, "a later valid retry must still be captured")
+	assert.Equal(t, "call-2", out.ToolCall.ID)
+}
+
 // TestProcessCodexRunEvent_CommandExecutionForwardsAsToolActivity locks in
 // the docs/adr/0018 fix: CodexRunner.Run had no OnToolCall/OnToolResult
 // wiring at all before this ADR — a shell command run during a stage

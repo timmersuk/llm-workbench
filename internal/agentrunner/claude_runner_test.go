@@ -43,6 +43,17 @@ func messageStartEvent() *claudecode.StreamEvent {
 	return &claudecode.StreamEvent{Event: map[string]any{"type": claudecode.StreamEventTypeMessageStart}}
 }
 
+// toolResultMessage builds the UserMessage a real `claude` CLI session
+// sends carrying one ToolResultBlock — the ack/reject for a Draft's
+// ToolUseBlock (draftToolHandlerFor) or a genuine tool's result.
+func toolResultMessage(id string, isError bool) *claudecode.UserMessage {
+	return &claudecode.UserMessage{
+		Content: []claudecode.ContentBlock{
+			&claudecode.ToolResultBlock{ToolUseID: id, Content: "ok", IsError: &isError},
+		},
+	}
+}
+
 func TestProcessMessage_AccumulatesText(t *testing.T) {
 	var content assistantText
 	var out RunOutput
@@ -86,9 +97,14 @@ func TestProcessMessage_DoesNotSeparateConsecutiveDeltasWithinSameRound(t *testi
 	assert.Equal(t, "hello world", content.String())
 }
 
+// TestProcessMessage_CapturesMatchingToolCall covers the full two-message
+// round trip: a Draft ToolUseBlock alone is only a candidate
+// (draftToolHandlerFor may still reject it) — out.ToolCall is only set once
+// its matching non-error ToolResultBlock arrives.
 func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
 	var content assistantText
 	var out RunOutput
+	hooks := &toolActivityHooks{pending: make(pendingToolCalls)}
 
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
@@ -97,7 +113,12 @@ func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
 			Input:     map[string]any{"approach": "do it"},
 		}},
 	}
-	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
+	done, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Nil(t, out.ToolCall, "not trusted until its ToolResultBlock confirms acceptance")
+
+	done, err = processMessage(toolResultMessage("call-1", false), []string{"propose_plan"}, &content, &out, nil, hooks)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
@@ -107,6 +128,40 @@ func TestProcessMessage_CapturesMatchingToolCall(t *testing.T) {
 	// the CLI reports the fully-qualified mcp__draft__propose_plan.
 	assert.Equal(t, "propose_plan", out.ToolCall.Function.Name)
 	assert.JSONEq(t, `{"approach":"do it"}`, out.ToolCall.Function.Arguments)
+}
+
+// TestProcessMessage_RejectedDraftDoesNotBlockLaterRetry locks in the fix
+// for the "latch onto the first call" bug: a Draft call that
+// draftToolHandlerFor rejected (IsError true, e.g. a schema-invalid
+// propose_plan) must not prevent a later, valid retry from being captured.
+func TestProcessMessage_RejectedDraftDoesNotBlockLaterRetry(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	hooks := &toolActivityHooks{pending: make(pendingToolCalls)}
+	toolNames := []string{"propose_plan"}
+
+	first := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
+			ToolUseID: "call-1", Name: "mcp__draft__propose_plan", Input: map[string]any{"approach": "missing steps"},
+		}},
+	}
+	_, err := processMessage(first, toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	_, err = processMessage(toolResultMessage("call-1", true), toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	assert.Nil(t, out.ToolCall, "a rejected call must never populate out.ToolCall")
+
+	retry := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
+			ToolUseID: "call-2", Name: "mcp__draft__propose_plan", Input: map[string]any{"approach": "fixed", "steps": []any{"a"}},
+		}},
+	}
+	_, err = processMessage(retry, toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	_, err = processMessage(toolResultMessage("call-2", false), toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	require.NotNil(t, out.ToolCall, "a later valid retry must still be captured")
+	assert.Equal(t, "call-2", out.ToolCall.ID)
 }
 
 func TestProcessMessage_IgnoresNonMatchingToolCall(t *testing.T) {
@@ -166,9 +221,11 @@ func TestProcessMessage_DraftToolCallNeverForwardedAsActivity(t *testing.T) {
 	}
 	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, hooks)
 	require.NoError(t, err)
+	_, err = processMessage(toolResultMessage("call-1", false), []string{"propose_plan"}, &content, &out, nil, hooks)
+	require.NoError(t, err)
 	require.NotNil(t, out.ToolCall)
 	assert.Zero(t, calls, "the Draft's own proposal call must never also surface as tool activity")
-	assert.Empty(t, hooks.pending, "a Draft call must not be tracked for result correlation either")
+	assert.Empty(t, hooks.pending, "a Draft call must not be tracked in the intermediate-activity pending map")
 }
 
 // TestProcessMessage_ForwardsToolResultCorrelatedByID covers the other half:
@@ -251,6 +308,8 @@ func TestProcessMessage_RequiresFullyQualifiedMcpName(t *testing.T) {
 func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 	var content assistantText
 	var out RunOutput
+	hooks := &toolActivityHooks{pending: make(pendingToolCalls)}
+	toolNames := []string{"propose_review", "propose_knowledge"}
 
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
@@ -259,16 +318,25 @@ func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 			Input:     map[string]any{"concept_id": "x"},
 		}},
 	}
-	done, err := processMessage(msg, []string{"propose_review", "propose_knowledge"}, &content, &out, nil, nil)
+	done, err := processMessage(msg, toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	assert.False(t, done)
+	done, err = processMessage(toolResultMessage("call-1", false), toolNames, &content, &out, nil, hooks)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
 	assert.Equal(t, "propose_knowledge", out.ToolCall.Function.Name)
 }
 
-func TestProcessMessage_KeepsFirstToolCallOnly(t *testing.T) {
+// TestProcessMessage_KeepsFirstValidToolCallOnly covers the same "keep
+// first" precedence as before, now expressed over accepted (not merely
+// seen) calls: a second Draft call's ToolResultBlock must not overwrite an
+// out.ToolCall a prior accepted call already set.
+func TestProcessMessage_KeepsFirstValidToolCallOnly(t *testing.T) {
 	var content assistantText
 	out := RunOutput{ToolCall: &chat.ToolCall{ID: "first", Type: "function"}}
+	hooks := &toolActivityHooks{pending: make(pendingToolCalls)}
+	toolNames := []string{"propose_plan"}
 
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
@@ -277,9 +345,37 @@ func TestProcessMessage_KeepsFirstToolCallOnly(t *testing.T) {
 			Input:     map[string]any{},
 		}},
 	}
-	_, err := processMessage(msg, []string{"propose_plan"}, &content, &out, nil, nil)
+	_, err := processMessage(msg, toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	_, err = processMessage(toolResultMessage("second", false), toolNames, &content, &out, nil, hooks)
 	require.NoError(t, err)
 	assert.Equal(t, "first", out.ToolCall.ID)
+}
+
+func TestDraftToolHandlerFor_RejectsSchemaInvalidArgs(t *testing.T) {
+	handler := draftToolHandlerFor("propose_plan")
+	result, err := handler(context.Background(), map[string]any{"approach": "no steps here"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+}
+
+func TestDraftToolHandlerFor_AcksValidArgs(t *testing.T) {
+	handler := draftToolHandlerFor("propose_plan")
+	result, err := handler(context.Background(), map[string]any{
+		"approach": "do it", "steps": []any{"a"}, "estimated_complexity": "low",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+}
+
+func TestDraftToolHandlerFor_UnknownNameFailsOpen(t *testing.T) {
+	handler := draftToolHandlerFor("not_a_real_tool")
+	result, err := handler(context.Background(), map[string]any{"anything": "goes"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
 }
 
 func TestProcessMessage_ResultMessageEndsTurnSuccessfully(t *testing.T) {
