@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, startExecution } from './api'
+import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, listReviews, startExecution } from './api'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ToolActivitySequence } from './ToolActivity'
 import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
 import type { ToolActivityBlock } from './toolActivityBlocks'
-import type { Execution, ExecuteStreamEvent } from './types'
+import type { Execution, ExecuteStreamEvent, Review } from './types'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
 interface ExecutePanelProps {
@@ -53,6 +53,12 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   // turn-cap exhaustion where the run was likely far along).
   const [continuableExecutionId, setContinuableExecutionId] = useState('')
   const [continueChoice, setContinueChoice] = useState<'continue' | 'fresh'>('continue')
+  // latestReview backs the "sent back from review" banner below — when its
+  // decision is needs_changes, this run will silently continue from that
+  // review's execution branch with its notes folded into the prompt
+  // (resolveReviewContinuation, internal/api/execution.go); this banner is
+  // the only place that's visible before the run actually happens.
+  const [latestReview, setLatestReview] = useState<Review | null>(null)
   // abortControllerRef tracks the in-flight run's controller so Stop can
   // cancel it — same pattern as StageConversationPanel's.
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -76,6 +82,15 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         }
       })
       .catch(() => undefined) // nothing to offer, or the lookup failed — either way, no toggle shown
+
+    listReviews(projectId, taskId)
+      .then((result) => {
+        if (!cancelled) {
+          const reviews = result.reviews ?? []
+          setLatestReview(reviews[reviews.length - 1] ?? null)
+        }
+      })
+      .catch(() => undefined) // no reviews yet, or the lookup failed — either way, no banner shown
 
     // "local" is excluded — ChatClientRunner.Execute has no real
     // implementation yet (see chatclient-tool-loop), so offering it here
@@ -178,6 +193,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   // attempt, whether from this session's history fetch or a run that just
   // completed (handleStreamEvent's 'done' case appends to the same state).
   const lastExecution = pastExecutions[pastExecutions.length - 1]
+  const isReviewContinuation = latestReview?.decision === 'needs_changes'
 
   return (
     <div className="stage-conversation">
@@ -188,6 +204,13 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
           checkpoints mid-run; review the result afterward.
         </p>
       </div>
+
+      {isReviewContinuation && latestReview && (
+        <div className="workspace-status-banner">
+          <p>This task was sent back from review with requested changes. Running execution will continue from that reviewed attempt&apos;s branch, with the reviewer&apos;s notes included.</p>
+          {latestReview.notes && <p>&ldquo;{latestReview.notes}&rdquo;</p>}
+        </div>
+      )}
 
       <div className="chat-model-row">
         <label htmlFor="execute-executor">Executor</label>
@@ -266,7 +289,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
           </button>
         ) : (
           <button type="button" onClick={handleRun} disabled={!executor}>
-            Run Execution
+            {isReviewContinuation ? 'Continue from Review Feedback' : 'Run Execution'}
           </button>
         )}
       </div>

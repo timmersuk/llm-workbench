@@ -79,6 +79,42 @@ describe('TimelinePanel', () => {
     expect(api.getStageConversation).toHaveBeenCalledWith(projectId, taskId, 'planning')
   })
 
+  it('labels a finalize_review transition by its linked review decision, not the generic trigger name', async () => {
+    const transitions: StageTransition[] = [
+      { task_id: taskId, from_stage: 'review', to_stage: 'implementation', trigger: 'finalize_review', review_id: 'review-needs', created_at: '2026-01-01T00:00:00Z' },
+      { task_id: taskId, from_stage: 'review', to_stage: 'pr_review', trigger: 'finalize_review', review_id: 'review-approved', created_at: '2026-01-02T00:00:00Z' },
+      { task_id: taskId, from_stage: 'review', to_stage: 'requirements', trigger: 'finalize_review', review_id: 'review-rejected', created_at: '2026-01-03T00:00:00Z' },
+    ]
+    const reviews: Review[] = [
+      { review_id: 'review-needs', task_id: taskId, execution_id: 'exec-001', decision: 'needs_changes', notes: '', created_at: '2026-01-01T00:00:00Z' },
+      { review_id: 'review-approved', task_id: taskId, execution_id: 'exec-002', decision: 'approved', notes: '', created_at: '2026-01-02T00:00:00Z' },
+      { review_id: 'review-rejected', task_id: taskId, execution_id: 'exec-003', decision: 'rejected', notes: '', created_at: '2026-01-03T00:00:00Z' },
+    ]
+    vi.mocked(api.listStageTransitions).mockResolvedValue({ stage_transitions: transitions })
+    vi.mocked(api.listReviews).mockResolvedValue({ reviews })
+
+    render(<TimelinePanel projectId={projectId} taskId={taskId} />)
+    await screen.findByText(/review rejected/)
+
+    const items = document.querySelectorAll('.timeline-transition')
+    expect(items).toHaveLength(3)
+    expect(items[0].textContent).toContain('changes requested')
+    expect(items[1].textContent).toContain('review approved')
+    expect(items[2].textContent).toContain('review rejected')
+  })
+
+  it('falls back to the generic label when a finalize_review transition has no linked review', async () => {
+    const transitions: StageTransition[] = [
+      { task_id: taskId, from_stage: 'review', to_stage: 'implementation', trigger: 'finalize_review', created_at: '2026-01-01T00:00:00Z' },
+    ]
+    vi.mocked(api.listStageTransitions).mockResolvedValue({ stage_transitions: transitions })
+    vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
+
+    render(<TimelinePanel projectId={projectId} taskId={taskId} />)
+
+    expect(await screen.findByText(/finalized review/)).toBeInTheDocument()
+  })
+
   it('does not offer a conversation view for a transition whose destination stage has no Conversation', async () => {
     const transitions: StageTransition[] = [
       { task_id: taskId, from_stage: 'implementation', to_stage: 'review', trigger: 'execution_success', created_at: '2026-01-01T00:00:00Z' },

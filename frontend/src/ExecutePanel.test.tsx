@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ExecutePanel } from './ExecutePanel'
 import * as api from './api'
-import type { Execution, ExecuteStreamEvent } from './types'
+import type { Execution, ExecuteStreamEvent, Review } from './types'
 
 vi.mock('./api')
 
@@ -30,10 +30,23 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
   }
 }
 
+function makeReview(overrides: Partial<Review> = {}): Review {
+  return {
+    review_id: 'review-001',
+    task_id: taskId,
+    execution_id: 'exec-001',
+    decision: 'needs_changes',
+    notes: 'address the border contrast gap',
+    created_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   vi.mocked(api.listExecutions).mockResolvedValue({ executions: [] })
   vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
   vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: '' })
+  vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
 })
 
 describe('ExecutePanel — past executions', () => {
@@ -257,6 +270,35 @@ describe('ExecutePanel — continuing from a failed execution', () => {
     await user.click(screen.getByRole('button', { name: 'Run Execution' }))
 
     expect(await screen.findByRole('radio', { name: /Continue from exec-003/ })).toBeInTheDocument()
+  })
+})
+
+describe('ExecutePanel — continuing from review feedback', () => {
+  it('shows no banner and the plain button label when the latest review is not needs_changes', async () => {
+    vi.mocked(api.listReviews).mockResolvedValue({ reviews: [makeReview({ decision: 'approved' })] })
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: 'Run Execution' })).toBeInTheDocument()
+    expect(screen.queryByText(/sent back from review/)).not.toBeInTheDocument()
+  })
+
+  it('shows a banner quoting the reviewer notes and relabels the button when the latest review needs changes', async () => {
+    vi.mocked(api.listReviews).mockResolvedValue({ reviews: [makeReview({ notes: 'address the border contrast gap' })] })
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByText(/sent back from review with requested changes/)).toBeInTheDocument()
+    expect(screen.getByText(/address the border contrast gap/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue from Review Feedback' })).toBeInTheDocument()
+  })
+
+  it('only reacts to the latest review when multiple are recorded', async () => {
+    vi.mocked(api.listReviews).mockResolvedValue({
+      reviews: [makeReview({ review_id: 'review-001', decision: 'needs_changes' }), makeReview({ review_id: 'review-002', decision: 'approved' })],
+    })
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: 'Run Execution' })).toBeInTheDocument()
+    expect(screen.queryByText(/sent back from review/)).not.toBeInTheDocument()
   })
 })
 

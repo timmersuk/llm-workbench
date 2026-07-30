@@ -17,14 +17,29 @@ type TimelineEntry =
 // only stages a "view conversation" link can ever resolve.
 const conversationStages = new Set(['requirements', 'planning', 'review'])
 
-function triggerLabel(trigger: StageTransition['trigger']): string {
+// triggerLabel special-cases finalize_review using its linked review's
+// decision — approved/rejected/needs_changes all otherwise produce the same
+// generic "finalized review" trigger, which reads identically to a viewer
+// even though only needs_changes sends the task back for another attempt.
+// review is undefined when no review record links to this transition (a
+// defensive fallback, not an expected case for finalize_review).
+function triggerLabel(trigger: StageTransition['trigger'], review: Review | undefined): string {
   switch (trigger) {
     case 'finalize_requirements':
       return 'finalized requirements'
     case 'finalize_plan':
       return 'finalized plan'
     case 'finalize_review':
-      return 'finalized review'
+      switch (review?.decision) {
+        case 'approved':
+          return 'review approved'
+        case 'needs_changes':
+          return 'changes requested'
+        case 'rejected':
+          return 'review rejected'
+        default:
+          return 'finalized review'
+      }
     case 'execution_success':
       return 'execution succeeded'
     case 'mark_pr_merged':
@@ -56,6 +71,7 @@ type ConversationState =
 // together in one file.
 export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
   const [entries, setEntries] = useState<TimelineEntry[]>([])
+  const [reviewsById, setReviewsById] = useState<Record<string, Review>>({})
   const [conversations, setConversations] = useState<Record<string, ConversationState>>({})
 
   useEffect(() => {
@@ -65,6 +81,8 @@ export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
         if (cancelled) {
           return
         }
+        const reviews = reviewsResult.reviews ?? []
+        setReviewsById(Object.fromEntries(reviews.map((r) => [r.review_id, r])))
         const merged: TimelineEntry[] = [
           ...(transitionsResult.stage_transitions ?? []).map((t, i) => ({
             kind: 'transition' as const,
@@ -138,7 +156,7 @@ export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
             <li key={entry.key} className="timeline-transition">
               <details onToggle={(ev) => handleToggle(entry, ev.currentTarget.open)}>
                 <summary>
-                  {t.from_stage} &rarr; {t.to_stage} ({triggerLabel(t.trigger)})
+                  {t.from_stage} &rarr; {t.to_stage} ({triggerLabel(t.trigger, t.review_id ? reviewsById[t.review_id] : undefined)})
                   {t.reason && <> &middot; &ldquo;{t.reason}&rdquo;</>}
                 </summary>
                 {canViewConversation && (
