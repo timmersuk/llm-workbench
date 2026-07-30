@@ -2,11 +2,14 @@ package toolloop
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/jsonschema"
 )
 
 // completer is the slice of chat.ChatClient the engine needs: a single
@@ -123,6 +126,7 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 
 	var lastText string
 	var totalTokens int
+turnLoop:
 	for turn := 1; cfg.MaxTurns <= 0 || turn <= cfg.MaxTurns; turn++ {
 		var text strings.Builder
 		var calls []chat.ToolCall
@@ -163,9 +167,22 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 		// order; a model that somehow calls more than one stop tool in the
 		// same turn resolves to whichever is listed first.
 		for _, stop := range cfg.StopTools {
-			if sc := findCall(calls, stop.Function.Name); sc != nil {
-				return Result{Content: lastText, StopCall: sc, Turns: turn, TokensUsed: totalTokens}, nil
+			sc := findCall(calls, stop.Function.Name)
+			if sc == nil {
+				continue
 			}
+			// A schema-invalid call (e.g. a required field the model's JSON
+			// generation dropped mid-value — the local-model tool-loop
+			// pathology this guards against) isn't trusted as a real stop:
+			// feed the error back like any other executed tool call and let
+			// the model retry, bounded by the same MaxTurns as everything
+			// else, rather than ending the loop with a malformed proposal.
+			if err := validateStopCall(stop, sc); err != nil {
+				msgs = append(msgs, chat.Message{Role: "assistant", Content: lastText, ToolCalls: []chat.ToolCall{*sc}})
+				msgs = append(msgs, chat.Message{Role: "tool", ToolCallID: sc.ID, Content: "error: " + err.Error()})
+				continue turnLoop
+			}
+			return Result{Content: lastText, StopCall: sc, Turns: turn, TokensUsed: totalTokens}, nil
 		}
 
 		// Otherwise execute the tool calls and feed the results back. The
@@ -193,6 +210,26 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 
 	// Hit the turn budget without a natural stop.
 	return Result{Content: lastText, Turns: cfg.MaxTurns, Exhausted: true, TokensUsed: totalTokens}, nil
+}
+
+// validateStopCall checks a StopTool call's arguments against that tool's
+// own declared JSON Schema (stop.Function.Parameters). A StopTool with no
+// schema (nil/empty Parameters, as several callers' hand-built chat.Tool
+// values in tests do) is unconstrained and always valid — schema
+// enforcement is opt-in via whatever the caller actually declared.
+func validateStopCall(stop chat.Tool, call *chat.ToolCall) error {
+	if len(stop.Function.Parameters) == 0 {
+		return nil
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(stop.Function.Parameters, &schema); err != nil {
+		return nil // an unparsable schema can't be enforced; fail open
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+		return fmt.Errorf("arguments are not valid JSON: %w", err)
+	}
+	return jsonschema.RequiredFieldsPresent(schema, args)
 }
 
 // executeCall dispatches one tool call, returning result text and whether it

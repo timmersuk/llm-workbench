@@ -14,7 +14,12 @@
 // its own Definition var here rather than a separate package.
 package drafttool
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/timmersuk/llm-workbench/internal/jsonschema"
+)
 
 const (
 	ProposeTaskName      = "propose_task"
@@ -33,6 +38,21 @@ type Definition struct {
 	Name        string
 	Description string
 	Schema      json.RawMessage
+}
+
+// Validate checks args (a tool call's already-decoded arguments) against
+// d.Schema's top-level required fields, catching a proposal that's
+// syntactically valid JSON but doesn't actually match the shape the model
+// was given — e.g. a required field silently missing because the model's
+// generation glitched mid-value. Callers (claude_runner.go's
+// draftToolHandler, draftmcp's tools/call handler) reject the call and
+// return the error to the model instead of accepting the proposal.
+func (d Definition) Validate(args map[string]any) error {
+	var schema map[string]any
+	if err := json.Unmarshal(d.Schema, &schema); err != nil {
+		return fmt.Errorf("decoding %s schema: %w", d.Name, err)
+	}
+	return jsonschema.RequiredFieldsPresent(schema, args)
 }
 
 var proposeTaskSchema = json.RawMessage(`{

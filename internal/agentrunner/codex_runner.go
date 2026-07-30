@@ -521,14 +521,23 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *ass
 				onToolResult(id, "FileChange", item.Status, item.Status == "failed")
 			}
 		case *types.MCPToolCall:
-			if out.ToolCall == nil && slices.Contains(toolNames, item.ToolName) {
-				out.ToolCall = &chat.ToolCall{
-					ID:   item.ID,
-					Type: "function",
-					Function: chat.ToolCallFunction{
-						Name:      item.ToolName,
-						Arguments: string(item.Input),
-					},
+			isDraft := slices.Contains(toolNames, item.ToolName)
+			if isDraft {
+				// handleDraftToolCall (draftmcp) may have rejected this
+				// proposal (isError: true, surfaced here as item.Status ==
+				// "failed") — a rejected call is neither trusted as
+				// out.ToolCall nor genuine Tool Activity; drop it so a
+				// later, valid retry can still be captured (mirrors
+				// claude_runner.go's processMessage).
+				if out.ToolCall == nil && item.Status != "failed" {
+					out.ToolCall = &chat.ToolCall{
+						ID:   item.ID,
+						Type: "function",
+						Function: chat.ToolCallFunction{
+							Name:      item.ToolName,
+							Arguments: string(item.Input),
+						},
+					}
 				}
 				break
 			}

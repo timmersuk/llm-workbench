@@ -13,8 +13,19 @@ import (
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/drafttool"
 	"github.com/timmersuk/llm-workbench/internal/knowledgetool"
 )
+
+// draftDefinitionsByName indexes drafttool.All() by name for
+// draftToolHandlerFor's per-tool schema lookup.
+var draftDefinitionsByName = func() map[string]drafttool.Definition {
+	m := make(map[string]drafttool.Definition, len(drafttool.All()))
+	for _, d := range drafttool.All() {
+		m[d.Name] = d
+	}
+	return m
+}()
 
 // lookPath is exec.LookPath, indirected so CheckHealth is deterministically
 // testable without depending on whether `claude` is actually on the test
@@ -393,7 +404,7 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 			if err != nil {
 				return nil, err
 			}
-			tools = append(tools, claudecode.NewTool(t.Function.Name, t.Function.Description, schema, draftToolHandler))
+			tools = append(tools, claudecode.NewTool(t.Function.Name, t.Function.Description, schema, draftToolHandlerFor(t.Function.Name)))
 			allowedTools = append(allowedTools, mcpQualifiedName(t.Function.Name))
 		}
 		server := claudecode.CreateSDKMcpServer(mcpServerName, "1.0.0", tools...)
@@ -591,6 +602,36 @@ func draftToolHandler(_ context.Context, _ map[string]any) (*claudecode.McpToolR
 	}, nil
 }
 
+// draftToolHandlerFor returns an McpToolHandler that validates a Draft
+// proposal's arguments against name's own JSON Schema (internal/drafttool)
+// before acking it. A call whose required fields don't match — e.g. one
+// silently missing because the model's JSON generation glitched mid-value
+// — is rejected with IsError: true instead: the claude CLI's own turn loop
+// feeds that back to the model and lets it retry, rather than the caller
+// (processMessage) capturing and persisting a malformed proposal. Falls
+// back to the unconditional ack for an unrecognized name, which never
+// happens in practice — every RunInput.Tools entry originates from a
+// drafttool.Definition (stageTool, internal/api/stage_conversation.go) —
+// so an unexpected mismatch fails open rather than blocking every
+// proposal.
+func draftToolHandlerFor(name string) claudecode.McpToolHandler {
+	def, ok := draftDefinitionsByName[name]
+	if !ok {
+		return draftToolHandler
+	}
+	return func(ctx context.Context, args map[string]any) (*claudecode.McpToolResult, error) {
+		if err := def.Validate(args); err != nil {
+			return &claudecode.McpToolResult{
+				IsError: true,
+				Content: []claudecode.McpContent{{Type: "text", Text: fmt.Sprintf(
+					"%s proposal rejected: %s. Retry %s with a corrected payload matching its schema.", name, err, name,
+				)}},
+			}, nil
+		}
+		return draftToolHandler(ctx, args)
+	}
+}
+
 // toolNames returns the bare (non-MCP-qualified) names of tools.
 func toolNames(tools []chat.Tool) []string {
 	if len(tools) == 0 {
@@ -636,6 +677,42 @@ type toolActivityHooks struct {
 	onCall   func(id, name, argsJSON string)
 	onResult func(id, name, result string, isError bool)
 	pending  pendingToolCalls
+
+	// pendingDraft correlates a Draft ToolUseBlock to its later
+	// ToolResultBlock — draftToolHandlerFor's ack/reject — the same way
+	// pending does for genuine intermediate tools, but keyed to the call's
+	// full chat.ToolCall (not just its name), since a validated call
+	// becomes out.ToolCall verbatim once resolveDraft confirms it wasn't
+	// rejected. Kept separate from pending (rather than reusing it) so the
+	// two kinds of ToolResultBlock — a Draft's ack/reject vs. a real tool's
+	// result — are never ambiguous when both maps could otherwise hold the
+	// same id.
+	pendingDraft map[string]chat.ToolCall
+}
+
+// trackDraft records a candidate Draft proposal awaiting its MCP tool
+// result before it's trusted enough to become out.ToolCall.
+func (h *toolActivityHooks) trackDraft(id, name, argsJSON string) {
+	if h.pendingDraft == nil {
+		h.pendingDraft = make(map[string]chat.ToolCall)
+	}
+	h.pendingDraft[id] = chat.ToolCall{
+		ID:       id,
+		Type:     "function",
+		Function: chat.ToolCallFunction{Name: name, Arguments: argsJSON},
+	}
+}
+
+// resolveDraft returns and forgets the call tracked for id, if any —
+// distinguishing "this ToolResultBlock is the ack/reject for a Draft
+// proposal" from "this is a result for a genuine intermediate tool" so
+// out.ToolCall and hooks.onResult never both fire for the same id.
+func (h *toolActivityHooks) resolveDraft(id string) (chat.ToolCall, bool) {
+	call, ok := h.pendingDraft[id]
+	if ok {
+		delete(h.pendingDraft, id)
+	}
+	return call, ok
 }
 
 // assistantText accumulates one turn's assistant text purely from the live
@@ -773,19 +850,16 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 			case *claudecode.ToolUseBlock:
 				name, isDraft := matchQualifiedToolName(b.Name, toolNames)
 				if isDraft {
-					if out.ToolCall == nil {
+					// Not trusted yet: draftToolHandlerFor may still reject
+					// this call (bad JSON shape) once its ToolResultBlock
+					// arrives — see the UserMessage case below, which is
+					// what actually sets out.ToolCall.
+					if hooks != nil {
 						args, err := json.Marshal(b.Input)
 						if err != nil {
 							return true, fmt.Errorf("encoding tool call arguments: %w", err)
 						}
-						out.ToolCall = &chat.ToolCall{
-							ID:   b.ToolUseID,
-							Type: "function",
-							Function: chat.ToolCallFunction{
-								Name:      name,
-								Arguments: string(args),
-							},
-						}
+						hooks.trackDraft(b.ToolUseID, name, string(args))
 					}
 					continue
 				}
@@ -804,7 +878,7 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 			}
 		}
 	case *claudecode.UserMessage:
-		if hooks == nil || hooks.onResult == nil {
+		if hooks == nil {
 			break
 		}
 		blocks, ok := m.Content.([]claudecode.ContentBlock)
@@ -816,8 +890,20 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 			if !ok {
 				continue
 			}
-			name := hooks.pending.resolve(b.ToolUseID)
 			isError := b.IsError != nil && *b.IsError
+			// A Draft's own ack/reject never also counts as Tool Activity
+			// (CONTEXT.md) — resolve it here instead of falling through to
+			// hooks.onResult below.
+			if call, ok := hooks.resolveDraft(b.ToolUseID); ok {
+				if !isError && out.ToolCall == nil {
+					out.ToolCall = &call
+				}
+				continue
+			}
+			if hooks.onResult == nil {
+				continue
+			}
+			name := hooks.pending.resolve(b.ToolUseID)
 			hooks.onResult(b.ToolUseID, name, toolResultText(b.Content), isError)
 		}
 	case *claudecode.ResultMessage:

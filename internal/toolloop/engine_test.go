@@ -144,6 +144,84 @@ func TestMultipleStopToolsEitherOneStops(t *testing.T) {
 	}
 }
 
+// planStopTool mirrors internal/drafttool's ProposePlan schema closely
+// enough to exercise validateStopCall: "steps" is required.
+func planStopTool() chat.Tool {
+	return chat.Tool{Type: "function", Function: chat.ToolSchema{
+		Name:       "propose_plan",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"approach":{"type":"string"},"steps":{"type":"array"}},"required":["approach","steps"]}`),
+	}}
+}
+
+// TestInvalidStopCallRetriesInsteadOfStopping locks in the fix for the
+// local-model tool-loop pathology that produced a real corrupted plan.yaml
+// in production: a StopTool call missing a schema-required field (here
+// "steps") must not end the loop as if it were a valid proposal — the
+// error is fed back like any other tool result, and a later, valid retry
+// is what actually stops the loop.
+func TestInvalidStopCallRetriesInsteadOfStopping(t *testing.T) {
+	f := &fakeClient{turns: []func(func(chat.Delta) error) error{
+		toolTurn(call("c1", "propose_plan", `{"approach":"missing steps"}`)),
+		toolTurn(call("c2", "propose_plan", `{"approach":"fixed","steps":["a"]}`)),
+	}}
+	res, err := New(f).Run(context.Background(), Config{
+		StopTools: []chat.Tool{planStopTool()}, MaxTurns: 5,
+	}, baseMessages(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StopCall == nil || res.StopCall.ID != "c2" {
+		t.Fatalf("expected the second, valid call to stop the loop, got %+v", res)
+	}
+	if res.Turns != 2 {
+		t.Fatalf("expected 2 turns (one rejected retry), got %d", res.Turns)
+	}
+	// The rejected call's turn must have fed an error back, the same
+	// protocol shape an executed tool call's failure would.
+	second := f.requests[1]
+	if len(second) != 3 || second[1].Role != "assistant" || second[2].Role != "tool" {
+		t.Fatalf("unexpected conversation shape after a rejected stop call: %+v", second)
+	}
+	if !strings.Contains(second[2].Content, "steps") {
+		t.Fatalf("expected the missing-field error fed back, got %q", second[2].Content)
+	}
+}
+
+// TestInvalidStopCallExhaustsIfNeverCorrected covers a model that never
+// self-corrects: the retry loop must still respect MaxTurns rather than
+// looping forever.
+func TestInvalidStopCallExhaustsIfNeverCorrected(t *testing.T) {
+	turns := make([]func(func(chat.Delta) error) error, 3)
+	for i := range turns {
+		turns[i] = toolTurn(call("c", "propose_plan", `{"approach":"still missing steps"}`))
+	}
+	f := &fakeClient{turns: turns}
+	res, err := New(f).Run(context.Background(), Config{
+		StopTools: []chat.Tool{planStopTool()}, MaxTurns: 3,
+	}, baseMessages(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Exhausted || res.StopCall != nil {
+		t.Fatalf("expected exhaustion with no stop call, got %+v", res)
+	}
+}
+
+func TestValidateStopCall(t *testing.T) {
+	stop := planStopTool()
+	if err := validateStopCall(stop, &chat.ToolCall{Function: chat.ToolCallFunction{Arguments: `{"approach":"a","steps":["x"]}`}}); err != nil {
+		t.Fatalf("expected valid args to pass, got %v", err)
+	}
+	if err := validateStopCall(stop, &chat.ToolCall{Function: chat.ToolCallFunction{Arguments: `{"approach":"a"}`}}); err == nil {
+		t.Fatal("expected missing \"steps\" to fail validation")
+	}
+	// A StopTool with no declared schema is unconstrained.
+	noSchema := chat.Tool{Type: "function", Function: chat.ToolSchema{Name: "propose_draft"}}
+	if err := validateStopCall(noSchema, &chat.ToolCall{Function: chat.ToolCallFunction{Arguments: `{}`}}); err != nil {
+		t.Fatalf("expected a schema-less stop tool to always validate, got %v", err)
+	}
+}
+
 func TestDuplicateCallsDedupedAndMatched(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hi"), 0o644)
