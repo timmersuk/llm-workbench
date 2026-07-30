@@ -311,6 +311,12 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
               // reload the task to pick that up (and to no-op harmlessly on
               // a failed run, where stage is unchanged).
               getProjectTask(projectId, task.id).then(setTask).catch(() => undefined)
+              // executions was last fetched when the task was opened, before
+              // this run existed — re-fetch so the history list below
+              // (revealed once stage leaves implementation) includes it too.
+              listExecutions(projectId, task.id)
+                .then((result) => setExecutions(result.executions ?? []))
+                .catch(() => undefined)
             }}
           />
         </div>
