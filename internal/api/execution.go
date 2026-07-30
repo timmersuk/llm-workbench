@@ -64,6 +64,12 @@ type continuableExecutionResponse struct {
 type executeStreamEvent struct {
 	Type string `json:"type"` // "text" | "tool_call" | "tool_result" | "error" | "done"
 
+	// ID is set on "tool_call"/"tool_result" — the same per-call correlation
+	// key agentrunner.ExecuteEvent.ID carries (see its doc comment): a
+	// "tool_call" and its later "tool_result" share it, so the frontend can
+	// attach a result to the exact call it belongs to.
+	ID string `json:"id,omitempty"`
+
 	Content string `json:"content,omitempty"`
 
 	ToolName  string `json:"tool_name,omitempty"`
@@ -83,7 +89,7 @@ type executeStreamEvent struct {
 // shape.
 func executeEventToWire(ev agentrunner.ExecuteEvent) executeStreamEvent {
 	return executeStreamEvent{
-		Type: ev.Kind, Content: ev.Text,
+		Type: ev.Kind, ID: ev.ID, Content: ev.Text,
 		ToolName: ev.ToolName, ToolInput: ev.ToolInput,
 		ToolResult: ev.ToolResult, IsError: ev.IsError,
 	}
@@ -100,7 +106,7 @@ func executeEventToLogEvent(ev agentrunner.ExecuteEvent) (task.ExecutionLogEvent
 		return task.ExecutionLogEvent{}, false
 	}
 	return task.ExecutionLogEvent{
-		Kind: ev.Kind, Text: ev.Text,
+		ID: ev.ID, Kind: ev.Kind, Text: ev.Text,
 		ToolName: ev.ToolName, ToolInput: ev.ToolInput,
 		ToolResult: ev.ToolResult, IsError: ev.IsError,
 	}, true

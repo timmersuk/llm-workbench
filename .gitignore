@@ -41,6 +41,11 @@ go.work.sum
 # Windows-only stray file some CLI tools (codex included) leave behind
 nul
 
+# VS Code's Go debugger (Delve) build artifact — doesn't match the *.exe
+# rule above since it appends a numeric suffix *after* the extension
+# (e.g. __debug_bin.exe1592667720), not a plain *.exe filename.
+__debug_bin*
+
 # Build output
 bin/
 

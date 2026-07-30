@@ -232,7 +232,7 @@ func TestChatClientRunner_Run_ExecutesKnowledgeToolCallForReal(t *testing.T) {
 	out, err := runner.Run(context.Background(), RunInput{
 		SessionKey:  "task-a:requirements",
 		UserMessage: "what do we know?",
-		OnToolResult: func(_ string, result string, _ bool) {
+		OnToolResult: func(_, _, result string, _ bool) {
 			toolResults = append(toolResults, result)
 		},
 	}, nil)
@@ -291,19 +291,19 @@ func TestChatClientRunner_Run_SurfacesIntermediateToolActivity(t *testing.T) {
 	runner := NewChatClientRunner(client, nil)
 
 	type activity struct {
-		phase, name, args, result string
-		isError                   bool
+		phase, id, name, args, result string
+		isError                       bool
 	}
 	var got []activity
 	out, err := runner.Run(context.Background(), RunInput{
 		SessionKey:  "task-a:review",
 		Workspace:   dir,
 		UserMessage: "review it",
-		OnToolCall: func(name, argsJSON string) {
-			got = append(got, activity{phase: "call", name: name, args: argsJSON})
+		OnToolCall: func(id, name, argsJSON string) {
+			got = append(got, activity{phase: "call", id: id, name: name, args: argsJSON})
 		},
-		OnToolResult: func(name, result string, isError bool) {
-			got = append(got, activity{phase: "result", name: name, result: result, isError: isError})
+		OnToolResult: func(id, name, result string, isError bool) {
+			got = append(got, activity{phase: "result", id: id, name: name, result: result, isError: isError})
 		},
 	}, func(chat.Delta) error { return nil })
 
@@ -318,6 +318,8 @@ func TestChatClientRunner_Run_SurfacesIntermediateToolActivity(t *testing.T) {
 	assert.Equal(t, "read_file", got[1].name)
 	assert.False(t, got[1].isError)
 	assert.Contains(t, got[1].result, "hello world")
+	assert.Equal(t, got[0].id, got[1].id, "the call and its result must share the same correlation id")
+	assert.NotEmpty(t, got[0].id)
 }
 
 // Callbacks left nil (free chat, rehydration) must be a safe no-op even when

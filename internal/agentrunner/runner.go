@@ -103,12 +103,21 @@ type RunInput struct {
 	// "ran go test ./... -> ok" live rather than only the model's prose. This
 	// is distinct from RunOutput.ToolCall/RunInput.Tools: those carry the
 	// single FINAL Draft-proposing stop call, which does not flow through
-	// these hooks. Only *ChatClientRunner (engine-backed) drives them, wired
-	// to toolloop.Config.OnToolCall/OnToolResult; runners that don't use the
-	// shared engine (ClaudeRunner) leave them unobserved. Both are nil-safe:
-	// free-chat and rehydration callers leave them unset.
-	OnToolCall   func(name, argsJSON string)
-	OnToolResult func(name, result string, isError bool)
+	// these hooks. Every AgentRunner implementation drives them today
+	// (ChatClientRunner via toolloop.Config.OnToolCall/OnToolResult,
+	// ClaudeRunner via processMessage's toolActivityHooks, CodexRunner via
+	// processCodexRunEvent) — both are nil-safe regardless, since free-chat
+	// and rehydration callers leave them unset. id is a per-call correlation
+	// key (the underlying provider's own call id, e.g. the claude CLI's
+	// ToolUseID) — a call and its result share the same id, letting a caller
+	// attach a result to the exact call it belongs to rather than assuming
+	// results always arrive in the same order calls were declared. That
+	// assumption is false for a runner that can declare several calls before
+	// any of their results return (the claude CLI does, for parallel
+	// read-only tool calls) — without the id, a result silently attaches to
+	// whichever call happens to be positionally last.
+	OnToolCall   func(id, name, argsJSON string)
+	OnToolResult func(id, name, result string, isError bool)
 }
 
 // RunOutput is the result of one AgentRunner.Run call: the assistant's
@@ -162,6 +171,12 @@ type ExecuteInput struct {
 // agent's real actions (files written, commands run), not just its prose.
 type ExecuteEvent struct {
 	Kind string // "text" | "reasoning" | "tool_call" | "tool_result"
+
+	// ID is set when Kind == "tool_call" or "tool_result" — a per-call
+	// correlation key (see RunInput.OnToolCall's doc comment for why: a
+	// call and its result can arrive out of declaration order). A "tool_call"
+	// and its later "tool_result" share the same ID.
+	ID string
 
 	// Text is set when Kind == "text" or "reasoning". "reasoning" is only
 	// ever emitted by ClaudeRunner, and only once extended thinking is

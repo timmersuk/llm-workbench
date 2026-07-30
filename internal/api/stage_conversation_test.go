@@ -642,10 +642,10 @@ func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testin
 
 	runner := new(mockAgentRunner)
 	runner.On("Run", mock.Anything, mock.MatchedBy(func(in agentrunner.RunInput) bool {
-		in.OnToolCall("Read", `{"path":"a.go"}`)
-		in.OnToolResult("Read", "package main", false)
-		in.OnToolCall("Grep", `{"pattern":"TODO"}`)
-		in.OnToolResult("Grep", "no matches", true)
+		in.OnToolCall("call-1", "Read", `{"path":"a.go"}`)
+		in.OnToolResult("call-1", "Read", "package main", false)
+		in.OnToolCall("call-2", "Grep", `{"pattern":"TODO"}`)
+		in.OnToolResult("call-2", "Grep", "no matches", true)
 		return true
 	}), mock.Anything).Return([]chat.Delta{{Content: "done looking"}}, agentrunner.RunOutput{Content: "done looking"}, nil)
 
@@ -702,11 +702,11 @@ func TestHandlePostStageMessage_PersistsSegmentsInRealInterleavedOrder(t *testin
 			// "all tools then all text" — to prove runStageTurn records
 			// what actually happened, not a flattened summary.
 			require.NoError(t, onDelta(chat.Delta{Content: "build passes, now testing"}))
-			in.OnToolCall("Bash", `{"command":"go test ./..."}`)
-			in.OnToolResult("Bash", "ok", false)
+			in.OnToolCall("call-1", "Bash", `{"command":"go test ./..."}`)
+			in.OnToolResult("call-1", "Bash", "ok", false)
 			require.NoError(t, onDelta(chat.Delta{Content: "tests pass, now checking frontend"}))
-			in.OnToolCall("Bash", `{"command":"npm test"}`)
-			in.OnToolResult("Bash", "ok", false)
+			in.OnToolCall("call-2", "Bash", `{"command":"npm test"}`)
+			in.OnToolResult("call-2", "Bash", "ok", false)
 			require.NoError(t, onDelta(chat.Delta{Content: "all green"}))
 		}).
 		Return(nil, agentrunner.RunOutput{}, nil)
@@ -748,6 +748,66 @@ func TestHandlePostStageMessage_PersistsSegmentsInRealInterleavedOrder(t *testin
 	assert.Equal(t, "Bash", assistant.ToolActivity[0].Name)
 	assert.Equal(t, `{"command":"go test ./..."}`, assistant.ToolActivity[0].Arguments)
 	assert.Equal(t, `{"command":"npm test"}`, assistant.ToolActivity[1].Arguments)
+}
+
+// TestHandlePostStageMessage_AttachesResultsByIDNotArrivalOrder proves
+// runStageTurn no longer assumes results arrive in the same order their
+// calls were declared — a provider (the claude CLI, for parallel read-only
+// tool calls) can declare several calls before any of their results
+// return. Two calls are declared back-to-back before either result
+// arrives, and the results are delivered in REVERSE order — the old "fill
+// in whichever entry is currently last" heuristic would attach both
+// results to the wrong call; id-keyed correlation must attach each to its
+// real one regardless.
+func TestHandlePostStageMessage_AttachesResultsByIDNotArrivalOrder(t *testing.T) {
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+
+	var persistedMsgs []task.ConversationMessage
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+		persistedMsgs = msgs
+		return true
+	})).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+
+	knowledgeReader := new(mockKnowledgeStore)
+
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(agentrunner.RunInput)
+			// Both calls declared before either result — the exact shape a
+			// batching provider produces and a strictly-alternating mock
+			// never exercises.
+			in.OnToolCall("call-A", "Read", `{"path":"a.go"}`)
+			in.OnToolCall("call-B", "Grep", `{"pattern":"TODO"}`)
+			// Results arrive in REVERSE declaration order.
+			in.OnToolResult("call-B", "Grep", "no matches", false)
+			in.OnToolResult("call-A", "Read", "package main", false)
+		}).
+		Return(nil, agentrunner.RunOutput{}, nil)
+
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "what's here?"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
+		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Len(t, persistedMsgs, 2)
+	assistant := persistedMsgs[1]
+	require.Len(t, assistant.ToolActivity, 2)
+	assert.Equal(t, "Read", assistant.ToolActivity[0].Name)
+	assert.Equal(t, "package main", assistant.ToolActivity[0].Result, "call-A's result must attach to call-A, not to whichever call was declared last")
+	assert.Equal(t, "Grep", assistant.ToolActivity[1].Name)
+	assert.Equal(t, "no matches", assistant.ToolActivity[1].Result, "call-B's result must attach to call-B")
 }
 
 // TestHandlePostStageMessage_IgnoresMismatchedToolCallName covers a model

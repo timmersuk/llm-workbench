@@ -298,6 +298,19 @@ describe('GrillMePanel — starting an empty conversation on demand', () => {
 })
 
 describe('GrillMePanel — sending a message and streaming the reply', () => {
+  it('shows the just-sent user message immediately, before any reply streams back', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.postStageMessage).mockImplementation(() => new Promise(() => undefined)) // stays in-flight
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'Add a login page')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(screen.getByText('Add a login page')).toBeInTheDocument()
+  })
+
   it('accumulates streamed content token-by-token', async () => {
     const user = userEvent.setup()
     let deliver!: (event: ChatStreamEvent) => void
@@ -347,11 +360,11 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
     act(() => deliver({ content: 'build passes, now testing' }))
-    act(() => deliver({ tool_activity: { phase: 'call', name: 'Bash', arguments: '{"command":"go test ./..."}' } }))
-    act(() => deliver({ tool_activity: { phase: 'result', name: 'Bash', result: 'ok', is_error: false } }))
+    act(() => deliver({ tool_activity: { id: 'call-1', phase: 'call', name: 'Bash', arguments: '{"command":"go test ./..."}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-1', phase: 'result', name: 'Bash', result: 'ok', is_error: false } }))
     act(() => deliver({ content: 'tests pass, now checking frontend' }))
-    act(() => deliver({ tool_activity: { phase: 'call', name: 'Grep', arguments: '{"pattern":"TODO"}' } }))
-    act(() => deliver({ tool_activity: { phase: 'result', name: 'Grep', result: 'no matches', is_error: false } }))
+    act(() => deliver({ tool_activity: { id: 'call-2', phase: 'call', name: 'Grep', arguments: '{"pattern":"TODO"}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-2', phase: 'result', name: 'Grep', result: 'no matches', is_error: false } }))
     act(() => deliver({ content: 'all green' }))
 
     const text = document.body.textContent ?? ''
@@ -366,6 +379,37 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
     expect(iNarration2).toBeGreaterThan(iBash)
     expect(iGrep).toBeGreaterThan(iNarration2)
     expect(iNarration3).toBeGreaterThan(iGrep)
+  })
+
+  it('attaches each result to the call with its own id, not to whichever call is currently last, when results arrive out of order', async () => {
+    const user = userEvent.setup()
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
+      deliver = onEvent
+      return new Promise(() => undefined) // stays in-flight for the duration of this test
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'run the checks')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    // Both calls declared (same tool name, so a name-based guess couldn't
+    // tell them apart either) before either result arrives — the exact
+    // shape a batching provider produces. Results then delivered in
+    // REVERSE declaration order.
+    act(() => deliver({ tool_activity: { id: 'call-A', phase: 'call', name: 'Bash', arguments: '{"command":"cat unique-path-A"}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-B', phase: 'call', name: 'Bash', arguments: '{"command":"cat unique-path-B"}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-B', phase: 'result', name: 'Bash', result: 'RESULT-FOR-B', is_error: false } }))
+    act(() => deliver({ tool_activity: { id: 'call-A', phase: 'result', name: 'Bash', result: 'RESULT-FOR-A', is_error: false } }))
+
+    const rows = document.querySelectorAll('.tool-activity-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].textContent).toContain('unique-path-A')
+    expect(rows[0].textContent).toContain('RESULT-FOR-A')
+    expect(rows[1].textContent).toContain('unique-path-B')
+    expect(rows[1].textContent).toContain('RESULT-FOR-B')
   })
 
   it('sends on Enter without needing the Send button', async () => {

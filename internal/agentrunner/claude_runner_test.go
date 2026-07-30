@@ -131,8 +131,8 @@ func TestProcessMessage_ForwardsNonDraftToolCallToHooks(t *testing.T) {
 	var out RunOutput
 	var calls []string
 	hooks := &toolActivityHooks{
-		onCall:  func(name, argsJSON string) { calls = append(calls, name+":"+argsJSON) },
-		pending: make(map[string]string),
+		onCall:  func(id, name, argsJSON string) { calls = append(calls, name+":"+argsJSON) },
+		pending: make(pendingToolCalls),
 	}
 
 	msg := &claudecode.AssistantMessage{
@@ -157,7 +157,7 @@ func TestProcessMessage_DraftToolCallNeverForwardedAsActivity(t *testing.T) {
 	var content assistantText
 	var out RunOutput
 	var calls int
-	hooks := &toolActivityHooks{onCall: func(string, string) { calls++ }, pending: make(map[string]string)}
+	hooks := &toolActivityHooks{onCall: func(string, string, string) { calls++ }, pending: make(pendingToolCalls)}
 
 	msg := &claudecode.AssistantMessage{
 		Content: []claudecode.ContentBlock{&claudecode.ToolUseBlock{
@@ -180,14 +180,15 @@ func TestProcessMessage_ForwardsToolResultCorrelatedByID(t *testing.T) {
 	var content assistantText
 	var out RunOutput
 	type result struct {
+		id      string
 		name    string
 		text    string
 		isError bool
 	}
 	var results []result
 	hooks := &toolActivityHooks{
-		onResult: func(name, text string, isError bool) { results = append(results, result{name, text, isError}) },
-		pending:  map[string]string{"call-1": "Grep"},
+		onResult: func(id, name, text string, isError bool) { results = append(results, result{id, name, text, isError}) },
+		pending:  pendingToolCalls{"call-1": "Grep"},
 	}
 
 	isError := true
@@ -199,7 +200,7 @@ func TestProcessMessage_ForwardsToolResultCorrelatedByID(t *testing.T) {
 	_, err := processMessage(msg, nil, &content, &out, nil, hooks)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, result{"Grep", "no matches", true}, results[0])
+	assert.Equal(t, result{"call-1", "Grep", "no matches", true}, results[0])
 	assert.Empty(t, hooks.pending, "a correlated result must be popped from pending, not left to leak")
 }
 
@@ -383,7 +384,7 @@ func TestProcessExecuteMessage_AccumulatesText(t *testing.T) {
 	var content assistantText
 	var out ExecuteOutput
 
-	done, err := processExecuteMessage(textDeltaEvent("implementing... "), &content, &out, nil)
+	done, err := processExecuteMessage(textDeltaEvent("implementing... "), &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, "implementing... ", content.String())
@@ -393,14 +394,14 @@ func TestProcessExecuteMessage_SeparatesTextFromDistinctAssistantMessages(t *tes
 	var content assistantText
 	var out ExecuteOutput
 
-	_, err := processExecuteMessage(messageStartEvent(), &content, &out, nil)
+	_, err := processExecuteMessage(messageStartEvent(), &content, &out, nil, nil)
 	require.NoError(t, err)
-	_, err = processExecuteMessage(textDeltaEvent("Running the test suite first."), &content, &out, nil)
+	_, err = processExecuteMessage(textDeltaEvent("Running the test suite first."), &content, &out, nil, nil)
 	require.NoError(t, err)
 
-	_, err = processExecuteMessage(messageStartEvent(), &content, &out, nil)
+	_, err = processExecuteMessage(messageStartEvent(), &content, &out, nil, nil)
 	require.NoError(t, err)
-	_, err = processExecuteMessage(textDeltaEvent("Tests pass, moving on."), &content, &out, nil)
+	_, err = processExecuteMessage(textDeltaEvent("Tests pass, moving on."), &content, &out, nil, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Running the test suite first.\n\nTests pass, moving on.", content.String())
@@ -425,7 +426,7 @@ func TestProcessExecuteMessage_EmitsEveryToolCall(t *testing.T) {
 	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
 		events = append(events, e)
 		return nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.Len(t, events, 2)
@@ -449,7 +450,7 @@ func TestProcessExecuteMessage_EmitsToolResultFromUserMessage(t *testing.T) {
 	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
 		events = append(events, e)
 		return nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.Len(t, events, 1)
@@ -471,7 +472,7 @@ func TestProcessExecuteMessage_ToolResultDefaultsNotErrorWhenNil(t *testing.T) {
 	_, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
 		events = append(events, e)
 		return nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.False(t, events[0].IsError)
@@ -490,7 +491,7 @@ func TestProcessExecuteMessage_ResultMessagePopulatesRealMetrics(t *testing.T) {
 		TotalCostUSD: &cost,
 		Usage:        &usage,
 	}
-	done, err := processExecuteMessage(msg, &content, &out, nil)
+	done, err := processExecuteMessage(msg, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.True(t, done)
 	assert.Equal(t, "done implementing", out.Content)
@@ -504,7 +505,7 @@ func TestProcessExecuteMessage_ResultMessageLeavesMetricsZeroWhenUnavailable(t *
 	var content assistantText
 	var out ExecuteOutput
 
-	done, err := processExecuteMessage(&claudecode.ResultMessage{DurationMs: 1000}, &content, &out, nil)
+	done, err := processExecuteMessage(&claudecode.ResultMessage{DurationMs: 1000}, &content, &out, nil, nil)
 	require.NoError(t, err)
 	assert.True(t, done)
 	assert.Equal(t, 0, out.TokensUsed)
@@ -515,7 +516,7 @@ func TestProcessExecuteMessage_ResultMessageReportsError(t *testing.T) {
 	var content assistantText
 	var out ExecuteOutput
 
-	done, err := processExecuteMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, &content, &out, nil)
+	done, err := processExecuteMessage(&claudecode.ResultMessage{IsError: true, Errors: []string{"boom"}}, &content, &out, nil, nil)
 	assert.True(t, done)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
@@ -533,7 +534,7 @@ func TestProcessExecuteMessage_StreamDeltaEmitsTextEvent(t *testing.T) {
 	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
 		events = append(events, e)
 		return nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, []ExecuteEvent{{Kind: "text", Text: "chunk"}}, events)
@@ -556,7 +557,7 @@ func TestProcessExecuteMessage_ThinkingBlockEmitsReasoningEvent(t *testing.T) {
 	done, err := processExecuteMessage(msg, &content, &out, func(e ExecuteEvent) error {
 		events = append(events, e)
 		return nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Equal(t, []ExecuteEvent{{Kind: "reasoning", Text: "weighing approaches..."}}, events)

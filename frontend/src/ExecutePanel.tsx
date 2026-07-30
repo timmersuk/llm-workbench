@@ -2,18 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, startExecution } from './api'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { MarkdownMessage } from './MarkdownMessage'
-import type { ToolActivityEntry } from './ToolActivity'
 import { ToolActivitySequence } from './ToolActivity'
+import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
+import type { ToolActivityBlock } from './toolActivityBlocks'
 import type { Execution, ExecuteStreamEvent } from './types'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
-
-// TraceBlock is one rendered piece of a running execution's live activity —
-// unlike StageConversationPanel's DisplayMessage (one tool-activity sequence
-// per turn, bundled on a single message), an execution's trace is flat and
-// can interleave narration between tool calls, so a 'tools' block holds one
-// sequence (docs/adr/0019: a maximal run of calls uninterrupted by text) and
-// any interleaved text starts a new 'text' block, ending that sequence.
-type TraceBlock = { kind: 'text'; content: string } | { kind: 'tools'; activities: ToolActivityEntry[] }
 
 interface ExecutePanelProps {
   projectId: string
@@ -40,7 +33,7 @@ const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', c
 // a Conversation turn's one bundled sequence.
 export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProps) {
   const [pastExecutions, setPastExecutions] = useState<Execution[]>([])
-  const [trace, setTrace] = useState<TraceBlock[]>([])
+  const [trace, setTrace] = useState<ToolActivityBlock[]>([])
   const [running, setRunning] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
   const [executor, setExecutor] = useState('')
@@ -107,62 +100,18 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
     }
   }, [projectId, taskId])
 
-  // appendText coalesces consecutive text deltas into a single growing
-  // trace block rather than one block per delta, matching how
-  // StageConversationPanel grows one message's content in place. Any
-  // trailing 'tools' block is left as-is (already closed — its sequence
-  // ended the moment this text started).
-  function appendText(chunk: string) {
-    setTrace((prev) => {
-      const last = prev[prev.length - 1]
-      if (last && last.kind === 'text') {
-        return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
-      }
-      return [...prev, { kind: 'text', content: chunk }]
-    })
-  }
-
-  // appendToolCall starts a new pending activity — continuing the trailing
-  // 'tools' block (same sequence) if there is one, or opening a new one.
-  function appendToolCall(name: string | undefined, args: string | undefined) {
-    setTrace((prev) => {
-      const activity: ToolActivityEntry = { name: name ?? '', arguments: args }
-      const last = prev[prev.length - 1]
-      if (last && last.kind === 'tools') {
-        return [...prev.slice(0, -1), { ...last, activities: [...last.activities, activity] }]
-      }
-      return [...prev, { kind: 'tools', activities: [activity] }]
-    })
-  }
-
-  // appendToolResult fills in the most recently opened sequence's last
-  // pending call — tool_call/tool_result events arrive strictly paired and
-  // in order (internal/api/execution.go), so the trailing 'tools' block's
-  // last activity is always the one this result belongs to.
-  function appendToolResult(result: string, isError: boolean | undefined) {
-    setTrace((prev) => {
-      const last = prev[prev.length - 1]
-      if (!last || last.kind !== 'tools' || last.activities.length === 0) {
-        return prev
-      }
-      const activities = [...last.activities]
-      activities[activities.length - 1] = { ...activities[activities.length - 1], result, isError }
-      return [...prev.slice(0, -1), { ...last, activities }]
-    })
-  }
-
   function handleStreamEvent(event: ExecuteStreamEvent) {
     switch (event.type) {
       case 'text':
         if (event.content) {
-          appendText(event.content)
+          setTrace((prev) => appendTextBlock(prev, event.content!))
         }
         return
       case 'tool_call':
-        appendToolCall(event.tool_name, event.tool_input)
+        setTrace((prev) => appendToolCallBlock(prev, { id: event.id, name: event.tool_name ?? '', arguments: event.tool_input }))
         return
       case 'tool_result':
-        appendToolResult(event.tool_result ?? '', event.is_error)
+        setTrace((prev) => appendToolResultBlock(prev, event.id ?? '', event.tool_result ?? '', event.is_error))
         return
       case 'error':
         // A user-initiated Stop cancels the request context, which the
@@ -265,7 +214,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         <div className="chat-history" ref={historyRef}>
           {trace.map((block, index) => (
             <div key={index} className="chat-message">
-              {block.kind === 'text' && <MarkdownMessage content={block.content} />}
+              {block.kind === 'text' && <MarkdownMessage content={block.text} />}
               {block.kind === 'tools' && (
                 <ToolActivitySequence activities={block.activities} live={running && index === trace.length - 1} />
               )}

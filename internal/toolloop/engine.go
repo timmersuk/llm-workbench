@@ -62,13 +62,20 @@ type Config struct {
 	// many calls at once. Zero applies defaultMaxToolCallsPerTurn.
 	MaxToolCallsPerTurn int
 	// OnToolCall, if set, is invoked just before each de-duplicated,
-	// executed call runs. Execute uses this to surface every real action as
-	// an ExecuteEvent; Run leaves it nil since RunOutput only surfaces text
-	// and the final StopCall. An error aborts the loop, matching onDelta's
-	// contract.
-	OnToolCall func(name, argumentsJSON string) error
+	// executed call runs — both Run and Execute (agentrunner.ChatClientRunner)
+	// wire this through to surface intermediate tool activity live. An error
+	// aborts the loop, matching onDelta's contract. id is call.ID, the same
+	// per-call correlation key threaded through agentrunner.RunInput.OnToolCall/
+	// ExecuteEvent.ID — a call and its result share it. Unlike a provider that
+	// can declare several calls before returning any of their results (see
+	// agentrunner.RunInput.OnToolCall's doc comment), this loop always
+	// executes one call and reports its result before moving to the next, so
+	// id is never actually needed for correlation here — it's threaded
+	// through purely because the callback signature is shared across every
+	// caller of RunInput.OnToolCall/OnToolResult.
+	OnToolCall func(id, name, argumentsJSON string) error
 	// OnToolResult mirrors OnToolCall for the result of executing that call.
-	OnToolResult func(name, result string, isError bool) error
+	OnToolResult func(id, name, result string, isError bool) error
 }
 
 const defaultMaxToolCallsPerTurn = 8
@@ -170,13 +177,13 @@ func (e *Engine) Run(ctx context.Context, cfg Config, messages []chat.Message, o
 		msgs = append(msgs, chat.Message{Role: "assistant", Content: lastText, ToolCalls: executed})
 		for _, call := range executed {
 			if cfg.OnToolCall != nil {
-				if err := cfg.OnToolCall(call.Function.Name, call.Function.Arguments); err != nil {
+				if err := cfg.OnToolCall(call.ID, call.Function.Name, call.Function.Arguments); err != nil {
 					return Result{Content: lastText, Turns: turn, TokensUsed: totalTokens}, err
 				}
 			}
 			result, isError := executeCall(ctx, byName, cfg.Workspace, call)
 			if cfg.OnToolResult != nil {
-				if err := cfg.OnToolResult(call.Function.Name, result, isError); err != nil {
+				if err := cfg.OnToolResult(call.ID, call.Function.Name, result, isError); err != nil {
 					return Result{Content: lastText, Turns: turn, TokensUsed: totalTokens}, err
 				}
 			}

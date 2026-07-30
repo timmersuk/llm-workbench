@@ -699,27 +699,37 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 	// (validated against in.Tools below), which is never routed here.
 	// General across all three stages: Requirements/Planning only ever make
 	// read-only calls, Review adds bash.
-	in.OnToolCall = func(name, argsJSON string) {
-		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "call", Name: name, Arguments: argsJSON}})
+	//
+	// pending correlates a still-unresolved call's id to exactly where its
+	// entry lives (segment index, activity index within that segment) — a
+	// provider is free to declare several calls before returning any of
+	// their results (the claude CLI does, for parallel read-only calls), so
+	// a result can arrive for any pending call, not just the most recently
+	// declared one; "attach to whichever entry is currently last" silently
+	// misattributes whenever that happens. Indices, not pointers: a later
+	// OnToolCall's append to the same segment's ToolActivity slice can
+	// reallocate its backing array, which would invalidate a pointer taken
+	// before the reallocation but leaves index coordinates valid.
+	type pendingSlot struct{ seg, act int }
+	pending := make(map[string]pendingSlot)
+	in.OnToolCall = func(id, name, argsJSON string) {
+		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{ID: id, Phase: "call", Name: name, Arguments: argsJSON}})
 		entry := task.ConversationToolActivity{Name: name, Arguments: task.TruncateForPersistence(argsJSON)}
 		if n := len(segments); n > 0 && segments[n-1].Kind == task.SegmentKindTools {
 			segments[n-1].ToolActivity = append(segments[n-1].ToolActivity, entry)
+			pending[id] = pendingSlot{seg: n - 1, act: len(segments[n-1].ToolActivity) - 1}
 		} else {
 			segments = append(segments, task.ConversationSegment{Kind: task.SegmentKindTools, ToolActivity: []task.ConversationToolActivity{entry}})
+			pending[id] = pendingSlot{seg: len(segments) - 1, act: 0}
 		}
 	}
-	in.OnToolResult = func(name, result string, isError bool) {
-		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{Phase: "result", Name: name, Result: result, IsError: isError}})
-		// Fill in the most recent call still missing its result — calls and
-		// results arrive strictly paired and in order (both the toolloop
-		// engine and the claude/codex CLI integrations execute/report one
-		// call's result before the next call happens), so the last entry of
-		// the last Tools segment is always the one this result belongs to.
-		if n := len(segments); n > 0 && segments[n-1].Kind == task.SegmentKindTools {
-			if acts := segments[n-1].ToolActivity; len(acts) > 0 {
-				acts[len(acts)-1].Result = task.TruncateForPersistence(result)
-				acts[len(acts)-1].IsError = isError
-			}
+	in.OnToolResult = func(id, name, result string, isError bool) {
+		writeEvent(chatStreamEvent{ToolActivity: &chatToolActivityEvent{ID: id, Phase: "result", Name: name, Result: result, IsError: isError}})
+		if slot, ok := pending[id]; ok {
+			delete(pending, id)
+			acts := segments[slot.seg].ToolActivity
+			acts[slot.act].Result = task.TruncateForPersistence(result)
+			acts[slot.act].IsError = isError
 		}
 	}
 	out, runErr := runner.Run(ctx, in, func(d chat.Delta) error {

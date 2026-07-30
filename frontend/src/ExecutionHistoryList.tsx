@@ -1,15 +1,10 @@
 import { useState } from 'react'
 import { getExecutionLog } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
-import type { ToolActivityEntry } from './ToolActivity'
 import { ToolActivitySequence } from './ToolActivity'
+import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
+import type { ToolActivityBlock } from './toolActivityBlocks'
 import type { Execution, ExecutionLogEvent } from './types'
-
-// TraceBlock mirrors ExecutePanel's own live-trace shape — a completed
-// execution's fetched log and a still-running attempt's live trace render
-// through the identical block kinds, just built from a different source
-// (logEventsToTraceBlocks below vs. incremental SSE deltas).
-type TraceBlock = { kind: 'text'; content: string } | { kind: 'tools'; activities: ToolActivityEntry[] }
 
 // PastExecutionLogState tracks one past execution's on-demand-fetched log
 // (getExecutionLog), keyed by execution_id — absent until a human expands
@@ -17,36 +12,25 @@ type TraceBlock = { kind: 'text'; content: string } | { kind: 'tools'; activitie
 // and most past attempts are never inspected.
 type PastExecutionLogState =
   | { status: 'loading' }
-  | { status: 'loaded'; trace: TraceBlock[]; backfilled: boolean }
+  | { status: 'loaded'; trace: ToolActivityBlock[]; backfilled: boolean }
   | { status: 'error'; message: string }
 
 // logEventsToTraceBlocks folds a fetched ExecutionLog's flat event stream
-// into TraceBlock[] — text events coalesce into a growing block the same
-// way a live run's streamed deltas do, tool_call/tool_result pair up into
-// one ToolActivityEntry per call.
-function logEventsToTraceBlocks(events: ExecutionLogEvent[]): TraceBlock[] {
-  const blocks: TraceBlock[] = []
+// into ToolActivityBlock[] through the same shared builders the live
+// ExecutePanel/StageConversationPanel streams use, so a persisted log
+// replays with the same real order (and the same id-matched result
+// pairing) a live run rendered with — a persisted log's events aren't
+// pre-paired server-side, they're flat and in arrival order, same shape as
+// the live stream, so this needed the same fix.
+function logEventsToTraceBlocks(events: ExecutionLogEvent[]): ToolActivityBlock[] {
+  let blocks: ToolActivityBlock[] = []
   for (const ev of events) {
-    const last = blocks[blocks.length - 1]
     if (ev.kind === 'text') {
-      if (last && last.kind === 'text') {
-        last.content += ev.text ?? ''
-      } else {
-        blocks.push({ kind: 'text', content: ev.text ?? '' })
-      }
+      blocks = appendTextBlock(blocks, ev.text ?? '')
     } else if (ev.kind === 'tool_call') {
-      const activity: ToolActivityEntry = { name: ev.tool_name ?? '', arguments: ev.tool_input }
-      if (last && last.kind === 'tools') {
-        last.activities.push(activity)
-      } else {
-        blocks.push({ kind: 'tools', activities: [activity] })
-      }
-    } else if (ev.kind === 'tool_result' && last && last.kind === 'tools' && last.activities.length > 0) {
-      last.activities[last.activities.length - 1] = {
-        ...last.activities[last.activities.length - 1],
-        result: ev.tool_result ?? '',
-        isError: ev.is_error,
-      }
+      blocks = appendToolCallBlock(blocks, { id: ev.id, name: ev.tool_name ?? '', arguments: ev.tool_input })
+    } else if (ev.kind === 'tool_result') {
+      blocks = appendToolResultBlock(blocks, ev.id ?? '', ev.tool_result ?? '', ev.is_error)
     }
   }
   return blocks
@@ -129,7 +113,7 @@ export function ExecutionHistoryList({ projectId, taskId, executions }: Executio
                   {logState.trace.length === 0 && <p className="execution-log-status">No events recorded.</p>}
                   {logState.trace.map((block, index) => (
                     <div key={index} className="chat-message">
-                      {block.kind === 'text' && <MarkdownMessage content={block.content} />}
+                      {block.kind === 'text' && <MarkdownMessage content={block.text} />}
                       {block.kind === 'tools' && <ToolActivitySequence activities={block.activities} live={false} />}
                     </div>
                   ))}

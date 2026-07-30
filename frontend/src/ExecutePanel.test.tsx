@@ -81,6 +81,32 @@ describe('ExecutePanel — running an execution', () => {
     expect(screen.getByText('wrote file')).toBeInTheDocument()
   })
 
+  it('attaches each result to the call with its own id, not to whichever call is currently last, when results arrive out of order', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.startExecution).mockImplementation(async (_projectId, _taskId, _executor, onEvent) => {
+      // Both calls declared (same tool name, so a name-based guess couldn't
+      // tell them apart either) before either result arrives — the exact
+      // shape a batching provider produces. Results then delivered in
+      // REVERSE declaration order.
+      onEvent({ type: 'tool_call', id: 'call-A', tool_name: 'Bash', tool_input: '{"command":"cat unique-path-A"}' })
+      onEvent({ type: 'tool_call', id: 'call-B', tool_name: 'Bash', tool_input: '{"command":"cat unique-path-B"}' })
+      onEvent({ type: 'tool_result', id: 'call-B', tool_result: 'RESULT-FOR-B' })
+      onEvent({ type: 'tool_result', id: 'call-A', tool_result: 'RESULT-FOR-A' })
+      onEvent({ type: 'done', execution: makeExecution() })
+    })
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Run Execution' }))
+
+    await screen.findByText('RESULT-FOR-A')
+    const rows = document.querySelectorAll('.tool-activity-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].textContent).toContain('unique-path-A')
+    expect(rows[0].textContent).toContain('RESULT-FOR-A')
+    expect(rows[1].textContent).toContain('unique-path-B')
+    expect(rows[1].textContent).toContain('RESULT-FOR-B')
+  })
+
   it('calls onExecuted with the recorded Execution once the run completes', async () => {
     const user = userEvent.setup()
     const onExecuted = vi.fn()

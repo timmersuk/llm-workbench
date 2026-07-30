@@ -66,8 +66,13 @@ func usageEvent(u *chat.Usage) *chatUsageEvent {
 // JSON input) or "result" (Name/Result set, IsError flags a failed call).
 // Unlike a Draft chatToolCallEvent, a single turn can emit many of these —
 // they narrate the agent's actual actions (e.g. running the test suite)
-// before it either replies in prose or proposes its Draft.
+// before it either replies in prose or proposes its Draft. ID is the same
+// per-call correlation key agentrunner.RunInput.OnToolCall/OnToolResult
+// carries (see its doc comment) — a "call" and its later "result" share it,
+// so the frontend can attach a result to the exact call it belongs to
+// rather than assuming they always arrive call-then-result in order.
 type chatToolActivityEvent struct {
+	ID        string `json:"id"`
 	Phase     string `json:"phase"` // "call" | "result"
 	Name      string `json:"name"`
 	Arguments string `json:"arguments,omitempty"`

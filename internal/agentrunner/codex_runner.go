@@ -453,7 +453,30 @@ func tomlQuote(s string) string {
 // already carries the whole call-and-result together, so onToolCall/
 // onToolResult are simply invoked back to back, no correlation state
 // needed.
-func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *assistantText, out *RunOutput, onDelta func(chat.Delta) error, onToolCall func(name, argsJSON string), onToolResult func(name, result string, isError bool)) (done bool, err error) {
+// codexItemToolCallID returns item's own id — a real, stable per-item id on
+// every ThreadItem variant this codebase reads (*types.CommandExecution,
+// *types.FileChange, *types.MCPToolCall), used identically by
+// processCodexRunEvent and processCodexExecuteEvent so both derive a tool
+// call's correlation id the same way rather than two independently-written
+// copies. Codex resolves a call and its result together, synchronously, for
+// the same completed item (both call sites below), so correctness never
+// actually depends on this id — but every RunInput.OnToolCall/OnToolResult
+// caller shares one signature across all three runners, so it still needs
+// one to pass.
+func codexItemToolCallID(item types.ThreadItem) string {
+	switch it := item.(type) {
+	case *types.CommandExecution:
+		return it.ID
+	case *types.FileChange:
+		return it.ID
+	case *types.MCPToolCall:
+		return it.ID
+	default:
+		return ""
+	}
+}
+
+func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *assistantText, out *RunOutput, onDelta func(chat.Delta) error, onToolCall func(id, name, argsJSON string), onToolResult func(id, name, result string, isError bool)) (done bool, err error) {
 	switch e := ev.(type) {
 	case *types.ItemStarted:
 		// ItemStarted for a new AgentMessage item is codex's equivalent of
@@ -477,23 +500,25 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *ass
 		// assistantText's doc comment).
 		switch item := e.Item.(type) {
 		case *types.CommandExecution:
+			id := codexItemToolCallID(item)
 			if onToolCall != nil {
-				onToolCall("Bash", item.Command)
+				onToolCall(id, "Bash", item.Command)
 			}
 			if onToolResult != nil {
 				isErr := item.Status == "failed" || item.Status == "denied"
-				onToolResult("Bash", item.AggregatedOutput, isErr)
+				onToolResult(id, "Bash", item.AggregatedOutput, isErr)
 			}
 		case *types.FileChange:
+			id := codexItemToolCallID(item)
 			if onToolCall != nil {
 				input, marshalErr := json.Marshal(item.Changes)
 				if marshalErr != nil {
 					return true, fmt.Errorf("encoding file change input: %w", marshalErr)
 				}
-				onToolCall("FileChange", string(input))
+				onToolCall(id, "FileChange", string(input))
 			}
 			if onToolResult != nil {
-				onToolResult("FileChange", item.Status, item.Status == "failed")
+				onToolResult(id, "FileChange", item.Status, item.Status == "failed")
 			}
 		case *types.MCPToolCall:
 			if out.ToolCall == nil && slices.Contains(toolNames, item.ToolName) {
@@ -509,8 +534,9 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *ass
 			}
 			// Not the Draft — genuine intermediate tool activity (e.g. a
 			// knowledge-query call).
+			id := codexItemToolCallID(item)
 			if onToolCall != nil {
-				onToolCall(item.ToolName, string(item.Input))
+				onToolCall(id, item.ToolName, string(item.Input))
 			}
 			if onToolResult != nil {
 				isErr := item.Status == "failed"
@@ -518,7 +544,7 @@ func processCodexRunEvent(ev types.ThreadEvent, toolNames []string, content *ass
 				if isErr {
 					resultText = item.ErrorText()
 				}
-				onToolResult(item.ToolName, resultText, isErr)
+				onToolResult(id, item.ToolName, resultText, isErr)
 			}
 		}
 	case *types.TurnFailed:
@@ -562,27 +588,30 @@ func processCodexExecuteEvent(ev types.ThreadEvent, content *assistantText, out 
 		}
 		switch item := e.Item.(type) {
 		case *types.CommandExecution:
-			if err := onEvent(ExecuteEvent{Kind: "tool_call", ToolName: "Bash", ToolInput: item.Command}); err != nil {
+			id := codexItemToolCallID(item)
+			if err := onEvent(ExecuteEvent{Kind: "tool_call", ID: id, ToolName: "Bash", ToolInput: item.Command}); err != nil {
 				return true, err
 			}
 			isErr := item.Status == "failed" || item.Status == "denied"
-			if err := onEvent(ExecuteEvent{Kind: "tool_result", ToolResult: item.AggregatedOutput, IsError: isErr}); err != nil {
+			if err := onEvent(ExecuteEvent{Kind: "tool_result", ID: id, ToolResult: item.AggregatedOutput, IsError: isErr}); err != nil {
 				return true, err
 			}
 		case *types.FileChange:
+			id := codexItemToolCallID(item)
 			input, marshalErr := json.Marshal(item.Changes)
 			if marshalErr != nil {
 				return true, fmt.Errorf("encoding file change input: %w", marshalErr)
 			}
-			if err := onEvent(ExecuteEvent{Kind: "tool_call", ToolName: "FileChange", ToolInput: string(input)}); err != nil {
+			if err := onEvent(ExecuteEvent{Kind: "tool_call", ID: id, ToolName: "FileChange", ToolInput: string(input)}); err != nil {
 				return true, err
 			}
 			isErr := item.Status == "failed"
-			if err := onEvent(ExecuteEvent{Kind: "tool_result", ToolResult: item.Status, IsError: isErr}); err != nil {
+			if err := onEvent(ExecuteEvent{Kind: "tool_result", ID: id, ToolResult: item.Status, IsError: isErr}); err != nil {
 				return true, err
 			}
 		case *types.MCPToolCall:
-			if err := onEvent(ExecuteEvent{Kind: "tool_call", ToolName: item.ToolName, ToolInput: string(item.Input)}); err != nil {
+			id := codexItemToolCallID(item)
+			if err := onEvent(ExecuteEvent{Kind: "tool_call", ID: id, ToolName: item.ToolName, ToolInput: string(item.Input)}); err != nil {
 				return true, err
 			}
 			isErr := item.Status == "failed"
@@ -590,7 +619,7 @@ func processCodexExecuteEvent(ev types.ThreadEvent, content *assistantText, out 
 			if isErr {
 				resultText = item.ErrorText()
 			}
-			if err := onEvent(ExecuteEvent{Kind: "tool_result", ToolResult: resultText, IsError: isErr}); err != nil {
+			if err := onEvent(ExecuteEvent{Kind: "tool_result", ID: id, ToolResult: resultText, IsError: isErr}); err != nil {
 				return true, err
 			}
 		}

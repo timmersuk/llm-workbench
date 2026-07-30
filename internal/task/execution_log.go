@@ -35,6 +35,12 @@ var ErrExecutionLogAlreadyExists = errors.New("execution log already exists")
 // failing test's assertion is usually at the *end* of its output, not the
 // start.
 type ExecutionLogEvent struct {
+	// ID is set on a "tool_call"/"tool_result" pair — the same per-call
+	// correlation key agentrunner.ExecuteEvent.ID carries. Persisted (unlike
+	// the live-only ids elsewhere in this codebase) because a replayed
+	// execution log has no other way to attach a result to its real call —
+	// events are flat and in arrival order, same shape as the live stream.
+	ID         string    `yaml:"id,omitempty" json:"id,omitempty"`
 	Kind       string    `yaml:"kind" json:"kind"`
 	Text       string    `yaml:"text,omitempty" json:"text,omitempty"`
 	ToolName   string    `yaml:"tool_name,omitempty" json:"tool_name,omitempty"`
@@ -55,6 +61,7 @@ type ExecutionLogEvent struct {
 // plain string.
 func (e ExecutionLogEvent) MarshalYAML() (interface{}, error) {
 	return struct {
+		ID         string          `yaml:"id,omitempty"`
 		Kind       string          `yaml:"kind"`
 		Text       yamlutil.Quoted `yaml:"text,omitempty"`
 		ToolName   string          `yaml:"tool_name,omitempty"`
@@ -62,7 +69,7 @@ func (e ExecutionLogEvent) MarshalYAML() (interface{}, error) {
 		ToolResult yamlutil.Quoted `yaml:"tool_result,omitempty"`
 		IsError    bool            `yaml:"is_error,omitempty"`
 		CreatedAt  time.Time       `yaml:"created_at"`
-	}{e.Kind, yamlutil.Quoted(e.Text), e.ToolName, yamlutil.Quoted(e.ToolInput), yamlutil.Quoted(e.ToolResult), e.IsError, e.CreatedAt}, nil
+	}{e.ID, e.Kind, yamlutil.Quoted(e.Text), e.ToolName, yamlutil.Quoted(e.ToolInput), yamlutil.Quoted(e.ToolResult), e.IsError, e.CreatedAt}, nil
 }
 
 // ExecutionLog is the decoded shape of executions/exec-NNN.log.yaml: the

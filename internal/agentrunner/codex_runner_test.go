@@ -213,8 +213,8 @@ func TestProcessCodexRunEvent_CommandExecutionForwardsAsToolActivity(t *testing.
 		Command: "grep -r TODO .", Status: "success", AggregatedOutput: "no matches",
 	}}
 	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil,
-		func(name, args string) { calls = append(calls, name+":"+args) },
-		func(name, result string, isError bool) { results = append(results, name+":"+result) },
+		func(id, name, args string) { calls = append(calls, name+":"+args) },
+		func(id, name, result string, isError bool) { results = append(results, name+":"+result) },
 	)
 	require.NoError(t, err)
 	assert.False(t, done)
@@ -236,8 +236,8 @@ func TestProcessCodexRunEvent_NonMatchingMCPToolCallForwardsAsToolActivity(t *te
 		ToolName: "list_knowledge_concepts", Input: []byte(`{}`), Result: []byte(`["a"]`), Status: "completed",
 	}}
 	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil,
-		func(string, string) { calls++ },
-		func(string, string, bool) { results++ },
+		func(string, string, string) { calls++ },
+		func(string, string, string, bool) { results++ },
 	)
 	require.NoError(t, err)
 	assert.False(t, done)
@@ -258,7 +258,7 @@ func TestProcessCodexRunEvent_DraftMCPToolCallNeverForwardedAsActivity(t *testin
 	ev := &types.ItemCompleted{Item: &types.MCPToolCall{
 		ID: "call-1", ToolName: "propose_plan", Input: []byte(`{}`),
 	}}
-	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil, func(string, string) { calls++ }, nil)
+	done, err := processCodexRunEvent(ev, []string{"propose_plan"}, &content, &out, nil, func(string, string, string) { calls++ }, nil)
 	require.NoError(t, err)
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
