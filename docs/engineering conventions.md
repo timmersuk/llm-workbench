@@ -529,6 +529,28 @@ doesn't have to be re-derived or re-litigated later.
   custom properties (`--text`, `--bg`, `--accent`, ...) with a
   `@media (prefers-color-scheme: dark)` override block for dark mode. Flat
   kebab-case class names — no BEM, CSS modules, or Tailwind.
+  * **Manual theme override**: `ThemeToggle.tsx`'s Light/Dark/System control
+    (next to the build badge, `App.tsx`'s `.header-controls`) layers on top
+    of the same custom-properties convention rather than introducing a
+    second theming mechanism — `theme.ts` persists the choice to
+    `localStorage` (`theme`: `'light' | 'dark' | 'system'`) and sets/clears
+    a `data-theme` attribute on `<html>`. `index.css` restates the full
+    variable set under `:root[data-theme='dark']`/`='light'`, which wins
+    over both plain `:root` and the media query by specificity; `'system'`
+    never sets the attribute, so `@media (prefers-color-scheme: dark)`
+    (guarded by `:root:not([data-theme])`) remains the sole source of the
+    automatic OS-driven fallback, unchanged. `main.tsx` applies the stored
+    theme synchronously before the first render to avoid a flash of the
+    wrong palette.
+  * **`--*-contrast` tokens**: any text-on-colored-background pair (e.g.
+    `nav button.active`'s text on `--accent`, `.action-btn-stop`'s icon on
+    `--error`) uses a dedicated `--accent-contrast`/`--error-contrast`
+    token instead of a hardcoded color, because the two palettes need
+    different values to each independently clear WCAG 2.1 AA (4.5:1) —
+    e.g. white-on-`--accent` is 7.10:1 in the light palette but only 2.64:1
+    in the dark one, which instead uses `--bg` (6.77:1). Add a new
+    `--*-contrast` token rather than reusing an existing text token
+    whenever a new colored-background pairing is introduced.
 * **TypeScript**: `frontend/src/types.ts` mirrors the Go API structs
   field-for-field, including JSON tag casing (snake_case preserved, not
   converted to camelCase, since it's a direct mirror of Go's JSON output —
