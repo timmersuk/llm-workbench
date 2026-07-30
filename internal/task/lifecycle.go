@@ -46,9 +46,17 @@ func (s *FileStore) FinalizeRequirements(projectID, id string, draft Requirement
 	t.Constraints = trimmedList(draft.Constraints)
 	t.Assumptions = trimmedList(draft.Assumptions)
 	t.SuccessCriteria = trimmedList(draft.SuccessCriteria)
+	fromStage := t.Stage
 	t.Stage = StagePlanning
 	t.UpdatedAt = time.Now().UTC()
 
+	if err := s.AppendStageTransition(projectID, id, StageTransition{
+		FromStage: fromStage,
+		ToStage:   t.Stage,
+		Trigger:   TransitionTriggerFinalizeRequirements,
+	}); err != nil {
+		return Task{}, err
+	}
 	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
@@ -75,9 +83,17 @@ func (s *FileStore) FinalizePlan(projectID, id string, plan Plan) (Task, error) 
 		return Task{}, err
 	}
 
+	fromStage := t.Stage
 	t.Stage = StageImplementation
 	t.UpdatedAt = time.Now().UTC()
 
+	if err := s.AppendStageTransition(projectID, id, StageTransition{
+		FromStage: fromStage,
+		ToStage:   t.Stage,
+		Trigger:   TransitionTriggerFinalizePlan,
+	}); err != nil {
+		return Task{}, err
+	}
 	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
@@ -167,8 +183,17 @@ func (s *FileStore) FinalizeReview(projectID, id string, draft ReviewDraft) (Tas
 		return Task{}, err
 	}
 
+	fromStage := t.Stage
 	t.Stage = nextStage
 	t.UpdatedAt = time.Now().UTC()
+	if err := s.AppendStageTransition(projectID, id, StageTransition{
+		FromStage: fromStage,
+		ToStage:   t.Stage,
+		Trigger:   TransitionTriggerFinalizeReview,
+		ReviewID:  reviewID,
+	}); err != nil {
+		return Task{}, err
+	}
 	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
@@ -198,8 +223,16 @@ func (s *FileStore) MarkPRMerged(projectID, id string) (Task, error) {
 		return Task{}, fmt.Errorf("marking PR merged for %s: no pull_request recorded: %w", id, ErrWrongStage)
 	}
 
+	fromStage := t.Stage
 	t.Stage = StageMerged
 	t.UpdatedAt = time.Now().UTC()
+	if err := s.AppendStageTransition(projectID, id, StageTransition{
+		FromStage: fromStage,
+		ToStage:   t.Stage,
+		Trigger:   TransitionTriggerMarkPRMerged,
+	}); err != nil {
+		return Task{}, err
+	}
 	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
@@ -236,8 +269,11 @@ func (s *FileStore) RecordPullRequest(projectID, id string, pr PullRequest) (Tas
 // "Revise"): moves Stage back from "planning" to "requirements", reopening
 // the requirements Conversation (GetConversation/AppendConversationMessages
 // already resume the same file — no separate action needed for that part).
-// Only valid from "planning".
-func (s *FileStore) ReviseToRequirements(projectID, id string) (Task, error) {
+// Only valid from "planning". reason is an optional, human-typed
+// explanation for why (e.g. "the plan missed X") — recorded on the
+// StageTransition if non-empty, left empty otherwise; callers with no
+// reason to give should pass "".
+func (s *FileStore) ReviseToRequirements(projectID, id, reason string) (Task, error) {
 	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
@@ -246,9 +282,18 @@ func (s *FileStore) ReviseToRequirements(projectID, id string) (Task, error) {
 		return Task{}, fmt.Errorf("revising requirements for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
 	}
 
+	fromStage := t.Stage
 	t.Stage = StageRequirements
 	t.UpdatedAt = time.Now().UTC()
 
+	if err := s.AppendStageTransition(projectID, id, StageTransition{
+		FromStage: fromStage,
+		ToStage:   t.Stage,
+		Trigger:   TransitionTriggerReviseRequirements,
+		Reason:    strings.TrimSpace(reason),
+	}); err != nil {
+		return Task{}, err
+	}
 	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}
@@ -256,12 +301,11 @@ func (s *FileStore) ReviseToRequirements(projectID, id string) (Task, error) {
 }
 
 // ReviseToPlanning is the "Revise Plan" action: moves Stage back from
-// "implementation" or "review" to "planning". Milestone 5 (the executor
-// that actually reaches "implementation") doesn't exist yet, so this
-// boundary won't be exercised in practice until then, but the transition
-// is still valid structurally per CLAUDE.md ("each stage... can be
-// revisited").
-func (s *FileStore) ReviseToPlanning(projectID, id string) (Task, error) {
+// "implementation" or "review" to "planning". reason is an optional,
+// human-typed explanation for why (e.g. "I wanted icons, not words") —
+// recorded on the StageTransition if non-empty, left empty otherwise;
+// callers with no reason to give should pass "".
+func (s *FileStore) ReviseToPlanning(projectID, id, reason string) (Task, error) {
 	t, err := s.Get(projectID, id)
 	if err != nil {
 		return Task{}, err
@@ -270,9 +314,18 @@ func (s *FileStore) ReviseToPlanning(projectID, id string) (Task, error) {
 		return Task{}, fmt.Errorf("revising plan for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
 	}
 
+	fromStage := t.Stage
 	t.Stage = StagePlanning
 	t.UpdatedAt = time.Now().UTC()
 
+	if err := s.AppendStageTransition(projectID, id, StageTransition{
+		FromStage: fromStage,
+		ToStage:   t.Stage,
+		Trigger:   TransitionTriggerReviseToPlanning,
+		Reason:    strings.TrimSpace(reason),
+	}); err != nil {
+		return Task{}, err
+	}
 	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}

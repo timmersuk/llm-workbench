@@ -21,6 +21,7 @@ import type {
   ReviewDiffResult,
   ReviewDraft,
   ReviewsListResult,
+  StageTransitionsListResult,
   Task,
   TaskContext,
   TaskListResult,
@@ -196,6 +197,14 @@ export function listReviews(projectId: string, taskId: string): Promise<ReviewsL
   return getJSON<ReviewsListResult>(`${taskPath(projectId, taskId)}/reviews`)
 }
 
+// listStageTransitions returns every recorded Stage move for a task, oldest
+// first (internal/api/stage_transitions.go's handleListStageTransitions) —
+// TimelinePanel.tsx merges this with the full reviews list to show the
+// task's real path through its lifecycle, including reversals.
+export function listStageTransitions(projectId: string, taskId: string): Promise<StageTransitionsListResult> {
+  return getJSON<StageTransitionsListResult>(`${taskPath(projectId, taskId)}/stage-transitions`)
+}
+
 // getReviewDiff returns the raw patch of the task's most recent execution —
 // the diff ReviewPanel shows in its collapsed "View diff" before the review
 // conversation starts. 404s when there's no execution yet, which the panel
@@ -227,12 +236,16 @@ export function markPRMerged(projectId: string, taskId: string): Promise<Task> {
   return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/pr/merged`, {})
 }
 
-export function reviseRequirements(projectId: string, taskId: string): Promise<Task> {
-  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/requirements/revise`, {})
+// reviseRequirements/revisePlan take an optional, skippable reason — a
+// short human-typed explanation for why the task is going back (e.g. "the
+// plan missed X"), recorded on the resulting StageTransition. Omitted
+// (undefined) or empty means no reason given, not an error.
+export function reviseRequirements(projectId: string, taskId: string, reason?: string): Promise<Task> {
+  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/requirements/revise`, { reason: reason || '' })
 }
 
-export function revisePlan(projectId: string, taskId: string): Promise<Task> {
-  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/plan/revise`, {})
+export function revisePlan(projectId: string, taskId: string, reason?: string): Promise<Task> {
+  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/plan/revise`, { reason: reason || '' })
 }
 
 export interface HealthStatus {

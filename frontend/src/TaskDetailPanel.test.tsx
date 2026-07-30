@@ -41,6 +41,13 @@ vi.mock('./PRReviewPanel', () => ({
     </div>
   ),
 }))
+vi.mock('./TimelinePanel', () => ({
+  TimelinePanel: (props: { projectId: string; taskId: string }) => (
+    <div data-testid="timeline-panel">
+      timeline:{props.projectId}:{props.taskId}
+    </div>
+  ),
+}))
 
 const projectId = 'demo'
 
@@ -125,7 +132,20 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     await user.click(await screen.findByRole('button', { name: 'Revise Requirements' }))
 
     expect(await screen.findByTestId('grillme-panel')).toBeInTheDocument()
-    expect(api.reviseRequirements).toHaveBeenCalledWith(projectId, 'task-a')
+    expect(api.reviseRequirements).toHaveBeenCalledWith(projectId, 'task-a', '')
+  })
+
+  it('Revise Requirements passes along a typed reason', async () => {
+    const user = userEvent.setup()
+    stubNoContextOrPlan()
+    vi.mocked(api.reviseRequirements).mockResolvedValue(makeTask('requirements'))
+
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('planning')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+    const textarea = await screen.findByPlaceholderText(/Optional: why send this back/)
+    await user.type(textarea, 'the plan missed X')
+    await user.click(screen.getByRole('button', { name: 'Revise Requirements' }))
+
+    expect(api.reviseRequirements).toHaveBeenCalledWith(projectId, 'task-a', 'the plan missed X')
   })
 
   it('shows an inline error when Revise Requirements rejects', async () => {

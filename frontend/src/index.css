@@ -746,6 +746,18 @@ td button {
   margin-top: 12px;
 }
 
+.revise-reason-input {
+  flex: 1;
+  min-height: 2.4em;
+  resize: vertical;
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
 /* ask_question's option buttons (StageConversationPanel.tsx) — clickable
    choices offered beside the free-text reply box, the recommended option
    visually distinguished with an accent border/badge rather than plain

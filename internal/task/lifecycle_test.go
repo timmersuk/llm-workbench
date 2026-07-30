@@ -127,7 +127,7 @@ func TestFileStore_ReviseToRequirements(t *testing.T) {
 	_, err = store.FinalizeRequirements("demo-project", "task-a", RequirementsDraft{})
 	require.NoError(t, err)
 
-	updated, err := store.ReviseToRequirements("demo-project", "task-a")
+	updated, err := store.ReviseToRequirements("demo-project", "task-a", "")
 	require.NoError(t, err)
 	assert.Equal(t, StageRequirements, updated.Stage)
 }
@@ -138,7 +138,7 @@ func TestFileStore_ReviseToRequirements_WrongStage(t *testing.T) {
 	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"}) // still requirements
 	require.NoError(t, err)
 
-	_, err = store.ReviseToRequirements("demo-project", "task-a")
+	_, err = store.ReviseToRequirements("demo-project", "task-a", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrWrongStage)
 }
@@ -153,9 +153,16 @@ func TestFileStore_ReviseToPlanning_FromImplementationOrReview(t *testing.T) {
 	_, err = store.FinalizePlan("demo-project", "task-a", Plan{})
 	require.NoError(t, err)
 
-	updated, err := store.ReviseToPlanning("demo-project", "task-a")
+	updated, err := store.ReviseToPlanning("demo-project", "task-a", "I wanted icons, not words")
 	require.NoError(t, err)
 	assert.Equal(t, StagePlanning, updated.Stage)
+
+	transitions, err := store.ListStageTransitions("demo-project", "task-a")
+	require.NoError(t, err)
+	require.NotEmpty(t, transitions)
+	last := transitions[len(transitions)-1]
+	assert.Equal(t, TransitionTriggerReviseToPlanning, last.Trigger)
+	assert.Equal(t, "I wanted icons, not words", last.Reason)
 
 	// Also valid from "review". Stage only moves there for real via a
 	// successful RecordExecution, which is more machinery than this test
@@ -164,7 +171,7 @@ func TestFileStore_ReviseToPlanning_FromImplementationOrReview(t *testing.T) {
 	reviewTask := updated
 	reviewTask.Stage = StageReview
 	require.NoError(t, store.writeTask("demo-project", reviewTask))
-	updated, err = store.ReviseToPlanning("demo-project", "task-a")
+	updated, err = store.ReviseToPlanning("demo-project", "task-a", "")
 	require.NoError(t, err)
 	assert.Equal(t, StagePlanning, updated.Stage)
 }
@@ -175,7 +182,7 @@ func TestFileStore_ReviseToPlanning_WrongStage(t *testing.T) {
 	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"}) // requirements
 	require.NoError(t, err)
 
-	_, err = store.ReviseToPlanning("demo-project", "task-a")
+	_, err = store.ReviseToPlanning("demo-project", "task-a", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrWrongStage)
 }
@@ -194,7 +201,7 @@ func TestFileStore_ReviseThenFinalize_ConversationHistoryPreserved(t *testing.T)
 	require.NoError(t, err)
 	_, err = store.FinalizePlan("demo-project", "task-a", Plan{})
 	require.NoError(t, err)
-	_, err = store.ReviseToPlanning("demo-project", "task-a")
+	_, err = store.ReviseToPlanning("demo-project", "task-a", "")
 	require.NoError(t, err)
 
 	_, err = store.AppendConversationMessages("demo-project", "task-a", StagePlanning,
