@@ -1,3 +1,11 @@
+/* react-diff-view's base stylesheet (table layout, gutter widths, ...) —
+   imported once, here, rather than per-component. Its own color variables
+   (--diff-*) are re-pointed at this file's existing palette tokens in each
+   of the three palette blocks below instead of left at the library's
+   hardcoded defaults, so the diff viewer follows light/dark/system theming
+   like everything else (Frontend conventions, Styling). */
+@import 'react-diff-view/style/index.css';
+
 :root {
   --text: #2b2b33;
   --text-muted: #6b6375;
@@ -14,6 +22,13 @@
      compliant (docs/engineering conventions.md, Frontend conventions). */
   --accent-contrast: #ffffff;
   --error-contrast: #ffffff;
+
+  --diff-background-color: var(--bg);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #d6fedb;
+  --diff-gutter-delete-background-color: #fadde0;
+  --diff-code-insert-background-color: #eaffee;
+  --diff-code-delete-background-color: #fdeff0;
 
   font: 16px/1.45 system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
@@ -37,6 +52,13 @@
        2.77:1) — the near-black --bg passes on both (6.77:1 / 6.46:1). */
     --accent-contrast: var(--bg);
     --error-contrast: var(--bg);
+
+    --diff-background-color: var(--bg);
+    --diff-text-color: var(--text);
+    --diff-gutter-insert-background-color: #113321;
+    --diff-gutter-delete-background-color: #3a1a1e;
+    --diff-code-insert-background-color: #0c2417;
+    --diff-code-delete-background-color: #2a1215;
   }
 }
 
@@ -58,6 +80,13 @@
   --warning: #fbbf24;
   --accent-contrast: var(--bg);
   --error-contrast: var(--bg);
+
+  --diff-background-color: var(--bg);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #113321;
+  --diff-gutter-delete-background-color: #3a1a1e;
+  --diff-code-insert-background-color: #0c2417;
+  --diff-code-delete-background-color: #2a1215;
 }
 
 :root[data-theme='light'] {
@@ -72,6 +101,13 @@
   --warning: #b45309;
   --accent-contrast: #ffffff;
   --error-contrast: #ffffff;
+
+  --diff-background-color: var(--bg);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #d6fedb;
+  --diff-gutter-delete-background-color: #fadde0;
+  --diff-code-insert-background-color: #eaffee;
+  --diff-code-delete-background-color: #fdeff0;
 }
 
 body {
@@ -821,18 +857,64 @@ td button {
   margin-top: 0;
 }
 
-.review-diff {
+.diff-view {
   margin-top: 12px;
 }
 
-.review-diff pre {
-  max-height: 420px;
-  overflow: auto;
-  padding: 12px;
-  border-radius: 6px;
-  background: var(--bg-alt);
+.diff-view-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.diff-view-toggle button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
   font-size: 12px;
-  line-height: 1.4;
+  cursor: pointer;
+}
+
+.diff-view-toggle button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.diff-file {
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.diff-file summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-alt);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: Consolas, Courier, monospace;
+}
+
+.diff-file-path {
+  overflow-wrap: anywhere;
+}
+
+.diff-file-stat {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+.diff-file .diff {
+  max-height: 480px;
+  overflow: auto;
+  font-size: 12px;
 }
 
 .stage-start {

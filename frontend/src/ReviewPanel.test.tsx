@@ -10,6 +10,17 @@ vi.mock('./api')
 const projectId = 'demo'
 const taskId = 'task-a'
 
+const SAMPLE_PATCH = `diff --git a/feature.go b/feature.go
+index 1234567..89abcde 100644
+--- a/feature.go
++++ b/feature.go
+@@ -1,3 +1,4 @@
+ package main
+
++// new line
+ func main() {}
+`
+
 function makeExecution(overrides: Partial<Execution['output']> = {}): Execution {
   return {
     execution_id: 'exec-001',
@@ -37,19 +48,19 @@ function stubConversation() {
 }
 
 describe('ReviewPanel', () => {
-  it('shows the execution summary and the diff on demand', async () => {
+  it('shows the execution summary and the diff, broken out per file', async () => {
     stubConversation()
     vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
-    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: 'diff --git a/feature.go b/feature.go\n+new line' })
+    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: SAMPLE_PATCH })
 
     render(<ReviewPanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
     expect(await screen.findByText(/wb\/task-a\/exec-001/)).toBeInTheDocument()
     expect(screen.getByText('add feature')).toBeInTheDocument()
-    expect(screen.getByText('feature.go')).toBeInTheDocument()
-    // The raw patch is present but tucked inside a collapsed "View diff".
-    expect(screen.getByText('View diff')).toBeInTheDocument()
-    expect(screen.getByText(/\+new line/)).toBeInTheDocument()
+    // Once from the "Changed files" summary list, once as the diff section's
+    // per-file heading.
+    expect(screen.getAllByText('feature.go')).toHaveLength(2)
+    expect(screen.getByText(/new line/)).toBeInTheDocument()
   })
 
   it('does not auto-start the conversation — it waits for an explicit Start Review', async () => {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { finalizeReview, getReviewDiff, listExecutions, markPRMerged, pushPR } from './api'
+import { DiffView } from './DiffView'
 import { PRRejectForm } from './PRRejectForm'
 import type { Execution, ReviewDraft, Task } from './types'
 
@@ -127,12 +128,7 @@ export function PRReviewPanel({ projectId, taskId, task, onUpdated }: PRReviewPa
               </ul>
             </>
           )}
-          {patch && (
-            <details className="review-diff">
-              <summary>View diff</summary>
-              <pre>{patch}</pre>
-            </details>
-          )}
+          <DiffView patch={patch} />
         </div>
       )}
 
