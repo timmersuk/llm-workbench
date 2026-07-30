@@ -7,6 +7,13 @@
   --accent: #6d28d9;
   --error: #b91c1c;
   --warning: #b45309;
+  /* *-contrast tokens are the text color to use on top of the matching
+     *-colored background (nav button.active on --accent, .action-btn-stop's
+     icon on --error, ...) — a separate token rather than a hardcoded `white`
+     because the dark palette below needs a different value to stay WCAG AA
+     compliant (docs/engineering conventions.md, Frontend conventions). */
+  --accent-contrast: #ffffff;
+  --error-contrast: #ffffff;
 
   font: 16px/1.45 system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
@@ -14,8 +21,10 @@
   background: var(--bg);
 }
 
+/* Automatic OS-driven fallback — only takes effect while no manual
+   `data-theme` override (below) is set on <html>. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --text: #e5e4e7;
     --text-muted: #9ca3af;
     --bg: #16171d;
@@ -24,7 +33,45 @@
     --accent: #c084fc;
     --error: #f87171;
     --warning: #fbbf24;
+    /* white text fails AA on this palette's --accent/--error (2.64:1 /
+       2.77:1) — the near-black --bg passes on both (6.77:1 / 6.46:1). */
+    --accent-contrast: var(--bg);
+    --error-contrast: var(--bg);
   }
+}
+
+/* Manual theme override (ThemeToggle.tsx / theme.ts), persisted via
+   localStorage and applied as a `data-theme` attribute on <html> — same
+   custom-properties convention as the media-query block above, just at
+   higher specificity so it wins regardless of the OS preference. 'system'
+   never sets the attribute, so the media query above is the only thing
+   that applies and today's automatic behavior is unchanged. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --text: #e5e4e7;
+  --text-muted: #9ca3af;
+  --bg: #16171d;
+  --bg-alt: #1f2028;
+  --border: #2e303a;
+  --accent: #c084fc;
+  --error: #f87171;
+  --warning: #fbbf24;
+  --accent-contrast: var(--bg);
+  --error-contrast: var(--bg);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --text: #2b2b33;
+  --text-muted: #6b6375;
+  --bg: #ffffff;
+  --bg-alt: #f4f3ec;
+  --border: #e5e4e7;
+  --accent: #6d28d9;
+  --error: #b91c1c;
+  --warning: #b45309;
+  --accent-contrast: #ffffff;
+  --error-contrast: #ffffff;
 }
 
 body {
@@ -66,12 +113,27 @@ header h1 {
   text-transform: uppercase;
 }
 
+/* header-controls groups the build badge with the theme toggle on the
+   right of .header-row, so the row stays a simple two-item flex
+   (title | controls) regardless of how many controls it holds. */
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.theme-toggle {
+  display: flex;
+  gap: 4px;
+}
+
 nav {
   display: flex;
   gap: 8px;
 }
 
-nav button {
+nav button,
+.theme-toggle button {
   padding: 8px 16px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -81,10 +143,23 @@ nav button {
   font-size: 14px;
 }
 
-nav button.active {
+nav button.active,
+.theme-toggle button.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: white;
+  color: var(--accent-contrast);
+}
+
+.theme-toggle button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
 }
 
 main {
@@ -294,7 +369,7 @@ th {
   border: none;
   border-radius: 6px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-contrast);
   cursor: pointer;
 }
 
@@ -335,7 +410,7 @@ td button {
 .entity-form button[type='submit'] {
   background: var(--accent);
   border-color: var(--accent);
-  color: white;
+  color: var(--accent-contrast);
 }
 
 .entity-form button:disabled {
@@ -625,7 +700,7 @@ td button {
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-contrast);
   font-size: 12px;
 }
 
@@ -823,6 +898,9 @@ td button {
 
 .action-btn-stop {
   background: var(--error);
+  /* Overrides .action-btn's --text-muted (fails AA against --error in both
+     palettes, e.g. 1.13:1 in light mode) with the dedicated contrast token. */
+  color: var(--error-contrast);
 }
 
 .action-btn-stop:hover {

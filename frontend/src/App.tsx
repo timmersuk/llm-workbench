@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { getHealthStatus } from './api'
 import { ProjectsPanel } from './ProjectsPanel'
 import { ChatPanel } from './ChatPanel'
+import { ThemeToggle } from './ThemeToggle'
 import { parsePath, routeToPath } from './url'
 import type { Route, Tab } from './url'
 
@@ -71,7 +72,10 @@ function App() {
       <header>
         <div className="header-row">
           <h1>LLM Workbench</h1>
-          <span className="build-badge">build {buildId}</span>
+          <div className="header-controls">
+            <span className="build-badge">build {buildId}</span>
+            <ThemeToggle />
+          </div>
         </div>
         <nav>
           {TABS.map(({ id, label }) => (
