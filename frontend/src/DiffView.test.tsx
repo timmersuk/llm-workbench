@@ -67,4 +67,13 @@ describe('DiffView', () => {
     expect(smallDetails).toHaveAttribute('open')
     expect(bigDetails).not.toHaveAttribute('open')
   })
+
+  it('applies refractor syntax highlighting to a changed Go line', () => {
+    const { container } = render(<DiffView patch={SMALL_PATCH} />)
+
+    const keywordToken = Array.from(container.querySelectorAll('.token.keyword')).find(
+      (el) => el.textContent === 'func',
+    )
+    expect(keywordToken).toBeDefined()
+  })
 })

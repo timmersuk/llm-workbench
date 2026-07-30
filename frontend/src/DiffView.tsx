@@ -1,21 +1,32 @@
 import { useMemo, useState } from 'react'
 import { Diff, Hunk, isNormal, parseDiff, tokenize } from 'react-diff-view'
 import type { FileData, HunkTokens, ViewType } from 'react-diff-view'
-import { refractor } from 'refractor'
-import jsx from 'refractor/jsx'
-import tsx from 'refractor/tsx'
+import refractor from 'refractor'
+import go from 'refractor/lang/go'
+import typescript from 'refractor/lang/typescript'
+import tsx from 'refractor/lang/tsx'
+import jsx from 'refractor/lang/jsx'
+import json from 'refractor/lang/json'
+import yaml from 'refractor/lang/yaml'
+import markdown from 'refractor/lang/markdown'
+import bash from 'refractor/lang/bash'
 import 'react-diff-view/style/index.css'
 
-// refractor's default "common" bundle (the bare `refractor` import below)
-// already registers go/javascript/typescript/css/json/yaml/markdown/bash —
-// every language this workbench needs except jsx/tsx, which aren't in that
-// bundle and must be registered by hand. `registered` guards against
+// react-diff-view's `tokenize` only understands the array-of-hast-nodes
+// shape refractor@3.x's `highlight()` returns — refractor@4+ wraps that
+// array in a `{ type: 'root', children: [...] }` object instead, which
+// react-diff-view's tree walker can't iterate (see react-diff-view's own
+// README: "it isn't compatible with refractor@4.x currently, use
+// refractor@3.x instead"). Hence the `^3.6.0` pin in package.json.
+//
+// The bare `refractor` import already registers markup/css/clike/javascript
+// (refractor@3.x's own default bundle); every other language this workbench
+// highlights is registered individually below. `registered` guards against
 // double-registration across repeated module evaluation in tests.
-if (!refractor.registered('jsx')) {
-  refractor.register(jsx)
-}
-if (!refractor.registered('tsx')) {
-  refractor.register(tsx)
+for (const lang of [go, typescript, tsx, jsx, json, yaml, markdown, bash]) {
+  if (!refractor.registered(lang.displayName)) {
+    refractor.register(lang)
+  }
 }
 
 // Files with more changed lines than this render collapsed by default — a

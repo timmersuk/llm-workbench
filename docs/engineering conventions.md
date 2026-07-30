@@ -576,9 +576,26 @@ doesn't have to be re-derived or re-litigated later.
     unified/split layout) rather than hand-built markup over that parse
     tree; `refractor` (Prism compiled to a JSON AST) supplies the token
     tree `react-diff-view`'s `tokenize` highlights each hunk's code with.
-    `refractor`'s default "common" bundle already registers go/javascript/
-    typescript/css/json/yaml/markdown/bash; jsx/tsx aren't in that bundle
-    and are registered individually (`refractor/jsx`, `refractor/tsx`).
+    Pinned to `refractor@^3.6.0`, not the latest 5.x: `react-diff-view`'s
+    `tokenize` walks the array of hast nodes refractor@3.x's `highlight()`
+    returns directly, but refractor@4+ wraps that same array in a
+    `{ type: 'root', children: [...] }` object instead, which crashes
+    `tokenize` on the very first hunk (`Invalid attempt to iterate
+    non-iterable instance` — the wrapper object isn't itself iterable). This
+    matches react-diff-view's own README ("it isn't compatible with
+    refractor@4.x currently, use refractor@3.x instead"); confirmed by
+    exercising `tokenize` against both refractor major versions directly.
+    refractor@3.x's default bundle (the bare `refractor` import) only
+    registers markup/css/clike/javascript; go/typescript/tsx/jsx/json/yaml/
+    markdown/bash are registered individually from `refractor/lang/*`
+    (registering `tsx` alone would transitively pull in `jsx`/`typescript`,
+    but each is still registered explicitly for clarity). refractor@3.x
+    predates its package shipping types, and the matching `@types/refractor`
+    DefinitelyTyped package would be a fourth new dependency just to type a
+    handful of calls, so `frontend/src/refractor.d.ts` is a narrow ambient
+    module declaration instead — it also has to declare a `highlight` named
+    export (never used at runtime) because react-diff-view@3.3.3's own
+    bundled `.d.ts` does `import type { highlight } from 'refractor'`.
     Files with more than 300 changed (added+removed, not context) lines
     render collapsed by default via a plain `<details>` per file, matching
     `.thinking-panel`'s existing collapse convention; smaller files default
@@ -587,7 +604,12 @@ doesn't have to be re-derived or re-litigated later.
     `--diff-*` color variables are re-pointed at this file's existing
     palette tokens in all three light/dark blocks rather than left at the
     library's hardcoded defaults, so the diff viewer follows this app's
-    theming (Styling, above) instead of introducing a second one.
+    theming (Styling, above) instead of introducing a second one. Refractor/
+    Prism's standard token classes (`.token.keyword`, `.token.string`, ...)
+    get the same treatment — `index.css` maps them to `--token-*` variables
+    re-pointed per palette block, rather than importing a separate Prism
+    theme stylesheet, so highlighted code follows the same light/dark/system
+    theming instead of a mismatched hardcoded palette.
 * **URL/history sync**: no routing library (e.g. react-router) — the
   tab/page set is small enough not to justify one, per the "prefer open
   standards / minimal dependencies" invariant. `frontend/src/url.ts` is a

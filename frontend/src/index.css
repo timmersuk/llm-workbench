@@ -30,6 +30,17 @@
   --diff-code-insert-background-color: #eaffee;
   --diff-code-delete-background-color: #fdeff0;
 
+  /* refractor/Prism token colors (DiffView.tsx's syntax highlighting) —
+     re-pointed per palette block below, same convention as --diff-*. */
+  --token-comment: var(--text-muted);
+  --token-keyword: #a626a4;
+  --token-string: #50a14f;
+  --token-function: #4078f2;
+  --token-number: #986801;
+  --token-tag: #e45649;
+  --token-class-name: #c18401;
+  --token-punctuation: var(--text-muted);
+
   font: 16px/1.45 system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
   color: var(--text);
@@ -59,6 +70,15 @@
     --diff-gutter-delete-background-color: #3a1a1e;
     --diff-code-insert-background-color: #0c2417;
     --diff-code-delete-background-color: #2a1215;
+
+    --token-comment: var(--text-muted);
+    --token-keyword: #c678dd;
+    --token-string: #98c379;
+    --token-function: #61afef;
+    --token-number: #d19a66;
+    --token-tag: #e06c75;
+    --token-class-name: #e5c07b;
+    --token-punctuation: var(--text-muted);
   }
 }
 
@@ -87,6 +107,15 @@
   --diff-gutter-delete-background-color: #3a1a1e;
   --diff-code-insert-background-color: #0c2417;
   --diff-code-delete-background-color: #2a1215;
+
+  --token-comment: var(--text-muted);
+  --token-keyword: #c678dd;
+  --token-string: #98c379;
+  --token-function: #61afef;
+  --token-number: #d19a66;
+  --token-tag: #e06c75;
+  --token-class-name: #e5c07b;
+  --token-punctuation: var(--text-muted);
 }
 
 :root[data-theme='light'] {
@@ -108,6 +137,15 @@
   --diff-gutter-delete-background-color: #fadde0;
   --diff-code-insert-background-color: #eaffee;
   --diff-code-delete-background-color: #fdeff0;
+
+  --token-comment: var(--text-muted);
+  --token-keyword: #a626a4;
+  --token-string: #50a14f;
+  --token-function: #4078f2;
+  --token-number: #986801;
+  --token-tag: #e45649;
+  --token-class-name: #c18401;
+  --token-punctuation: var(--text-muted);
 }
 
 body {
@@ -915,6 +953,62 @@ td button {
   max-height: 480px;
   overflow: auto;
   font-size: 12px;
+}
+
+/* refractor/Prism token classes DiffView.tsx's `tokenize(..., { highlight:
+   true, refractor, language })` produces (see react-diff-view's `tokenize`
+   docs). Colors come from the --token-* variables re-pointed per palette
+   block above; only the color mapping lives here so it stays in one place
+   rather than duplicated per theme. */
+.diff-file .token.comment,
+.diff-file .token.prolog,
+.diff-file .token.doctype,
+.diff-file .token.cdata {
+  color: var(--token-comment);
+  font-style: italic;
+}
+
+.diff-file .token.punctuation {
+  color: var(--token-punctuation);
+}
+
+.diff-file .token.keyword,
+.diff-file .token.operator,
+.diff-file .token.important,
+.diff-file .token.atrule {
+  color: var(--token-keyword);
+}
+
+.diff-file .token.string,
+.diff-file .token.char,
+.diff-file .token.attr-value,
+.diff-file .token.regex {
+  color: var(--token-string);
+}
+
+.diff-file .token.function,
+.diff-file .token.property,
+.diff-file .token.method {
+  color: var(--token-function);
+}
+
+.diff-file .token.number,
+.diff-file .token.boolean,
+.diff-file .token.constant,
+.diff-file .token.symbol {
+  color: var(--token-number);
+}
+
+.diff-file .token.tag,
+.diff-file .token.selector,
+.diff-file .token.deleted {
+  color: var(--token-tag);
+}
+
+.diff-file .token.class-name,
+.diff-file .token.builtin,
+.diff-file .token.attr-name {
+  color: var(--token-class-name);
 }
 
 .stage-start {
