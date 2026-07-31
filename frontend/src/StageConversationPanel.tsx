@@ -22,6 +22,10 @@ interface DisplayMessage {
   segments: ToolActivityBlock[]
   error: string | null
   thinkingCollapsed: boolean
+  // created_at backs cycleStartAt filtering below — locally-appended
+  // messages (sendMessage/startConversation/truncateAndResend) stamp "now",
+  // which is always after any past cycleStartAt.
+  created_at: string
 }
 
 // toDisplaySegments prefers m.segments (the server always populates it —
@@ -141,6 +145,7 @@ function toDisplayMessage(m: ConversationMessage): DisplayMessage {
     segments: toDisplaySegments(m),
     error: m.error ?? null,
     thinkingCollapsed: true,
+    created_at: m.created_at,
   }
 }
 
@@ -148,7 +153,7 @@ function toDisplayMessage(m: ConversationMessage): DisplayMessage {
 // that coexists with the stage's own (main) one — today only Review, whose
 // propose_knowledge tool (docs/milestones/done/milestone9.md) can be called
 // independently of propose_review, any number of times, without ending the
-// conversation. Unlike the main draft's Finalize/Request-changes/Discard
+// conversation. Unlike the main draft's Finalize/Request-changes/Dismiss
 // trio, this is a plain two-way accept/reject decision (no "needs_changes"
 // concept, no state to reopen — a rejected proposal is just more
 // conversation the executor can redraft within), so no "request changes"
@@ -253,6 +258,31 @@ interface StageConversationPanelProps<D, S = never> {
   // startLabel names the explicit Start button shown when autoStart is false
   // (e.g. "Start Review"); ignored when autoStart is true.
   startLabel?: string
+  // cycleStartAt, when set, is the timestamp this stage was most recently
+  // (re-)entered — e.g. the latest review→implementation→review round's
+  // start. A stage's Conversation is one continuous, never-reset file
+  // across every revisit (Review can be entered many times over a task's
+  // life), so a tool call proposed in an earlier round is still the "most
+  // recent" one in that file until a new round adds to it. Without this,
+  // reopening the stage after a needs_changes verdict silently rehydrates
+  // that earlier round's already-finalized Draft as if it were fresh,
+  // letting Finalize resubmit stale, un-reviewed feedback against a diff
+  // that's since changed — this is exactly the mechanism that produced
+  // three byte-identical "needs_changes" reviews in a row on a real task.
+  // Left undefined (GrillMe, Planning — not yet revisited this way in
+  // practice), rehydration behaves exactly as before.
+  cycleStartAt?: string
+  // draftIsEditable controls what Request Changes does with the main Draft.
+  // true (default — GrillMe, Planning): renderDraft's fields are real
+  // inputs, so Request Changes forwards the (possibly human-edited) draft
+  // back to the model as a fenced JSON block, plus an optional typed
+  // comment, per handleRequestChanges' own doc comment. false (Review):
+  // renderDraft has no real inputs to edit — a verdict isn't something to
+  // hand-tweak, only to accept or send back — so Request Changes just closes
+  // the draft panel and reveals the ordinary reply box beneath it, with no
+  // comment field of its own, since the human's next plain message already
+  // reaches the model the normal way.
+  draftIsEditable?: boolean
   // secondaryDraft, if set, additionally tracks and renders a second Draft
   // tool independent of the main one — see SecondaryDraftConfig.
   secondaryDraft?: SecondaryDraftConfig<S>
@@ -272,11 +302,14 @@ const localChatOption = { value: '', label: 'Local LLM chat' }
 // selecting one can't 400.
 const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex CLI' }
 
-// StageConversationPanel is the mechanism shared by GrillMe and Planning
-// Mode (CONTEXT.md): a persisted Conversation transcript, a message input
-// that streams the assistant's reply, and — when the model calls its
-// registered tool — a Draft, shown via renderDraft for the human to edit
-// before Finalize or discard (which just clears local state; no API call).
+// StageConversationPanel is the mechanism shared by GrillMe, Planning Mode,
+// and Review (CONTEXT.md): a persisted Conversation transcript, a message
+// input that streams the assistant's reply, and — when the model calls its
+// registered tool — a Draft, shown via renderDraft, that takes over the
+// reply box's spot until the human Finalizes it, asks for changes, or
+// dismisses it (which just clears local state; no API call). See
+// draftIsEditable for the one behavioral difference between stages: whether
+// the draft's fields are real inputs the human can hand-edit.
 export function StageConversationPanel<D, S = never>({
   conversationKey,
   ops,
@@ -288,6 +321,8 @@ export function StageConversationPanel<D, S = never>({
   onFinalize,
   autoStart = true,
   startLabel,
+  cycleStartAt,
+  draftIsEditable = true,
   secondaryDraft,
   normalizeDraft,
 }: StageConversationPanelProps<D, S>) {
@@ -390,10 +425,17 @@ export function StageConversationPanel<D, S = never>({
         // conversation history itself — accepted/lightly re-confirms only
         // (KnowledgeStore.Put is a no-op re-write; reject was always a
         // no-op), not a correctness issue, just a UX rough edge.
+        //
+        // Restricted to messages at or after cycleStartAt when set (see its
+        // doc comment): a tool call from an earlier round of a revisited
+        // stage is history, not a live pending proposal — rehydrating it
+        // would let Finalize resubmit a verdict about a diff that's since
+        // moved on, silently and indistinguishably from a fresh one.
+        const rehydrationPool = cycleStartAt ? loaded.filter((m) => m.created_at >= cycleStartAt) : loaded
         let latestMainCall: { arguments: string } | undefined
         let latestSecondaryCall: { arguments: string } | undefined
-        for (let i = loaded.length - 1; i >= 0; i--) {
-          const toolCall = loaded[i].tool_call
+        for (let i = rehydrationPool.length - 1; i >= 0; i--) {
+          const toolCall = rehydrationPool[i].tool_call
           if (!toolCall || toolCall.name === askQuestionToolName) {
             // ask_question is handled separately below (only resurfaced
             // when it's the very last message) — skipped here so it's
@@ -430,8 +472,10 @@ export function StageConversationPanel<D, S = never>({
         // ask_question rehydrates only off the very last loaded message,
         // unlike the Draft proposals above — a question from several turns
         // back was already answered by whatever the human said next, so
-        // resurfacing it here would offer stale, already-moot options.
-        const lastToolCall = loaded[loaded.length - 1]?.tool_call
+        // resurfacing it here would offer stale, already-moot options. Also
+        // restricted to rehydrationPool for the same reason as the Draft
+        // proposals above.
+        const lastToolCall = rehydrationPool[rehydrationPool.length - 1]?.tool_call
         if (lastToolCall?.name === askQuestionToolName) {
           try {
             setPendingQuestion(parseAskQuestionArgs(lastToolCall.arguments))
@@ -634,8 +678,8 @@ export function StageConversationPanel<D, S = never>({
 
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text, reasoningContent: '', toolCallName: null, segments: [{ kind: 'text', text }], error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false },
+      { role: 'user', content: text, reasoningContent: '', toolCallName: null, segments: [{ kind: 'text', text }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -690,7 +734,7 @@ export function StageConversationPanel<D, S = never>({
   async function startConversation(model: string, executorKey: string) {
     setMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -750,8 +794,8 @@ export function StageConversationPanel<D, S = never>({
     const previousMessages = messages
     setMessages((prev) => [
       ...prev.slice(0, index),
-      { role: 'user', content, reasoningContent: '', toolCallName: null, segments: [{ kind: 'text', text: content }], error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false },
+      { role: 'user', content, reasoningContent: '', toolCallName: null, segments: [{ kind: 'text', text: content }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setPendingDraft(null)
     setPendingQuestion(null)
@@ -860,16 +904,22 @@ export function StageConversationPanel<D, S = never>({
     void handleSend()
   }
 
-  // handleRequestChanges sends the human's edited draft back to the model
-  // as a single message — the comment plus the current (edited) draft as a
+  // handleRequestChanges's behavior depends on draftIsEditable (see its doc
+  // comment). Editable: sends the human's edited draft back to the model as
+  // a single message — the comment plus the current (edited) draft as a
   // fenced JSON block — through the same postStageMessage path a normal
   // reply uses, so the transcript shows exactly what the model saw (no
   // hidden state). The system prompt (buildStagePrompt) tells the model to
   // treat such a block as the authoritative starting point for its
-  // revision. pendingDraft is cleared since the model is expected to
-  // re-propose once it has revised.
+  // revision. Not editable: there's no edit to forward, so this just closes
+  // the draft panel — the reply box that reappears once pendingDraft clears
+  // is where the human explains what should change, as an ordinary message.
   async function handleRequestChanges() {
     if (!pendingDraft || sending) {
+      return
+    }
+    if (!draftIsEditable) {
+      setPendingDraft(null)
       return
     }
     const comment = requestChangesComment.trim()
@@ -921,6 +971,23 @@ export function StageConversationPanel<D, S = never>({
   // reply box until the human fires the opening turn. Never true in
   // readOnly mode — a frozen conversation is never started from here.
   const notStarted = !readOnly && !autoStart && !initializing && messages.length === 0 && !loadError
+
+  // needsCycleKickoff is notStarted's counterpart for a revisited stage: the
+  // Conversation already has history from an earlier round, but nothing has
+  // been said yet in *this* round per cycleStartAt. Unlike notStarted, this
+  // doesn't need its own action — the ordinary reply box below already
+  // works (postMessage/resolveStageRun re-resolves the latest execution's
+  // context fresh on every turn, not just a dedicated "start" call), so
+  // typing anything and sending it already does the right thing. This only
+  // drives an explanatory note so that's not left implicit.
+  const needsCycleKickoff =
+    !readOnly &&
+    !autoStart &&
+    !initializing &&
+    !loadError &&
+    cycleStartAt !== undefined &&
+    messages.length > 0 &&
+    !messages.some((m) => m.created_at >= cycleStartAt)
 
   return (
     <div className="stage-conversation">
@@ -1068,7 +1135,7 @@ export function StageConversationPanel<D, S = never>({
         ))}
       </div>
 
-      {!notStarted && !readOnly && (
+      {!notStarted && !readOnly && !pendingDraft && (
       <>
       {pendingQuestion && pendingQuestion.options.length > 0 && (
         // Structured alternative to reading the recommended answer out of
@@ -1099,6 +1166,9 @@ export function StageConversationPanel<D, S = never>({
             <p className="ask-question-reason">{pendingQuestion.recommendation_reason}</p>
           )}
         </div>
+      )}
+      {needsCycleKickoff && (
+        <p className="cycle-boundary-notice">Nothing&apos;s been said about this attempt yet — reply below to have the agent take a look.</p>
       )}
       <div className="chat-input">
         <textarea
@@ -1150,12 +1220,14 @@ export function StageConversationPanel<D, S = never>({
           <h4>Proposed draft</h4>
           {renderDraft(pendingDraft, setPendingDraft)}
           {finalizeError && <p className="error">{finalizeError}</p>}
-          <textarea
-            value={requestChangesComment}
-            onChange={(e) => setRequestChangesComment(e.target.value)}
-            placeholder="What should change? (optional — edit the draft above first)"
-            rows={2}
-          />
+          {draftIsEditable && (
+            <textarea
+              value={requestChangesComment}
+              onChange={(e) => setRequestChangesComment(e.target.value)}
+              placeholder="What should change? (optional — edit the draft above first)"
+              rows={2}
+            />
+          )}
           <div className="stage-actions">
             <button type="button" onClick={handleFinalize} disabled={finalizing}>
               {finalizing ? 'Finalizing...' : 'Finalize'}
@@ -1164,7 +1236,7 @@ export function StageConversationPanel<D, S = never>({
               Request changes
             </button>
             <button type="button" onClick={() => setPendingDraft(null)} disabled={finalizing}>
-              Discard
+              Dismiss draft
             </button>
           </div>
         </div>

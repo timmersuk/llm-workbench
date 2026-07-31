@@ -656,6 +656,17 @@ td button {
   font-size: 12px;
 }
 
+/* cycle-boundary-notice marks a revisited stage's reply box as applying to
+   the current round, not the historical transcript still visible above it —
+   StageConversationPanel's needsCycleKickoff. */
+.cycle-boundary-notice {
+  margin: 4px 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 /* turn-status is the live "still working" indicator (docs/adr/0018): an
    animated spinner, an elapsed-time counter, and an approximate token count
    shown for as long as a turn is in flight, so a long gap before the
@@ -741,24 +752,55 @@ td button {
   font-size: 14px;
 }
 
-/* task-summary (read-only Requirements/Context/Plan) and task-interview
-   (GrillMe/Planning Mode) are deliberately styled as two distinct zones —
-   plain background for "what's known so far" vs. a shaded, bordered box
-   for "the interactive tool that changes it" — so the page reads as two
-   different kinds of content, not one continuous scroll. */
-.task-summary {
+/* task-section (CollapsibleSection — read-only Requirements/Context/Plan,
+   Timeline, Execution history) and task-interview (GrillMe/Planning Mode/
+   Execute/Review/PRReview, the active stage's own tool) are deliberately
+   styled as two distinct zones — a plain collapsed-by-default box for
+   "reference material" vs. a shaded, always-open box for "the interactive
+   tool that changes things right now" — so the page reads as two different
+   kinds of content, not one continuous scroll. */
+.task-section {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   margin-bottom: 16px;
 }
 
-.task-summary section + section {
-  margin-top: 16px;
+.task-section > summary {
+  cursor: pointer;
+  font-weight: 600;
 }
 
-.task-summary h4 {
+.task-section[open] > summary {
+  margin-bottom: 12px;
+}
+
+.task-section-body > *:first-child {
   margin-top: 0;
+}
+
+/* task-section-current marks the one reference section that's actually
+   relevant to task.stage right now (CollapsibleSection's `current` prop) —
+   same shaded-box language as .task-interview, since it's the same "this
+   is what matters here" signal, just for read-only reference material
+   instead of an interactive tool. */
+.task-section-current {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.task-section-current-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
 }
 
 .task-interview {
@@ -818,6 +860,23 @@ td button {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+}
+
+/* stage-actions-title labels a stage-actions box whose purpose isn't
+   otherwise obvious from the button alone (e.g. "Revise Plan" sitting next
+   to the Execute panel doesn't say on its own that it sends the task all
+   the way back to Planning) — a sibling of .stage-actions, not nested in
+   it, since .stage-actions' flex layout is shared with
+   StageConversationPanel's Finalize/Request changes/Dismiss row. */
+.stage-actions-title {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.stage-actions-title + .stage-actions {
+  margin-top: 4px;
 }
 
 .revise-reason-input {

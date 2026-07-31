@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listExecutions, listReviews, reviseRequirements, revisePlan } from './api'
+import { CollapsibleSection } from './CollapsibleSection'
 import { ExecutePanel } from './ExecutePanel'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { GrillMePanel } from './GrillMePanel'
+import { MarkdownMessage } from './MarkdownMessage'
 import { PlanningModePanel } from './PlanningModePanel'
 import { PRReviewPanel } from './PRReviewPanel'
 import { ReviewPanel } from './ReviewPanel'
@@ -120,9 +122,14 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
     }
   }
 
-  const hasSummary = Boolean(
-    task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0 || context || plan,
-  )
+  // requirementsCurrent/planCurrent decide which reference section opens by
+  // default and gets the "Current" badge — Requirements/Context are what a
+  // human is actively working from while still in requirements/planning;
+  // Plan is what an execution/review is actively working from afterward.
+  // Neither is "current" once merged — the task's reference material is
+  // settled history at that point, same as everything else on the page.
+  const requirementsCurrent = task.stage === 'requirements' || task.stage === 'planning'
+  const planCurrent = task.stage === 'implementation' || task.stage === 'review' || task.stage === 'pr_review'
 
   // executionFailureNotice surfaces the most recent run's outcome at the
   // top of the task view when it didn't succeed — ExecutePanel's own
@@ -206,67 +213,60 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
         </div>
       )}
 
-      {hasSummary && (
-        <div className="task-summary">
-          {(task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0) && (
-            <section>
-              <h4>Requirements</h4>
-              {task.objective && <p>{task.objective}</p>}
-              {task.constraints.length > 0 && (
-                <>
-                  <strong>Constraints</strong>
-                  <ul>
-                    {task.constraints.map((c) => (
-                      <li key={c}>{c}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {task.assumptions.length > 0 && (
-                <>
-                  <strong>Assumptions</strong>
-                  <ul>
-                    {task.assumptions.map((a) => (
-                      <li key={a}>{a}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              {task.success_criteria.length > 0 && (
-                <>
-                  <strong>Success criteria</strong>
-                  <ul>
-                    {task.success_criteria.map((s) => (
-                      <li key={s}>{s}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </section>
+      {(task.objective || task.constraints.length > 0 || task.assumptions.length > 0 || task.success_criteria.length > 0) && (
+        <CollapsibleSection title="Requirements" defaultOpen={requirementsCurrent} current={requirementsCurrent}>
+          {task.objective && <p>{task.objective}</p>}
+          {task.constraints.length > 0 && (
+            <>
+              <strong>Constraints</strong>
+              <ul>
+                {task.constraints.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </>
           )}
+          {task.assumptions.length > 0 && (
+            <>
+              <strong>Assumptions</strong>
+              <ul>
+                {task.assumptions.map((a) => (
+                  <li key={a}>{a}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {task.success_criteria.length > 0 && (
+            <>
+              <strong>Success criteria</strong>
+              <ul>
+                {task.success_criteria.map((s) => (
+                  <li key={s}>{s}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </CollapsibleSection>
+      )}
 
-          {context && (
-            <section>
-              <h4>Context</h4>
-              {context.summary && <p>{context.summary}</p>}
-              {context.background && <p>{context.background}</p>}
-            </section>
-          )}
+      {context && (
+        <CollapsibleSection title="Context" defaultOpen={requirementsCurrent} current={requirementsCurrent}>
+          {context.summary && <p>{context.summary}</p>}
+          {context.background && <p>{context.background}</p>}
+        </CollapsibleSection>
+      )}
 
-          {plan && (
-            <section>
-              <h4>Plan</h4>
-              {plan.approach && <p>{plan.approach}</p>}
-              {plan.steps.length > 0 && (
-                <ol>
-                  {plan.steps.map((s) => (
-                    <li key={s}>{s}</li>
-                  ))}
-                </ol>
-              )}
-            </section>
+      {plan && (
+        <CollapsibleSection title="Plan" defaultOpen={planCurrent} current={planCurrent}>
+          {plan.approach && <p>{plan.approach}</p>}
+          {plan.steps.length > 0 && (
+            <ol>
+              {plan.steps.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ol>
           )}
-        </div>
+        </CollapsibleSection>
       )}
 
       <TimelinePanel projectId={projectId} taskId={task.id} />
@@ -296,6 +296,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
               setPlan(updatedPlan)
             }}
           />
+          <p className="stage-actions-title">Send this task back to Requirements</p>
           <div className="stage-actions">
             <textarea
               className="revise-reason-input"
@@ -358,24 +359,27 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
       )}
 
       {(task.stage === 'implementation' || task.stage === 'review') && (
-        <div className="stage-actions">
-          <textarea
-            className="revise-reason-input"
-            placeholder="Optional: why send this back? (shown in the timeline)"
-            value={reviseReason}
-            onChange={(e) => setReviseReason(e.target.value)}
-            disabled={revising}
-          />
-          <button type="button" disabled={revising} onClick={() => handleRevise(() => revisePlan(projectId, task.id, reviseReason))}>
-            Revise Plan
-          </button>
-        </div>
+        <>
+          <p className="stage-actions-title">Plan itself needs to change? Send this task back to Planning</p>
+          <div className="stage-actions">
+            <textarea
+              className="revise-reason-input"
+              placeholder="Optional: why send this back? (shown in the timeline)"
+              value={reviseReason}
+              onChange={(e) => setReviseReason(e.target.value)}
+              disabled={revising}
+            />
+            <button type="button" disabled={revising} onClick={() => handleRevise(() => revisePlan(projectId, task.id, reviseReason))}>
+              Revise Plan
+            </button>
+          </div>
+        </>
       )}
 
       {task.stage === 'merged' && (
         <div className="task-complete">
           <h4>Review complete — {review?.decision ?? 'approved'}</h4>
-          {review?.notes && <p>{review.notes}</p>}
+          {review?.notes && <MarkdownMessage content={review.notes} />}
           {task.pull_request && (
             <p>
               Merged via{' '}
@@ -394,10 +398,9 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
           exactly when a human is most likely to want to check what a past
           attempt actually did. */}
       {task.stage !== 'implementation' && executions.length > 0 && (
-        <div className="task-interview">
-          <h4>Execution history</h4>
+        <CollapsibleSection title="Execution history" defaultOpen={false}>
           <ExecutionHistoryList projectId={projectId} taskId={task.id} executions={executions} />
-        </div>
+        </CollapsibleSection>
       )}
     </div>
   )

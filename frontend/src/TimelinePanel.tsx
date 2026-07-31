@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getStageConversation, listReviews, listStageTransitions } from './api'
+import { CollapsibleSection } from './CollapsibleSection'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { ConversationMessage, Review, StageTransition } from './types'
 
@@ -134,8 +135,7 @@ export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
   }
 
   return (
-    <div className="task-interview">
-      <h4>Timeline</h4>
+    <CollapsibleSection title="Timeline" defaultOpen={false}>
       <ul className="execution-history">
         {entries.map((entry) => {
           if (entry.kind === 'review') {
@@ -143,7 +143,7 @@ export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
             return (
               <li key={entry.key} className="timeline-review">
                 review {r.review_id}: {r.decision}
-                {r.notes && <p>{r.notes}</p>}
+                {r.notes && <MarkdownMessage content={r.notes} />}
               </li>
             )
           }
@@ -182,6 +182,6 @@ export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
           )
         })}
       </ul>
-    </div>
+    </CollapsibleSection>
   )
 }

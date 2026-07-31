@@ -688,14 +688,14 @@ describe('GrillMePanel — Draft review', () => {
     expect(screen.getByLabelText('Objective')).toHaveValue('Ship the login page')
     expect(screen.getByLabelText('Summary')).toHaveValue('Adds a login page')
     expect(screen.getByRole('button', { name: 'Finalize' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dismiss draft' })).toBeInTheDocument()
   })
 
-  it('discards the draft without calling any API', async () => {
+  it('dismisses the draft without calling any API', async () => {
     const user = userEvent.setup()
     await sendAndReceiveToolCall({ objective: 'x', context: { summary: 'y' } })
 
-    await user.click(screen.getByRole('button', { name: 'Discard' }))
+    await user.click(screen.getByRole('button', { name: 'Dismiss draft' }))
 
     expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
     expect(api.finalizeRequirements).not.toHaveBeenCalled()

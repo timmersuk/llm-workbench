@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { finalizeKnowledge, finalizeReview, getReviewDiff, listExecutions } from './api'
+import { finalizeKnowledge, finalizeReview, getReviewDiff, listExecutions, listStageTransitions } from './api'
 import { DiffView } from './DiffView'
 import { KnowledgeDraftForm } from './KnowledgeDraftForm'
-import { ReviewDraftForm } from './ReviewDraftForm'
+import { ReviewDraftSummary } from './ReviewDraftSummary'
 import { stageConversationOps } from './stageConversationOps'
 import { StageConversationPanel } from './StageConversationPanel'
 import type { Execution, KnowledgeConceptDraft, Review, ReviewDraft, Task } from './types'
@@ -39,6 +39,23 @@ interface ReviewPanelProps {
 export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps) {
   const [latest, setLatest] = useState<Execution | null>(null)
   const [patch, setPatch] = useState<string | null>(null)
+  // cycleStartAt marks when this task most recently entered the review
+  // stage — the boundary StageConversationPanel needs to tell "this round's
+  // pending draft" apart from an earlier round's already-finalized one still
+  // sitting at the tail of the stage's continuously-appended Conversation
+  // (see its cycleStartAt doc comment for the bug this prevents). Resolved
+  // (to a real timestamp or definitively undefined) before
+  // StageConversationPanel ever mounts — see cycleStartAtResolved below for
+  // why that ordering matters.
+  const [cycleStartAt, setCycleStartAt] = useState<string | undefined>(undefined)
+  // cycleStartAtResolved gates StageConversationPanel's render until the
+  // listStageTransitions call below has settled. StageConversationPanel's
+  // own rehydration runs once, in its mount effect — mounting it before
+  // cycleStartAt is known would let that effect capture cycleStartAt's
+  // initial `undefined` and rehydrate against the *entire* history (the
+  // exact bug cycleStartAt exists to prevent), since the prop updating
+  // afterward doesn't re-trigger that one-time effect.
+  const [cycleStartAtResolved, setCycleStartAtResolved] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -58,6 +75,20 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
         }
       })
       .catch(() => undefined) // 404 / worktree gone — just omit the diff, don't block review
+    listStageTransitions(projectId, taskId)
+      .then((r) => {
+        if (cancelled) {
+          return
+        }
+        const intoReview = (r.stage_transitions ?? []).filter((t) => t.to_stage === 'review')
+        setCycleStartAt(intoReview.length > 0 ? intoReview[intoReview.length - 1].created_at : undefined)
+      })
+      .catch(() => undefined) // no transitions yet — cycleStartAt stays undefined, same as the very first review ever
+      .finally(() => {
+        if (!cancelled) {
+          setCycleStartAtResolved(true)
+        }
+      })
     return () => {
       cancelled = true
     }
@@ -96,32 +127,36 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
         </div>
       )}
 
-      <StageConversationPanel<ReviewDraft, KnowledgeConceptDraft>
-        conversationKey={`${projectId}:${taskId}:review`}
-        ops={stageConversationOps(projectId, taskId, 'review')}
-        title="Review"
-        description="Start the review to have the agent run the tests, review the diff, and walk the verification steps — then finalize an approved, needs-changes, or rejected verdict. It may also propose a knowledge concept worth recording along the way; accept or reject that independently of the review verdict."
-        emptyDraft={EMPTY_DRAFT}
-        autoStart={false}
-        startLabel="Start Review"
-        renderDraft={(draft, onChange) => <ReviewDraftForm draft={draft} onChange={onChange} />}
-        onFinalize={async (draft) => {
-          const result = await finalizeReview(projectId, taskId, draft)
-          onFinalized(result.task, result.review)
-        }}
-        secondaryDraft={{
-          toolName: proposeKnowledgeToolName,
-          emptyDraft: EMPTY_KNOWLEDGE_DRAFT,
-          heading: 'Proposed knowledge concept',
-          renderDraft: (draft, onChange) => <KnowledgeDraftForm draft={draft} onChange={onChange} />,
-          onAccept: async (draft) => {
-            await finalizeKnowledge(projectId, taskId, draft, 'accepted')
-          },
-          onReject: async (draft) => {
-            await finalizeKnowledge(projectId, taskId, draft, 'rejected')
-          },
-        }}
-      />
+      {cycleStartAtResolved && (
+        <StageConversationPanel<ReviewDraft, KnowledgeConceptDraft>
+          conversationKey={`${projectId}:${taskId}:review`}
+          ops={stageConversationOps(projectId, taskId, 'review')}
+          title="Review"
+          description="Start the review to have the agent run the tests, review the diff, and walk the verification steps — then finalize an approved, needs-changes, or rejected verdict. It may also propose a knowledge concept worth recording along the way; accept or reject that independently of the review verdict."
+          emptyDraft={EMPTY_DRAFT}
+          autoStart={false}
+          startLabel="Start Review"
+          cycleStartAt={cycleStartAt}
+          draftIsEditable={false}
+          renderDraft={(draft) => <ReviewDraftSummary draft={draft} />}
+          onFinalize={async (draft) => {
+            const result = await finalizeReview(projectId, taskId, draft)
+            onFinalized(result.task, result.review)
+          }}
+          secondaryDraft={{
+            toolName: proposeKnowledgeToolName,
+            emptyDraft: EMPTY_KNOWLEDGE_DRAFT,
+            heading: 'Proposed knowledge concept',
+            renderDraft: (draft, onChange) => <KnowledgeDraftForm draft={draft} onChange={onChange} />,
+            onAccept: async (draft) => {
+              await finalizeKnowledge(projectId, taskId, draft, 'accepted')
+            },
+            onReject: async (draft) => {
+              await finalizeKnowledge(projectId, taskId, draft, 'rejected')
+            },
+          }}
+        />
+      )}
     </div>
   )
 }

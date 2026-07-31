@@ -208,7 +208,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
       {isReviewContinuation && latestReview && (
         <div className="workspace-status-banner">
           <p>This task was sent back from review with requested changes. Running execution will continue from that reviewed attempt&apos;s branch, with the reviewer&apos;s notes included.</p>
-          {latestReview.notes && <p>&ldquo;{latestReview.notes}&rdquo;</p>}
+          {latestReview.notes && <MarkdownMessage content={latestReview.notes} />}
         </div>
       )}
 

@@ -283,14 +283,93 @@ describe('TaskDetailPanel — Context/Plan sections', () => {
   })
 })
 
+describe('TaskDetailPanel — reference sections open/highlight the one relevant to the current stage', () => {
+  function stubContextAndPlan() {
+    vi.mocked(api.getTaskContext).mockResolvedValue({
+      summary: 'A finalized summary',
+      background: '',
+      files: [],
+      detail: '',
+      verification: [],
+      open_questions: [],
+    })
+    vi.mocked(api.getTaskPlan).mockResolvedValue({
+      approach: 'A finalized approach',
+      steps: ['Step one'],
+      risks: [],
+      estimated_complexity: 'low',
+      recommended_executor: '',
+    })
+    vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
+      repository_configured: false,
+      status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
+    })
+  }
+
+  function sectionFor(text: string): HTMLDetailsElement {
+    return screen.getByText(text).closest('details') as HTMLDetailsElement
+  }
+
+  it('opens and badges Requirements/Context, collapses Plan, while in requirements', async () => {
+    stubContextAndPlan()
+    const task = makeTask('requirements', { objective: 'ship it' })
+    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+
+    await screen.findByText('A finalized summary')
+
+    const requirements = sectionFor('Requirements')
+    const context = sectionFor('Context')
+    const plan = sectionFor('Plan')
+
+    expect(requirements.open).toBe(true)
+    expect(context.open).toBe(true)
+    expect(plan.open).toBe(false)
+    expect(requirements.querySelector('.task-section-current-badge')).toBeInTheDocument()
+    expect(context.querySelector('.task-section-current-badge')).toBeInTheDocument()
+    expect(plan.querySelector('.task-section-current-badge')).not.toBeInTheDocument()
+  })
+
+  it('opens and badges Plan, collapses Requirements/Context, once in implementation', async () => {
+    stubContextAndPlan()
+    const task = makeTask('implementation', { objective: 'ship it' })
+    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+
+    await screen.findByText('A finalized summary')
+
+    const requirements = sectionFor('Requirements')
+    const context = sectionFor('Context')
+    const plan = sectionFor('Plan')
+
+    expect(requirements.open).toBe(false)
+    expect(context.open).toBe(false)
+    expect(plan.open).toBe(true)
+    expect(requirements.querySelector('.task-section-current-badge')).not.toBeInTheDocument()
+    expect(plan.querySelector('.task-section-current-badge')).toBeInTheDocument()
+  })
+
+  it('collapses every reference section once merged — nothing is "current" anymore', async () => {
+    stubContextAndPlan()
+    vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
+    const task = makeTask('merged', { objective: 'ship it' })
+    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+
+    await screen.findByText('A finalized summary')
+
+    expect(sectionFor('Requirements').open).toBe(false)
+    expect(sectionFor('Context').open).toBe(false)
+    expect(sectionFor('Plan').open).toBe(false)
+    expect(document.querySelector('.task-section-current-badge')).not.toBeInTheDocument()
+  })
+})
+
 describe('TaskDetailPanel — summary/interview zone separation', () => {
-  it('wraps the read-only summary and the GrillMe interview in separate containers', async () => {
+  it('wraps the read-only Requirements section and the GrillMe interview in separate containers', async () => {
     stubNoContextOrPlan()
     const task = makeTask('requirements', { objective: 'ship it' })
     const { container } = render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     const grillme = await screen.findByTestId('grillme-panel')
-    const summary = container.querySelector('.task-summary')
+    const summary = container.querySelector('.task-section')
     const interview = container.querySelector('.task-interview')
 
     expect(summary).toBeInTheDocument()
@@ -300,12 +379,12 @@ describe('TaskDetailPanel — summary/interview zone separation', () => {
     expect(summary).not.toContainElement(grillme)
   })
 
-  it('omits the summary container entirely when there is nothing to summarize', async () => {
+  it('omits the Requirements section entirely when there is nothing to summarize', async () => {
     stubNoContextOrPlan()
     const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
-    expect(container.querySelector('.task-summary')).not.toBeInTheDocument()
+    expect(container.querySelector('.task-section')).not.toBeInTheDocument()
   })
 })
 
