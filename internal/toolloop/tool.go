@@ -79,9 +79,6 @@ const (
 	// readDefaultLines is how many lines Read returns when the model does not
 	// page with offset/limit.
 	readDefaultLines = 1000
-	// grepMaxMatches caps grep_search output; beyond it the model is told to
-	// narrow the pattern.
-	grepMaxMatches = 100
 	// globMaxMatches caps glob output.
 	globMaxMatches = 200
 )

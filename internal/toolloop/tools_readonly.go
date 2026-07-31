@@ -3,14 +3,23 @@ package toolloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
 )
+
+// lookPath is exec.LookPath, indirected so grepTool's missing-rg error path
+// is deterministically testable without mutating the test process's PATH —
+// the same seam claude_runner.go's lookPath provides for CheckHealth.
+var lookPath = exec.LookPath
 
 // ReadOnlyTools returns the Read/Grep/Glob toolset offered to the read-only
 // Run instantiation — the same trust boundary agentrunner.readOnlyTools
@@ -97,18 +106,24 @@ func (grepTool) Spec() chat.Tool {
 		Type: "function",
 		Function: chat.ToolSchema{
 			Name:        "grep_search",
-			Description: "Search workspace text files for a case-sensitive substring. Returns up to " + itoa(grepMaxMatches) + " matches as path:line:text.",
+			Description: "Search workspace files for a regular expression using ripgrep. Gitignore-aware and binary files are skipped automatically. Returns matches (and optional context lines) as path:line:text; output beyond ~16KB is truncated.",
 			Parameters: json.RawMessage(`{"type":"object","required":["pattern"],"properties":{` +
-				`"pattern":{"type":"string","description":"Case-sensitive substring to search for"},` +
-				`"path":{"type":"string","description":"Optional subdirectory (relative to the workspace) to restrict the search"}}}`),
+				`"pattern":{"type":"string","description":"Regular expression to search for"},` +
+				`"path":{"type":"string","description":"Optional subdirectory (relative to the workspace) to restrict the search"},` +
+				`"context":{"type":"integer","description":"Number of context lines to show before and after each match (default 0)"},` +
+				`"ignore_case":{"type":"boolean","description":"Match case-insensitively (default false)"},` +
+				`"glob":{"type":"string","description":"Restrict the search to files matching this glob, e.g. `+"`*.go`"+` or `+"`*.{go,ts}`"+`"}}}`),
 		},
 	}
 }
 
-func (grepTool) Execute(_ context.Context, workspace, argumentsJSON string) (string, error) {
+func (grepTool) Execute(ctx context.Context, workspace, argumentsJSON string) (string, error) {
 	var args struct {
-		Pattern string `json:"pattern"`
-		Path    string `json:"path"`
+		Pattern    string `json:"pattern"`
+		Path       string `json:"path"`
+		Context    int    `json:"context"`
+		IgnoreCase bool   `json:"ignore_case"`
+		Glob       string `json:"glob"`
 	}
 	if err := json.Unmarshal([]byte(argumentsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -116,57 +131,140 @@ func (grepTool) Execute(_ context.Context, workspace, argumentsJSON string) (str
 	if args.Pattern == "" {
 		return "", fmt.Errorf("pattern is required")
 	}
-	root := workspace
+
+	rg, err := rgPath()
+	if err != nil {
+		return "", err
+	}
+
+	root, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", err
+	}
+	searchArg := "."
 	if args.Path != "" {
 		abs, err := resolveInWorkspace(workspace, args.Path)
 		if err != nil {
 			return "", err
 		}
-		root = abs
+		rel, err := filepath.Rel(root, abs)
+		if err != nil {
+			return "", err
+		}
+		searchArg = rel
 	}
 
-	var sb strings.Builder
-	matches := 0
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
-		}
-		if matches >= grepMaxMatches {
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			if skipDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !isTextFile(p) {
-			return nil
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(workspace, p)
-		for i, line := range strings.Split(string(b), "\n") {
-			if strings.Contains(line, args.Pattern) {
-				fmt.Fprintf(&sb, "%s:%d:%s\n", filepath.ToSlash(rel), i+1, strings.TrimSpace(line))
-				matches++
-				if matches >= grepMaxMatches {
-					sb.WriteString("[truncated: hit the match cap — narrow the pattern or scope with `path`]\n")
-					break
-				}
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
+	if args.Context < 0 {
+		args.Context = 0
 	}
-	if sb.Len() == 0 {
+
+	cmdArgs := []string{"--no-heading", "-n", "--null", "-C", strconv.Itoa(args.Context)}
+	if args.IgnoreCase {
+		cmdArgs = append(cmdArgs, "--ignore-case")
+	}
+	if args.Glob != "" {
+		cmdArgs = append(cmdArgs, "-g", args.Glob)
+	}
+	cmdArgs = append(cmdArgs, "--color=never", "-e", args.Pattern, "--", searchArg)
+
+	cmd := exec.CommandContext(ctx, rg, cmdArgs...)
+	cmd.Dir = root
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		if exitErr.ExitCode() == 1 {
+			return "no matches", nil
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = fmt.Sprintf("rg exited with status %d", exitErr.ExitCode())
+		}
+		return "", fmt.Errorf("rg: %s", msg)
+	}
+	if runErr != nil {
+		return "", fmt.Errorf("running rg: %w", runErr)
+	}
+
+	out := stdout.String()
+	if strings.TrimSpace(out) == "" {
 		return "no matches", nil
 	}
-	return truncateResult(sb.String()), nil
+	return truncateResult(normalizeRGOutput(out)), nil
+}
+
+// normalizeRGOutput applies filepath.ToSlash to only the leading path segment
+// of each rg output line, leaving everything after the path/line-number
+// separator (the match/context text itself) byte-for-byte untouched. Naively
+// running ToSlash over the whole blob would also mangle backslashes that
+// legitimately appear inside matched content (e.g. a Windows path fragment or
+// a `\d+`-style regex the user searched for) — and scanning the plain-text
+// `path:line:content`/`path-line-content` shape for the path/line-number
+// boundary is inherently ambiguous, since both the path (e.g.
+// `sub-1-dir/file.go`) and the content can themselves contain a
+// `-digit-`/`:digit:` run that looks just like it. grepTool sidesteps that by
+// invoking rg with --null, which makes rg itself terminate the path with an
+// unambiguous NUL byte (a byte that can't otherwise appear in either a path
+// or the text of a non-binary file rg would report on) instead of relying on
+// this code to re-derive the boundary heuristically.
+func normalizeRGOutput(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = normalizeRGLine(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeRGLine(line string) string {
+	path, sep, num, content, ok := splitRGLine(line)
+	if !ok {
+		return line
+	}
+	return filepath.ToSlash(path) + sep + num + sep + content
+}
+
+// splitRGLine splits an rg --null plain-text output line into its path,
+// separator (":" for a match line, "-" for a context line), line-number, and
+// content fields. With --null, rg follows the path with a literal NUL byte
+// rather than the path/line-number separator, so the path is whatever
+// precedes the first NUL — no scanning for a look-alike separator shape is
+// needed. What follows the NUL is always `<digits><sep><content>`, since that
+// digit run is the line number rg itself emitted and is immediately followed
+// by its real separator. Lines with no NUL byte (e.g. the "--" group
+// separator rg prints between non-adjacent context blocks) aren't rg
+// path/content lines at all and are passed through unmodified.
+func splitRGLine(line string) (path, sep, num, content string, ok bool) {
+	nul := strings.IndexByte(line, 0)
+	if nul < 0 {
+		return "", "", "", "", false
+	}
+	path, rest := line[:nul], line[nul+1:]
+
+	j := 0
+	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+		j++
+	}
+	if j == 0 || j >= len(rest) || (rest[j] != ':' && rest[j] != '-') {
+		return "", "", "", "", false
+	}
+	return path, string(rest[j]), rest[:j], rest[j+1:], true
+}
+
+// rgPath resolves the ripgrep executable via PATH lookup only — no
+// hardcoded fallback install locations. grep_search hard-requires a system
+// rg binary; a missing one is a clear, actionable error rather than a
+// silent degrade to a weaker built-in scanner.
+func rgPath() (string, error) {
+	if p, err := lookPath("rg"); err == nil {
+		return p, nil
+	}
+	if runtime.GOOS == "windows" {
+		return "", fmt.Errorf("rg (ripgrep) not found on PATH: install it with `winget install BurntSushi.ripgrep.MSVC` (or `choco install ripgrep`), then restart the server")
+	}
+	return "", fmt.Errorf("rg (ripgrep) not found on PATH: install it with your package manager (e.g. `apt install ripgrep`, `brew install ripgrep`, `dnf install ripgrep`), then restart the server")
 }
 
 // --- glob ---
@@ -274,21 +372,6 @@ func matchSegments(pat, seg []string) bool {
 func skipDir(name string) bool {
 	switch name {
 	case ".git", "node_modules", ".claude":
-		return true
-	}
-	return false
-}
-
-// isTextFile is a conservative allow-list of extensions grep will read, so a
-// search doesn't stream binary noise back into the model's context.
-func isTextFile(p string) bool {
-	switch strings.ToLower(filepath.Ext(p)) {
-	case ".go", ".md", ".yaml", ".yml", ".json", ".txt", ".toml", ".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".sh", ".py", ".rs", ".java", ".sql", ".env", ".mod", ".sum", ".gitignore", ".dockerfile":
-		return true
-	}
-	base := strings.ToLower(filepath.Base(p))
-	switch base {
-	case "dockerfile", "makefile", "go.mod", "go.sum", ".gitignore":
 		return true
 	}
 	return false
