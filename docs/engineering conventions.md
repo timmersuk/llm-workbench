@@ -501,7 +501,41 @@ doesn't have to be re-derived or re-litigated later.
   successful Finalize (`internal/api/finalize.go`; deliberately *not*
   Revise, which resumes the same `Conversation` by design) and the Chat
   tab's "New chat" action (`POST /api/v1/chat/sessions/close`) — rather
-  than left as an unused capability.
+  than left as an unused capability. `CodexRunner` caches a client+thread
+  pair the same way, per `SessionKey`, and `CloseSession` is likewise a
+  real disconnect+forget for both fields (superseding an earlier version
+  that reconnected a fresh `codex app-server` subprocess on every single
+  turn).
+* When no live in-memory client/thread is cached for a `SessionKey` (a
+  fresh process, or one evicted by `CloseSession`), both `ClaudeRunner` and
+  `CodexRunner` attempt a real session/thread resume first —
+  `claudecode.WithResume`/`client.ResumeThread` — using the durable,
+  per-executor id `RunOutput.SessionID` returned from a prior turn on that
+  same conversation. This replays the CLI's own server-side transcript
+  instead of `systemPromptWithHistory`'s rendered-into-the-prompt
+  approximation, which both avoids the OS argv-length ceiling
+  (`maxHistoryReplayBytes` is a truncation compromise, not a fix) and
+  avoids paying that re-render's growing input-token cost every turn. If
+  the resume attempt itself fails with a "not found"-shaped error
+  (`isSessionNotFoundError`/`isCodexSessionNotFoundError`, matched by
+  message content — neither SDK exposes a stable sentinel) the persisted
+  id is cleared and the same turn is retried immediately via a fresh
+  client and `systemPromptWithHistory`, so the user's turn still succeeds;
+  any other error (auth, rate limit, unreachable CLI) propagates directly,
+  with no fallback retry. `RunInput.ResumeSessionID`/`RunOutput.SessionID`
+  (`internal/agentrunner/runner.go`) are the generic, opaque carriers —
+  `ChatClientRunner` permanently no-ops on both. The id itself is
+  persisted per-executor in a `conversation-<stage>.session.yaml` sibling
+  of `conversation-<stage>.yaml` (and `conversation.session.yaml` for a
+  task-drafts session), via `TaskStore.Get/SetSessionID` and
+  `Get/SetTaskDraftSessionID` (`internal/task/session.go`, wrapped in
+  `gitstore.TaskStore` through the same `withPending` commit-on-push-tick
+  mechanism `AppendConversationMessages` uses) — read before `Run` and
+  unconditionally written back after, mirroring `RunInput.History`'s own
+  read-only, caller-mediated contract. Live-verified against real
+  `claude`/`codex` CLIs, including whether the prompt-caching hypothesis
+  holds up on real usage data — see
+  `data/knowledge/architecture/agentrunner-session-resume.md`.
 
 ## Build & single-binary packaging
 
