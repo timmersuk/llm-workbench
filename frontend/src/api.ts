@@ -206,9 +206,9 @@ export function listStageTransitions(projectId: string, taskId: string): Promise
 }
 
 // getReviewDiff returns the raw patch of the task's most recent execution —
-// the diff ReviewPanel shows in its collapsed "View diff" before the review
-// conversation starts. 404s when there's no execution yet, which the panel
-// treats as "no diff to show" rather than an error.
+// the diff ReviewPanel (and PRReviewPanel) render per-file via DiffView
+// before the review conversation starts. 404s when there's no execution
+// yet, which the panel treats as "no diff to show" rather than an error.
 export function getReviewDiff(projectId: string, taskId: string): Promise<ReviewDiffResult> {
   return getJSON<ReviewDiffResult>(`${taskPath(projectId, taskId)}/review/diff`)
 }

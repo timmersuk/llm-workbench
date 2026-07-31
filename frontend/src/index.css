@@ -1,3 +1,11 @@
+/* react-diff-view's base stylesheet (table layout, gutter widths, ...) —
+   imported once, here, rather than per-component. Its own color variables
+   (--diff-*) are re-pointed at this file's existing palette tokens in each
+   of the three palette blocks below instead of left at the library's
+   hardcoded defaults, so the diff viewer follows light/dark/system theming
+   like everything else (Frontend conventions, Styling). */
+@import 'react-diff-view/style/index.css';
+
 :root {
   --text: #2b2b33;
   --text-muted: #6b6375;
@@ -14,6 +22,24 @@
      compliant (docs/engineering conventions.md, Frontend conventions). */
   --accent-contrast: #ffffff;
   --error-contrast: #ffffff;
+
+  --diff-background-color: var(--bg);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #d6fedb;
+  --diff-gutter-delete-background-color: #fadde0;
+  --diff-code-insert-background-color: #eaffee;
+  --diff-code-delete-background-color: #fdeff0;
+
+  /* refractor/Prism token colors (DiffView.tsx's syntax highlighting) —
+     re-pointed per palette block below, same convention as --diff-*. */
+  --token-comment: var(--text-muted);
+  --token-keyword: #a626a4;
+  --token-string: #50a14f;
+  --token-function: #4078f2;
+  --token-number: #986801;
+  --token-tag: #e45649;
+  --token-class-name: #c18401;
+  --token-punctuation: var(--text-muted);
 
   font: 16px/1.45 system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
@@ -37,6 +63,22 @@
        2.77:1) — the near-black --bg passes on both (6.77:1 / 6.46:1). */
     --accent-contrast: var(--bg);
     --error-contrast: var(--bg);
+
+    --diff-background-color: var(--bg);
+    --diff-text-color: var(--text);
+    --diff-gutter-insert-background-color: #113321;
+    --diff-gutter-delete-background-color: #3a1a1e;
+    --diff-code-insert-background-color: #0c2417;
+    --diff-code-delete-background-color: #2a1215;
+
+    --token-comment: var(--text-muted);
+    --token-keyword: #c678dd;
+    --token-string: #98c379;
+    --token-function: #61afef;
+    --token-number: #d19a66;
+    --token-tag: #e06c75;
+    --token-class-name: #e5c07b;
+    --token-punctuation: var(--text-muted);
   }
 }
 
@@ -58,6 +100,22 @@
   --warning: #fbbf24;
   --accent-contrast: var(--bg);
   --error-contrast: var(--bg);
+
+  --diff-background-color: var(--bg);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #113321;
+  --diff-gutter-delete-background-color: #3a1a1e;
+  --diff-code-insert-background-color: #0c2417;
+  --diff-code-delete-background-color: #2a1215;
+
+  --token-comment: var(--text-muted);
+  --token-keyword: #c678dd;
+  --token-string: #98c379;
+  --token-function: #61afef;
+  --token-number: #d19a66;
+  --token-tag: #e06c75;
+  --token-class-name: #e5c07b;
+  --token-punctuation: var(--text-muted);
 }
 
 :root[data-theme='light'] {
@@ -72,6 +130,22 @@
   --warning: #b45309;
   --accent-contrast: #ffffff;
   --error-contrast: #ffffff;
+
+  --diff-background-color: var(--bg);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #d6fedb;
+  --diff-gutter-delete-background-color: #fadde0;
+  --diff-code-insert-background-color: #eaffee;
+  --diff-code-delete-background-color: #fdeff0;
+
+  --token-comment: var(--text-muted);
+  --token-keyword: #a626a4;
+  --token-string: #50a14f;
+  --token-function: #4078f2;
+  --token-number: #986801;
+  --token-tag: #e45649;
+  --token-class-name: #c18401;
+  --token-punctuation: var(--text-muted);
 }
 
 body {
@@ -821,18 +895,120 @@ td button {
   margin-top: 0;
 }
 
-.review-diff {
+.diff-view {
   margin-top: 12px;
 }
 
-.review-diff pre {
-  max-height: 420px;
-  overflow: auto;
-  padding: 12px;
-  border-radius: 6px;
-  background: var(--bg-alt);
+.diff-view-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.diff-view-toggle button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
   font-size: 12px;
-  line-height: 1.4;
+  cursor: pointer;
+}
+
+.diff-view-toggle button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.diff-file {
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.diff-file summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-alt);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: Consolas, Courier, monospace;
+}
+
+.diff-file-path {
+  overflow-wrap: anywhere;
+}
+
+.diff-file-stat {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+.diff-file .diff {
+  max-height: 480px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+/* refractor/Prism token classes DiffView.tsx's `tokenize(..., { highlight:
+   true, refractor, language })` produces (see react-diff-view's `tokenize`
+   docs). Colors come from the --token-* variables re-pointed per palette
+   block above; only the color mapping lives here so it stays in one place
+   rather than duplicated per theme. */
+.diff-file .token.comment,
+.diff-file .token.prolog,
+.diff-file .token.doctype,
+.diff-file .token.cdata {
+  color: var(--token-comment);
+  font-style: italic;
+}
+
+.diff-file .token.punctuation {
+  color: var(--token-punctuation);
+}
+
+.diff-file .token.keyword,
+.diff-file .token.operator,
+.diff-file .token.important,
+.diff-file .token.atrule {
+  color: var(--token-keyword);
+}
+
+.diff-file .token.string,
+.diff-file .token.char,
+.diff-file .token.attr-value,
+.diff-file .token.regex {
+  color: var(--token-string);
+}
+
+.diff-file .token.function,
+.diff-file .token.property,
+.diff-file .token.method {
+  color: var(--token-function);
+}
+
+.diff-file .token.number,
+.diff-file .token.boolean,
+.diff-file .token.constant,
+.diff-file .token.symbol {
+  color: var(--token-number);
+}
+
+.diff-file .token.tag,
+.diff-file .token.selector,
+.diff-file .token.deleted {
+  color: var(--token-tag);
+}
+
+.diff-file .token.class-name,
+.diff-file .token.builtin,
+.diff-file .token.attr-name {
+  color: var(--token-class-name);
 }
 
 .stage-start {

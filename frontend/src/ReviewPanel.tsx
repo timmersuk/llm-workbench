@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { finalizeKnowledge, finalizeReview, getReviewDiff, listExecutions } from './api'
+import { DiffView } from './DiffView'
 import { KnowledgeDraftForm } from './KnowledgeDraftForm'
 import { ReviewDraftForm } from './ReviewDraftForm'
 import { stageConversationOps } from './stageConversationOps'
@@ -91,12 +92,7 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
               </ul>
             </>
           )}
-          {patch && (
-            <details className="review-diff">
-              <summary>View diff</summary>
-              <pre>{patch}</pre>
-            </details>
-          )}
+          <DiffView patch={patch} />
         </div>
       )}
 
