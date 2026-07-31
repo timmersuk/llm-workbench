@@ -869,8 +869,8 @@ func TestClaudeRunner_ClientFor_SetsToolsAlongsideAllowedTools(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: t.TempDir()})
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"Read", "Grep", "Glob"}, captured.Tools)
-	assert.Equal(t, []string{"Read", "Grep", "Glob"}, captured.AllowedTools)
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}, captured.Tools)
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}, captured.AllowedTools)
 }
 
 // TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames locks in that
@@ -903,7 +903,7 @@ func TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:review", in)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "Bash"}, captured.Tools,
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash"}, captured.Tools,
 		"WithTools must stay built-in-only even when Draft MCP tools are registered")
 	assert.Contains(t, captured.AllowedTools, mcpQualifiedName("propose_context"),
 		"the MCP-qualified name still belongs in AllowedTools/--allowed-tools")

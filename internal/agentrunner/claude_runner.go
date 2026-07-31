@@ -42,10 +42,15 @@ var lookPath = exec.LookPath
 // interactive permission prompt (see docs/adr/0022 — --allowed-tools/
 // --disallowed-tools are a permission auto-approve/deny list, a separate,
 // narrower mechanism than --tools, and on their own don't stop the CLI's
-// full default built-in surface — Task/Agent subagent spawning, Bash,
-// Write, Edit, WebFetch, skill tools like ScheduleWakeup, etc. — from being
-// visible and callable).
-var readOnlyTools = []string{"Read", "Grep", "Glob"}
+// full default built-in surface — Agent subagent spawning, Bash, Write,
+// Edit, Skill, LSP, etc. — from being visible and callable). WebFetch/
+// WebSearch are both read-only (fetch/search, never write) and included
+// deliberately (see architecture/agentrunner-tool-surface-control knowledge
+// doc); Agent/Skill/Workflow/Monitor stay excluded (no supervision over
+// what they could trigger — ADR-0022 already rejected Agent specifically),
+// as does LSP (documented broken per the user's global lsp-first.md rule)
+// and PowerShell (redundant with Bash, which Review/Execute already grant).
+var readOnlyTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 
 // executionTools is the tool set for Execute — the Implementation stage is
 // the one place this trust boundary deliberately widens beyond
@@ -297,8 +302,8 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
 		// (--allowed-tools) only auto-approves these without a permission
 		// prompt — see docs/adr/0022. Both must be set, or the CLI's full
-		// default built-in surface (Task/Agent, WebFetch, skill tools, ...)
-		// stays visible/callable alongside executionTools.
+		// default built-in surface (Agent, Skill, LSP, ...) stays
+		// visible/callable alongside executionTools.
 		claudecode.WithTools(executionTools...),
 		claudecode.WithAllowedTools(executionTools...),
 	}
@@ -437,8 +442,8 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
 	// (--allowed-tools) only auto-approves these without a permission
 	// prompt — see docs/adr/0022. Both must be set, or the CLI's full
-	// default built-in surface (Task/Agent, WebFetch, skill tools like
-	// ScheduleWakeup, ...) stays visible/callable alongside readOnlyTools.
+	// default built-in surface (Agent, Skill, ScheduleWakeup, ...) stays
+	// visible/callable alongside readOnlyTools.
 	opts = append(opts, claudecode.WithTools(builtinTools...))
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
 
