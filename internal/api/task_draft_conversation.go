@@ -150,6 +150,7 @@ func (s *Server) resolveTaskDraftRun(ctx context.Context, proj project.Project, 
 // resolution — has run, the task-drafts analog of stageStreamTarget.
 type taskDraftStreamTarget struct {
 	runner    agentrunner.AgentRunner
+	executor  string // the resolved AgentRunners key, for TaskStore.Get/SetTaskDraftSessionID's per-executor key (mirrors stageStreamTarget.executor)
 	proj      project.Project
 	store     TaskStore
 	projectId string
@@ -177,7 +178,7 @@ func (s *Server) resolveTaskDraftStreamTarget(w http.ResponseWriter, executorKey
 		return taskDraftStreamTarget{}, false
 	}
 
-	return taskDraftStreamTarget{runner: runner, proj: proj, store: s.Tasks, projectId: projectId, sessionId: sessionId}, true
+	return taskDraftStreamTarget{runner: runner, executor: executorKey, proj: proj, store: s.Tasks, projectId: projectId, sessionId: sessionId}, true
 }
 
 // handleGetTaskDraftConversation returns a task-drafts session's persisted
@@ -245,15 +246,19 @@ func (s *Server) handleStartTaskDraftConversation() http.HandlerFunc {
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
-				SessionKey:   taskDraftSessionKey(projectId, sessionId),
-				Workspace:    run.Workspace,
-				SystemPrompt: run.SystemPrompt,
-				UserMessage:  taskDraftKickoffMessage,
-				Model:        req.Model,
-				Tools:        taskDraftTools,
-				MaxTurns:     requirementsPlanningMaxTurns,
+			var sessionID string
+			resumeSessionID := loadTaskDraftResumeSessionID(target.store, projectId, sessionId, target.executor)
+			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+				SessionKey:      taskDraftSessionKey(projectId, sessionId),
+				Workspace:       run.Workspace,
+				SystemPrompt:    run.SystemPrompt,
+				UserMessage:     taskDraftKickoffMessage,
+				Model:           req.Model,
+				Tools:           taskDraftTools,
+				MaxTurns:        requirementsPlanningMaxTurns,
+				ResumeSessionID: resumeSessionID,
 			}, writeEvent)
+			persistTaskDraftSessionID(target.store, projectId, sessionId, target.executor, sessionID)
 		}
 		if streamErr != nil {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
@@ -305,16 +310,20 @@ func (s *Server) handlePostTaskDraftMessage() http.HandlerFunc {
 		} else if run, runErr = s.resolveTaskDraftRun(r.Context(), target.proj, history); runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
-				SessionKey:   taskDraftSessionKey(projectId, sessionId),
-				Workspace:    run.Workspace,
-				SystemPrompt: run.SystemPrompt,
-				UserMessage:  req.Content,
-				Model:        req.Model,
-				Tools:        taskDraftTools,
-				MaxTurns:     requirementsPlanningMaxTurns,
-				History:      conversationHistoryToChatMessages(history),
+			var sessionID string
+			resumeSessionID := loadTaskDraftResumeSessionID(target.store, projectId, sessionId, target.executor)
+			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+				SessionKey:      taskDraftSessionKey(projectId, sessionId),
+				Workspace:       run.Workspace,
+				SystemPrompt:    run.SystemPrompt,
+				UserMessage:     req.Content,
+				Model:           req.Model,
+				Tools:           taskDraftTools,
+				MaxTurns:        requirementsPlanningMaxTurns,
+				History:         conversationHistoryToChatMessages(history),
+				ResumeSessionID: resumeSessionID,
 			}, writeEvent)
+			persistTaskDraftSessionID(target.store, projectId, sessionId, target.executor, sessionID)
 		}
 		if streamErr != nil {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
@@ -368,6 +377,7 @@ func (s *Server) handleDeleteTaskDraftMessage() http.HandlerFunc {
 		}
 
 		s.closeSessions(taskDraftSessionKey(projectId, sessionId))
+		s.clearTaskDraftSessionIDs(projectId, sessionId)
 		writeJSON(w, http.StatusOK, conv)
 	}
 }
@@ -419,6 +429,10 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 
 		sessionKey := taskDraftSessionKey(projectId, sessionId)
 		s.closeSessions(sessionKey)
+		// See stage_conversation.go's clearSessionIDs doc comment: a resumed
+		// real session/thread would still carry the content being
+		// discarded/replaced by this Regenerate/Edit.
+		s.clearTaskDraftSessionIDs(projectId, sessionId)
 
 		var assistantContent string
 		var proposed *chat.ToolCall
@@ -430,7 +444,8 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			var sessionID string
+			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:   sessionKey,
 				Workspace:    run.Workspace,
 				SystemPrompt: run.SystemPrompt,
@@ -439,7 +454,10 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 				Tools:        taskDraftTools,
 				MaxTurns:     requirementsPlanningMaxTurns,
 				History:      conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
+				// ResumeSessionID left empty: clearTaskDraftSessionIDs just
+				// cleared every executor's id above.
 			}, writeEvent)
+			persistTaskDraftSessionID(target.store, projectId, sessionId, target.executor, sessionID)
 		}
 		if streamErr != nil {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
@@ -456,5 +474,32 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 			logrus.WithError(err).WithFields(logrus.Fields{"project": projectId, "session": sessionId}).Error("persisting regenerated task draft conversation messages")
 			writeEvent(chatStreamEvent{Error: fmt.Sprintf("saving conversation: %v", err)})
 		}
+	}
+}
+
+// loadTaskDraftResumeSessionID mirrors loadResumeSessionID
+// (stage_conversation.go) for a task-drafts session.
+func loadTaskDraftResumeSessionID(store TaskStore, projectId, sessionId, executor string) string {
+	id, err := store.GetTaskDraftSessionID(projectId, sessionId, executor)
+	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{"project": projectId, "session": sessionId, "executor": executor}).Warn("loading resumable session id; proceeding without resume")
+		return ""
+	}
+	return id
+}
+
+// persistTaskDraftSessionID mirrors persistSessionID (stage_conversation.go)
+// for a task-drafts session.
+func persistTaskDraftSessionID(store TaskStore, projectId, sessionId, executor, sessionID string) {
+	if err := store.SetTaskDraftSessionID(projectId, sessionId, executor, sessionID); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{"project": projectId, "session": sessionId, "executor": executor}).Warn("persisting resumable session id")
+	}
+}
+
+// clearTaskDraftSessionIDs mirrors clearSessionIDs (stage_conversation.go)
+// for a task-drafts session.
+func (s *Server) clearTaskDraftSessionIDs(projectId, sessionId string) {
+	for executorKey := range s.AgentRunners {
+		persistTaskDraftSessionID(s.Tasks, projectId, sessionId, executorKey, "")
 	}
 }

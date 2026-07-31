@@ -78,12 +78,13 @@ doesn't have to be re-derived or re-litigated later.
 * After `Shutdown`, `run()` walks the `agentRunners` map and type-asserts
   each entry against `interface{ CloseAll() }` — deliberately not an
   `AgentRunner` interface method — to release any resources a live
-  conversation left open. Today only `*ClaudeRunner` implements it,
-  disconnecting every cached `claude` CLI client (`ClaudeRunner.CloseAll`,
-  `internal/agentrunner/claude_runner.go`) so no `claude` subprocess is left
-  orphaned when the server exits. `ChatClientRunner`/`CodexRunner` own
-  nothing to close, so a type assertion means they need no no-op stub the
-  way adding this to the `AgentRunner` interface would have forced.
+  conversation left open. Both `*ClaudeRunner` and `*CodexRunner` implement
+  it, disconnecting every cached `claude`/`codex app-server` client
+  (`ClaudeRunner.CloseAll`/`CodexRunner.CloseAll`,
+  `internal/agentrunner/claude_runner.go`/`codex_runner.go`) so no subprocess
+  is left orphaned when the server exits. `ChatClientRunner` owns nothing to
+  close, so a type assertion means it needs no no-op stub the way adding
+  this to the `AgentRunner` interface would have forced.
 
 ## Server app extraction & cmd/tray
 
@@ -409,10 +410,12 @@ doesn't have to be re-derived or re-litigated later.
   `RunInput.Tools` to `chat.ChatClient.StreamSessionTurn`'s `tools` param so
   Draft proposals (`propose_context`/`propose_plan`; Review offers two at
   once, `propose_review`/`propose_knowledge`, `docs/milestones/done/milestone9.md`)
-  work identically to `ClaudeRunner`'s. A `codex_runner.go` is expected to follow the same
-  `AgentRunner` interface later. Adopting a third-party multi-agent
-  orchestration framework (e.g. AgenticGoKit) instead of this hand-rolled
-  layer was considered and deferred — see
+  work identically to `ClaudeRunner`'s. `*CodexRunner` (`codex_runner.go`)
+  follows the same `AgentRunner` interface, backed by
+  `github.com/hishamkaram/codex-agent-sdk-go` driving `codex app-server` as a
+  JSON-RPC subprocess. Adopting a third-party multi-agent orchestration
+  framework (e.g. AgenticGoKit) instead of this hand-rolled layer was
+  considered and deferred — see
   `docs/adr/0005-defer-agenticgokit-adoption.md`.
 * `chat.ChatClient.StreamSessionTurn` holds a session's conversation
   history in-memory (`openAIClient.sessions`, keyed by `sessionKey`) rather

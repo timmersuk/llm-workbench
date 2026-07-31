@@ -34,6 +34,7 @@ func TestHandleGetTaskDraftConversation_OK(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").
 		Return(task.Conversation{Messages: []task.ConversationMessage{{Role: "user", Content: "hi"}}}, nil)
 
@@ -65,6 +66,7 @@ func TestHandleStartTaskDraftConversation_RejectsWhenAlreadyStarted(t *testing.T
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").
 		Return(task.Conversation{Messages: []task.ConversationMessage{{Role: "assistant", Content: "already asked"}}}, nil)
 
@@ -84,6 +86,7 @@ func TestHandleStartTaskDraftConversation_RunsKickoffTurnAndPersistsOnlyAssistan
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Name: "Demo", Description: "A demo project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
@@ -128,6 +131,7 @@ func TestHandlePostTaskDraftMessage_SeedsSystemPromptAndToolSchema(t *testing.T)
 	}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{}, nil)
 	tasks.On("AppendTaskDraftConversationMessages", "demo-project", "session-1", mock.Anything).Return(task.Conversation{}, nil)
 
@@ -160,6 +164,7 @@ func TestHandlePostTaskDraftMessage_StreamsToolCallAsSSEEventAndPersists(t *test
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{}, nil)
 
 	var persistedMsgs []task.ConversationMessage
@@ -201,6 +206,7 @@ func TestHandleDeleteTaskDraftMessage_RemovesOnlyThatMessageAndEvictsSessions(t 
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "first"},
@@ -240,6 +246,7 @@ func TestHandleRegenerateTaskDraftMessage_TruncatesHistoryEvictsSessionAndPersis
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "earlier"},
@@ -290,6 +297,7 @@ func TestHandleRegenerateTaskDraftMessage_RejectsNonUserIndex(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "hi"},
@@ -323,6 +331,7 @@ func TestBuildTaskDraftContext_EmptyWhenNoDraftSessionID(t *testing.T) {
 // is set and its session actually has messages.
 func TestBuildTaskDraftContext_IncludesConversationWhenSet(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{
 		Messages: []task.ConversationMessage{
 			{Role: "user", Content: "I want to fix the login bug"},
@@ -343,6 +352,7 @@ func TestBuildTaskDraftContext_IncludesConversationWhenSet(t *testing.T) {
 // called before any message went out) — no addendum, not an error.
 func TestBuildTaskDraftContext_EmptyWhenSessionHasNoMessages(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("GetTaskDraftConversation", "demo-project", "session-1").Return(task.Conversation{}, nil)
 
 	s := &Server{Tasks: tasks}
@@ -359,6 +369,7 @@ func TestBuildTaskDraftContext_EmptyWhenSessionHasNoMessages(t *testing.T) {
 // double up on prior-context addenda).
 func TestResolveStageRun_TaskDraftAddendumSkippedWhenRejectedReviewPresent(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubTaskDraftSessionIDCalls(tasks)
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return([]task.Review{
 		{ReviewID: "review-001", Decision: task.ReviewDecisionRejected, Notes: "not quite right"},
 	}, nil)

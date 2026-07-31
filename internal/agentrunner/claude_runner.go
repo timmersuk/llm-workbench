@@ -354,10 +354,26 @@ func (r *ClaudeRunner) unlock(key string) {
 	delete(r.inFlight, key)
 }
 
-// clientFor returns the cached client for key, or creates, connects, and
-// caches one from in's workspace/system prompt/tool. Callers must hold
-// key's in-flight lock (via tryLock) so two calls for the same key never
-// race to create a client.
+// clientFor returns the cached client for key, or creates and connects one.
+// Callers must hold key's in-flight lock (via tryLock) so two calls for the
+// same key never race to create a client.
+//
+// When no client is cached and in.ResumeSessionID is set, this attempts a
+// real session resume (claudecode.WithResume) first — replaying the CLI's
+// own transcript rather than an approximation rendered into the system
+// prompt (systemPromptWithHistory), and avoiding that rendering's own risk
+// of hitting the OS argv-length ceiling on a long-running conversation (see
+// maxHistoryReplayBytes). If that resume attempt fails with a "session not
+// found"-shaped error (isSessionNotFoundError — the persisted id is stale,
+// e.g. the CLI's own session storage was pruned independently of this
+// process), the id is abandoned and this falls through to a fresh,
+// non-resumed connect with systemPromptWithHistory's replay, the same as if
+// no id had ever been on record; any other connect error (auth, rate limit,
+// a genuinely unreachable CLI) propagates directly, with no fallback retry.
+// A fresh connect's own resulting session id is picked up from the turn's
+// ResultMessage (processMessage) regardless of which path produced it, so
+// the caller's next persisted RunOutput.SessionID is always correct either
+// way.
 func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (claudecode.Client, error) {
 	r.mu.Lock()
 	client, ok := r.clients[key]
@@ -370,11 +386,59 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 		return nil, errors.New("claude-code requires a project repository checked out under REPOS_ROOT")
 	}
 
-	opts := []claudecode.Option{
-		claudecode.WithCwd(in.Workspace),
-		claudecode.WithSystemPrompt(systemPromptWithHistory(in.SystemPrompt, in.History)),
-		claudecode.WithPartialStreaming(),
+	if in.ResumeSessionID != "" {
+		client, err := r.buildAndConnectClient(ctx, in, in.ResumeSessionID)
+		if err == nil {
+			return r.cacheClient(key, client), nil
+		}
+		if !isSessionNotFoundError(err) {
+			return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
+		}
+		// Stale/cleared session id — fall through to a fresh, non-resumed
+		// connect below (systemPromptWithHistory's replay), rather than
+		// surfacing this turn as a failure.
 	}
+
+	client, err := r.buildAndConnectClient(ctx, in, "")
+	if err != nil {
+		return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
+	}
+	return r.cacheClient(key, client), nil
+}
+
+// cacheClient records client as key's live session and returns it —
+// factored out of clientFor purely so both the resume and fallback connect
+// paths share the exact same lock/store sequence.
+func (r *ClaudeRunner) cacheClient(key string, client claudecode.Client) claudecode.Client {
+	r.mu.Lock()
+	r.clients[key] = client
+	r.mu.Unlock()
+	return client
+}
+
+// buildAndConnectClient constructs a claudecode.Client from in's workspace/
+// tools/MCP servers and connects it, returning the raw (unwrapped) Connect
+// error so clientFor can pattern-match it via isSessionNotFoundError before
+// deciding whether to wrap and return it or fall through to a retry.
+// resumeSessionID selects between claudecode.WithResume(resumeSessionID)
+// (the real session/thread's own transcript, nothing rendered into the
+// system prompt) and, when empty, a brand-new session whose system prompt
+// is widened by systemPromptWithHistory's replay — never both, since a
+// resumed session already has its own real history and replaying an
+// approximation on top would just duplicate it.
+func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, resumeSessionID string) (claudecode.Client, error) {
+	systemPrompt := in.SystemPrompt
+	var opts []claudecode.Option
+	if resumeSessionID != "" {
+		opts = append(opts, claudecode.WithResume(resumeSessionID))
+	} else {
+		systemPrompt = systemPromptWithHistory(in.SystemPrompt, in.History)
+	}
+	opts = append(opts,
+		claudecode.WithCwd(in.Workspace),
+		claudecode.WithSystemPrompt(systemPrompt),
+		claudecode.WithPartialStreaming(),
+	)
 	// WithMaxTurns is only added when the caller set a positive value —
 	// omitting it entirely (rather than passing 0) is how this SDK's
 	// underlying `claude` CLI is told not to cap turns at all (see
@@ -447,14 +511,10 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	opts = append(opts, claudecode.WithTools(builtinTools...))
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
 
-	client = r.newClient(opts...)
+	client := r.newClient(opts...)
 	if err := client.Connect(ctx); err != nil {
-		return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
+		return nil, err
 	}
-
-	r.mu.Lock()
-	r.clients[key] = client
-	r.mu.Unlock()
 	return client, nil
 }
 
@@ -543,6 +603,37 @@ func isStaleClaudeConnectionError(err error) bool {
 		"closed pipe",          // io.ErrClosedPipe's message
 		"stdin closed",         // the SDK's own "transport not connected or stdin closed"
 		"file already closed",  // os.ErrClosed's message
+	} {
+		if strings.Contains(msg, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSessionNotFoundError reports whether err indicates a
+// claudecode.WithResume(sessionID) attempt failed because the CLI itself
+// has no record of that session — its on-disk session storage was pruned,
+// cleared, or otherwise diverged from what this process had persisted — as
+// opposed to a genuine failure (bad auth, rate limit, an unreachable CLI)
+// that retrying without resume wouldn't fix and must propagate directly.
+// Detected by message content since neither the SDK
+// (github.com/severity1/claude-agent-sdk-go) nor the underlying `claude`
+// CLI exposes a stable sentinel/error code for this — the same
+// content-matching posture isStaleClaudeConnectionError already takes for
+// its own, differently-shaped failure mode. This pattern-matching is
+// inherently fragile across CLI/SDK version bumps (accepted tradeoff — see
+// docs/architecture/agentrunner-session-resume.md); a real-CLI resume
+// failure text this doesn't yet match will surface as an ordinary Run
+// error, never a silent misbehavior.
+func isSessionNotFoundError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, substr := range []string{
+		"no conversation found",  // observed claude CLI wording for an unknown --resume id
+		"session not found",
+		"session id not found",
+		"unknown session",
+		"no session found",
 	} {
 		if strings.Contains(msg, substr) {
 			return true
@@ -913,6 +1004,11 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 		}
 	case *claudecode.ResultMessage:
 		out.Content = content.String()
+		// Captured regardless of resumed-vs-fresh: a fresh (fallback)
+		// connect still gets its own real session id from the CLI, which is
+		// exactly what the caller should persist as this SessionKey's next
+		// ResumeSessionID (see clientFor's doc comment).
+		out.SessionID = m.SessionID
 		if m.IsError {
 			return true, fmt.Errorf("claude code agent run failed: %s", strings.Join(m.Errors, "; "))
 		}

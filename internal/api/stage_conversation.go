@@ -233,6 +233,7 @@ func (s *Server) handleGetStageConversation() http.HandlerFunc {
 // handler is left with only its distinct pre-stream logic.
 type stageStreamTarget struct {
 	runner    agentrunner.AgentRunner
+	executor  string // the resolved AgentRunners key ("claude-code" | "codex" | "local"), for TaskStore.Get/SetSessionID's per-executor key
 	proj      project.Project
 	store     TaskStore
 	projectId string
@@ -271,7 +272,7 @@ func (s *Server) resolveStageStreamTarget(w http.ResponseWriter, executorKey, pr
 		return stageStreamTarget{}, false
 	}
 
-	return stageStreamTarget{runner: runner, proj: proj, store: store, projectId: projectId, task: t}, true
+	return stageStreamTarget{runner: runner, executor: executorKey, proj: proj, store: store, projectId: projectId, task: t}, true
 }
 
 // beginStageStream confirms the ResponseWriter can stream, writes the SSE
@@ -384,17 +385,21 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		} else if run, runErr = s.resolveStageRun(r.Context(), target.proj, target.store, target.projectId, target.task, stage, history); runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
-				SessionKey:     taskId + ":" + stage,
-				Workspace:      run.Workspace,
-				SystemPrompt:   run.SystemPrompt,
-				UserMessage:    req.Content,
-				Model:          req.Model,
-				Tools:          tools,
-				EnableBashTool: run.EnableBash,
-				MaxTurns:       run.MaxTurns,
-				History:        conversationHistoryToChatMessages(history),
+			var sessionID string
+			resumeSessionID := loadResumeSessionID(target.store, target.projectId, taskId, stage, target.executor)
+			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+				SessionKey:      taskId + ":" + stage,
+				Workspace:       run.Workspace,
+				SystemPrompt:    run.SystemPrompt,
+				UserMessage:     req.Content,
+				Model:           req.Model,
+				Tools:           tools,
+				EnableBashTool:  run.EnableBash,
+				MaxTurns:        run.MaxTurns,
+				History:         conversationHistoryToChatMessages(history),
+				ResumeSessionID: resumeSessionID,
 			}, writeEvent)
+			persistSessionID(target.store, target.projectId, taskId, stage, target.executor, sessionID)
 		}
 		if streamErr != nil {
 			// Headers (200 OK) are already sent, so a failed stream can't
@@ -475,16 +480,20 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
-				SessionKey:     taskId + ":" + stage,
-				Workspace:      run.Workspace,
-				SystemPrompt:   run.SystemPrompt,
-				UserMessage:    kickoffUserMessageFor(stage),
-				Model:          req.Model,
-				Tools:          tools,
-				EnableBashTool: run.EnableBash,
-				MaxTurns:       run.MaxTurns,
+			var sessionID string
+			resumeSessionID := loadResumeSessionID(target.store, target.projectId, taskId, stage, target.executor)
+			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+				SessionKey:      taskId + ":" + stage,
+				Workspace:       run.Workspace,
+				SystemPrompt:    run.SystemPrompt,
+				UserMessage:     kickoffUserMessageFor(stage),
+				Model:           req.Model,
+				Tools:           tools,
+				EnableBashTool:  run.EnableBash,
+				MaxTurns:        run.MaxTurns,
+				ResumeSessionID: resumeSessionID,
 			}, writeEvent)
+			persistSessionID(target.store, target.projectId, taskId, stage, target.executor, sessionID)
 		}
 		if streamErr != nil {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
@@ -555,6 +564,7 @@ func (s *Server) handleDeleteStageMessage() http.HandlerFunc {
 		}
 
 		s.closeSessions(taskId + ":" + stage)
+		s.clearSessionIDs(projectId, taskId, stage)
 		writeJSON(w, http.StatusOK, conv)
 	}
 }
@@ -630,6 +640,11 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 
 		sessionKey := taskId + ":" + stage
 		s.closeSessions(sessionKey)
+		// A resumed real session/thread would still carry whatever content
+		// is being discarded/replaced by this Regenerate/Edit — see
+		// clearSessionIDs' doc comment — so every executor's persisted id is
+		// cleared here, before the fresh turn below ever reads one.
+		s.clearSessionIDs(target.projectId, taskId, stage)
 
 		var assistantContent string
 		var proposed *chat.ToolCall
@@ -641,7 +656,8 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		if runErr != nil {
 			streamErr = runErr
 		} else {
-			assistantContent, proposed, activity, segments, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
+			var sessionID string
+			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:     sessionKey,
 				Workspace:      run.Workspace,
 				SystemPrompt:   run.SystemPrompt,
@@ -651,7 +667,12 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 				EnableBashTool: run.EnableBash,
 				MaxTurns:       run.MaxTurns,
 				History:        conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
+				// ResumeSessionID is deliberately left empty: clearSessionIDs
+				// just cleared every executor's id above, so this turn always
+				// starts a fresh session/thread rather than resuming the one
+				// whose tail is being discarded/replaced.
 			}, writeEvent)
+			persistSessionID(target.store, target.projectId, taskId, stage, target.executor, sessionID)
 		}
 		if streamErr != nil {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
@@ -674,12 +695,14 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 // runStageTurn runs one agent turn and streams its deltas via writeEvent
 // (the chatStreamEvent shape both stage-conversation endpoints share),
 // returning the assistant's accumulated content, any proposed Draft tool
-// call, the turn's Tool Activity (docs/adr/0018), and its real chronological
-// segments (docs/adr/0023) for the caller to persist. Shared by
-// handlePostStageMessage and handleStartStageConversation — they differ in
-// what UserMessage/History they supply and what gets persisted afterward,
-// not in how a turn is actually run and streamed.
-func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, err error) {
+// call, the turn's Tool Activity (docs/adr/0018), its real chronological
+// segments (docs/adr/0023), and the turn's resulting session/thread id
+// (agentrunner.RunOutput.SessionID — empty if the runner doesn't support
+// one, or the turn errored before producing one) for the caller to persist.
+// Shared by handlePostStageMessage and handleStartStageConversation — they
+// differ in what UserMessage/History/ResumeSessionID they supply and what
+// gets persisted afterward, not in how a turn is actually run and streamed.
+func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, sessionID string, err error) {
 	// segments is the turn's one real record of what happened, in the order
 	// it happened (docs/adr/0023) — content/activity below are both derived
 	// from it once the turn ends, rather than tracked in parallel, so
@@ -784,7 +807,58 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 	}
 	content = contentBuilder.String()
 
-	return content, toolCall, activity, segments, runErr
+	return content, toolCall, activity, segments, out.SessionID, runErr
+}
+
+// loadResumeSessionID returns the durable session/thread id previously
+// recorded for executor on this stage Conversation (agentrunner.RunInput.
+// ResumeSessionID) — consulted only when the caller is about to run a turn
+// with no live in-memory session already (mirroring RunInput.History's own
+// "only when no live session" contract). A lookup failure is logged and
+// treated as "no id on record" rather than failing the turn: resume is an
+// optimization over systemPromptWithHistory's replay fallback, never a
+// correctness requirement, so losing it just means this one turn replays
+// history instead of resuming.
+func loadResumeSessionID(store TaskStore, projectId, taskId, stage, executor string) string {
+	id, err := store.GetSessionID(projectId, taskId, stage, executor)
+	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage, "executor": executor}).Warn("loading resumable session id; proceeding without resume")
+		return ""
+	}
+	return id
+}
+
+// persistSessionID unconditionally records a turn's resulting
+// agentrunner.RunOutput.SessionID for executor on this stage Conversation —
+// called after every turn regardless of outcome, overwriting whatever was
+// previously recorded (including clearing it back to "" when the runner
+// fell back to systemPromptWithHistory after a "not found" resume failure,
+// or when the runner doesn't support a session/thread id at all). A
+// persist failure is logged, not surfaced to the human: it only risks this
+// conversation's future resume attempts, never the turn that just ran.
+func persistSessionID(store TaskStore, projectId, taskId, stage, executor, sessionID string) {
+	if err := store.SetSessionID(projectId, taskId, stage, executor, sessionID); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage, "executor": executor}).Warn("persisting resumable session id")
+	}
+}
+
+// clearSessionIDs clears every configured executor's persisted session/
+// thread id for a stage Conversation — called alongside closeSessions
+// whenever a stage conversation's transcript is truncated or edited
+// (Delete, Regenerate/Edit). The live in-memory session closeSessions
+// evicts is only half the problem: the underlying CLI's own session/thread
+// still contains whatever content was just discarded or replaced, so a
+// later turn resuming it via id would silently let that discarded content
+// back into the model's context — exactly what Delete/Regenerate/Edit are
+// meant to prevent. Clearing forces the next turn to fall back to
+// systemPromptWithHistory, replaying only the (now-truncated/edited)
+// persisted transcript — the same source of truth the human just changed.
+// Iterates every configured executor (not just the request's own) since any
+// of them could have produced the session/thread being discarded.
+func (s *Server) clearSessionIDs(projectId, taskId, stage string) {
+	for executorKey := range s.AgentRunners {
+		persistSessionID(s.Tasks, projectId, taskId, stage, executorKey, "")
+	}
 }
 
 // offersToolNamed reports whether tools contains one named name.
