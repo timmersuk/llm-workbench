@@ -221,31 +221,58 @@ func normalizeRGLine(line string) string {
 
 // splitRGLine splits an rg plain-text output line into its path, separator
 // (":" for a match line, "-" for a context line), line-number, and content
-// fields. It scans for the first occurrence of a separator character that is
-// immediately followed by a run of digits and then that same separator
-// character again — the shape rg always uses for the path/line-number
-// boundary — so a hyphen or colon occurring naturally within a directory
-// name (e.g. "task-exec") doesn't get mistaken for the real separator.
+// fields. rg always uses ":" as the path/line-number separator on match lines
+// and "-" on context lines, so the boundary is shaped like
+// `<path><sep><digits><sep><content>`. A hyphen or colon occurring naturally
+// within a directory name (e.g. "task-exec") or within the matched/context
+// content itself (a timestamp, an IPv6 fragment, a Windows path like
+// `C:\foo`) can also happen to have that shape, so scanning for one
+// separator at a time and taking whichever it finds first is not safe: on a
+// context line, a spurious `digit:digit` run inside the content can be found
+// before the real, later-occurring `-digit-` boundary. To avoid that, find
+// the first valid boundary for *each* candidate separator independently and
+// then take whichever of the two occurs earliest in the line — the genuine
+// path/line-number boundary is always the leftmost of the pair, since it
+// starts at index 0's path and everything to its right is unparsed content
+// that may itself contain (later) look-alike boundaries of the other kind.
 func splitRGLine(line string) (path, sep, num, content string, ok bool) {
+	var bestIdx, bestEnd int = -1, -1
+	var bestSep byte
 	for _, s := range []byte{':', '-'} {
-		start := 0
-		for {
-			idx := strings.IndexByte(line[start:], s)
-			if idx < 0 {
-				break
-			}
-			idx += start
-			j := idx + 1
-			for j < len(line) && line[j] >= '0' && line[j] <= '9' {
-				j++
-			}
-			if j > idx+1 && j < len(line) && line[j] == s {
-				return line[:idx], string(s), line[idx+1 : j], line[j+1:], true
-			}
-			start = idx + 1
+		idx, end, found := firstValidRGBoundary(line, s)
+		if !found {
+			continue
+		}
+		if bestIdx == -1 || idx < bestIdx {
+			bestIdx, bestEnd, bestSep = idx, end, s
 		}
 	}
-	return "", "", "", "", false
+	if bestIdx == -1 {
+		return "", "", "", "", false
+	}
+	return line[:bestIdx], string(bestSep), line[bestIdx+1 : bestEnd], line[bestEnd+1:], true
+}
+
+// firstValidRGBoundary finds the first occurrence in line of the shape
+// `<sep><digits><sep>` and reports the index of the leading separator and
+// the index of the trailing one (end), or ok=false if no such run exists.
+func firstValidRGBoundary(line string, s byte) (idx, end int, ok bool) {
+	start := 0
+	for {
+		i := strings.IndexByte(line[start:], s)
+		if i < 0 {
+			return 0, 0, false
+		}
+		i += start
+		j := i + 1
+		for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+			j++
+		}
+		if j > i+1 && j < len(line) && line[j] == s {
+			return i, j, true
+		}
+		start = i + 1
+	}
 }
 
 // rgPath resolves the ripgrep executable via PATH lookup only — no

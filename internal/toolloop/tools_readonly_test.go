@@ -224,6 +224,29 @@ func TestGrepToolDoesNotMangleBackslashesInMatchedContent(t *testing.T) {
 	}
 }
 
+func TestGrepToolDoesNotMangleBackslashesInContextLineContent(t *testing.T) {
+	dir := t.TempDir()
+	// The context line's content contains a `digit:digit` run (3:4:5) that
+	// looks like a colon-based path/line-number boundary, even though this
+	// is a `-`-separated context line, not a `:`-separated match line. A
+	// naive scan for the first ":"-shaped boundary anywhere in the line
+	// would misidentify "sub/a.go-1-see C:\Zoo at 3" as the path and run it
+	// through ToSlash, corrupting the real backslash in `C:\Zoo`.
+	writeFile(t, dir, "sub/a.go", "MATCHME\nsee C:\\Zoo at 3:4:5 in log\n")
+	g := grepTool{}
+
+	out, err := g.Execute(context.Background(), dir, `{"pattern":"MATCHME","context":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `see C:\Zoo at 3:4:5 in log`) {
+		t.Fatalf("expected context-line content's backslash preserved untouched, got %q", out)
+	}
+	if !strings.Contains(out, "sub/a.go-2-see") {
+		t.Fatalf("expected forward-slash-normalized path with the real `-` context separator, got %q", out)
+	}
+}
+
 func TestGrepToolRequiresPattern(t *testing.T) {
 	dir := t.TempDir()
 	g := grepTool{}
