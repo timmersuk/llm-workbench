@@ -247,6 +247,29 @@ func TestGrepToolDoesNotMangleBackslashesInContextLineContent(t *testing.T) {
 	}
 }
 
+func TestGrepToolPathItselfShapedLikeASeparatorBoundary(t *testing.T) {
+	// Regression test: a genuine path segment containing a hyphen-digit-hyphen
+	// run (e.g. "sub-1-dir", mirroring real-world names like
+	// "windows-10-light.scss") must not be misidentified as the
+	// path/line-number boundary. Splitting on rg's --null-delimited path
+	// (rather than scanning for a look-alike `-digit-`/`:digit:` shape)
+	// resolves this unambiguously regardless of what the path itself contains.
+	dir := t.TempDir()
+	writeFile(t, dir, "sub-1-dir/file.go", "needle here\n")
+	g := grepTool{}
+
+	out, err := g.Execute(context.Background(), dir, `{"pattern":"needle"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "sub-1-dir/file.go:1:needle here") {
+		t.Fatalf("expected the full path preserved and forward-slash-normalized, got %q", out)
+	}
+	if strings.Contains(out, `sub-1-dir\file.go`) {
+		t.Fatalf("path should not contain a stray backslash, got %q", out)
+	}
+}
+
 func TestGrepToolRequiresPattern(t *testing.T) {
 	dir := t.TempDir()
 	g := grepTool{}

@@ -158,7 +158,7 @@ func (grepTool) Execute(ctx context.Context, workspace, argumentsJSON string) (s
 		args.Context = 0
 	}
 
-	cmdArgs := []string{"--no-heading", "-n", "-C", strconv.Itoa(args.Context)}
+	cmdArgs := []string{"--no-heading", "-n", "--null", "-C", strconv.Itoa(args.Context)}
 	if args.IgnoreCase {
 		cmdArgs = append(cmdArgs, "--ignore-case")
 	}
@@ -198,11 +198,18 @@ func (grepTool) Execute(ctx context.Context, workspace, argumentsJSON string) (s
 
 // normalizeRGOutput applies filepath.ToSlash to only the leading path segment
 // of each rg output line, leaving everything after the path/line-number
-// separator (the match/context text itself) byte-for-byte untouched. rg's
-// plain-text format is `path:line:content` for matches and `path-line-content`
-// for context lines; naively running ToSlash over the whole blob would also
-// mangle backslashes that legitimately appear inside matched content (e.g. a
-// Windows path fragment or a `\d+`-style regex the user searched for).
+// separator (the match/context text itself) byte-for-byte untouched. Naively
+// running ToSlash over the whole blob would also mangle backslashes that
+// legitimately appear inside matched content (e.g. a Windows path fragment or
+// a `\d+`-style regex the user searched for) — and scanning the plain-text
+// `path:line:content`/`path-line-content` shape for the path/line-number
+// boundary is inherently ambiguous, since both the path (e.g.
+// `sub-1-dir/file.go`) and the content can themselves contain a
+// `-digit-`/`:digit:` run that looks just like it. grepTool sidesteps that by
+// invoking rg with --null, which makes rg itself terminate the path with an
+// unambiguous NUL byte (a byte that can't otherwise appear in either a path
+// or the text of a non-binary file rg would report on) instead of relying on
+// this code to re-derive the boundary heuristically.
 func normalizeRGOutput(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
@@ -219,60 +226,31 @@ func normalizeRGLine(line string) string {
 	return filepath.ToSlash(path) + sep + num + sep + content
 }
 
-// splitRGLine splits an rg plain-text output line into its path, separator
-// (":" for a match line, "-" for a context line), line-number, and content
-// fields. rg always uses ":" as the path/line-number separator on match lines
-// and "-" on context lines, so the boundary is shaped like
-// `<path><sep><digits><sep><content>`. A hyphen or colon occurring naturally
-// within a directory name (e.g. "task-exec") or within the matched/context
-// content itself (a timestamp, an IPv6 fragment, a Windows path like
-// `C:\foo`) can also happen to have that shape, so scanning for one
-// separator at a time and taking whichever it finds first is not safe: on a
-// context line, a spurious `digit:digit` run inside the content can be found
-// before the real, later-occurring `-digit-` boundary. To avoid that, find
-// the first valid boundary for *each* candidate separator independently and
-// then take whichever of the two occurs earliest in the line — the genuine
-// path/line-number boundary is always the leftmost of the pair, since it
-// starts at index 0's path and everything to its right is unparsed content
-// that may itself contain (later) look-alike boundaries of the other kind.
+// splitRGLine splits an rg --null plain-text output line into its path,
+// separator (":" for a match line, "-" for a context line), line-number, and
+// content fields. With --null, rg follows the path with a literal NUL byte
+// rather than the path/line-number separator, so the path is whatever
+// precedes the first NUL — no scanning for a look-alike separator shape is
+// needed. What follows the NUL is always `<digits><sep><content>`, since that
+// digit run is the line number rg itself emitted and is immediately followed
+// by its real separator. Lines with no NUL byte (e.g. the "--" group
+// separator rg prints between non-adjacent context blocks) aren't rg
+// path/content lines at all and are passed through unmodified.
 func splitRGLine(line string) (path, sep, num, content string, ok bool) {
-	var bestIdx, bestEnd int = -1, -1
-	var bestSep byte
-	for _, s := range []byte{':', '-'} {
-		idx, end, found := firstValidRGBoundary(line, s)
-		if !found {
-			continue
-		}
-		if bestIdx == -1 || idx < bestIdx {
-			bestIdx, bestEnd, bestSep = idx, end, s
-		}
-	}
-	if bestIdx == -1 {
+	nul := strings.IndexByte(line, 0)
+	if nul < 0 {
 		return "", "", "", "", false
 	}
-	return line[:bestIdx], string(bestSep), line[bestIdx+1 : bestEnd], line[bestEnd+1:], true
-}
+	path, rest := line[:nul], line[nul+1:]
 
-// firstValidRGBoundary finds the first occurrence in line of the shape
-// `<sep><digits><sep>` and reports the index of the leading separator and
-// the index of the trailing one (end), or ok=false if no such run exists.
-func firstValidRGBoundary(line string, s byte) (idx, end int, ok bool) {
-	start := 0
-	for {
-		i := strings.IndexByte(line[start:], s)
-		if i < 0 {
-			return 0, 0, false
-		}
-		i += start
-		j := i + 1
-		for j < len(line) && line[j] >= '0' && line[j] <= '9' {
-			j++
-		}
-		if j > i+1 && j < len(line) && line[j] == s {
-			return i, j, true
-		}
-		start = i + 1
+	j := 0
+	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+		j++
 	}
+	if j == 0 || j >= len(rest) || (rest[j] != ':' && rest[j] != '-') {
+		return "", "", "", "", false
+	}
+	return path, string(rest[j]), rest[:j], rest[j+1:], true
 }
 
 // rgPath resolves the ripgrep executable via PATH lookup only — no
