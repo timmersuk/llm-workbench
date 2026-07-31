@@ -189,11 +189,63 @@ func (grepTool) Execute(ctx context.Context, workspace, argumentsJSON string) (s
 		return "", fmt.Errorf("running rg: %w", runErr)
 	}
 
-	out := filepath.ToSlash(stdout.String())
+	out := stdout.String()
 	if strings.TrimSpace(out) == "" {
 		return "no matches", nil
 	}
-	return truncateResult(out), nil
+	return truncateResult(normalizeRGOutput(out)), nil
+}
+
+// normalizeRGOutput applies filepath.ToSlash to only the leading path segment
+// of each rg output line, leaving everything after the path/line-number
+// separator (the match/context text itself) byte-for-byte untouched. rg's
+// plain-text format is `path:line:content` for matches and `path-line-content`
+// for context lines; naively running ToSlash over the whole blob would also
+// mangle backslashes that legitimately appear inside matched content (e.g. a
+// Windows path fragment or a `\d+`-style regex the user searched for).
+func normalizeRGOutput(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = normalizeRGLine(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeRGLine(line string) string {
+	path, sep, num, content, ok := splitRGLine(line)
+	if !ok {
+		return line
+	}
+	return filepath.ToSlash(path) + sep + num + sep + content
+}
+
+// splitRGLine splits an rg plain-text output line into its path, separator
+// (":" for a match line, "-" for a context line), line-number, and content
+// fields. It scans for the first occurrence of a separator character that is
+// immediately followed by a run of digits and then that same separator
+// character again — the shape rg always uses for the path/line-number
+// boundary — so a hyphen or colon occurring naturally within a directory
+// name (e.g. "task-exec") doesn't get mistaken for the real separator.
+func splitRGLine(line string) (path, sep, num, content string, ok bool) {
+	for _, s := range []byte{':', '-'} {
+		start := 0
+		for {
+			idx := strings.IndexByte(line[start:], s)
+			if idx < 0 {
+				break
+			}
+			idx += start
+			j := idx + 1
+			for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+				j++
+			}
+			if j > idx+1 && j < len(line) && line[j] == s {
+				return line[:idx], string(s), line[idx+1 : j], line[j+1:], true
+			}
+			start = idx + 1
+		}
+	}
+	return "", "", "", "", false
 }
 
 // rgPath resolves the ripgrep executable via PATH lookup only — no

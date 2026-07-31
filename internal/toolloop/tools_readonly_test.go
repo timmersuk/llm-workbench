@@ -203,6 +203,27 @@ func TestGrepToolPathNormalizedToForwardSlashes(t *testing.T) {
 	}
 }
 
+func TestGrepToolDoesNotMangleBackslashesInMatchedContent(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "sub/a.txt", `see C:\Windows\System32 for details`+"\n")
+	g := grepTool{}
+
+	// A regex containing a literal backslash escape (`\d+`) exercises both
+	// ends: the pattern itself and the matched line's content both carry
+	// backslashes that must survive untouched, while the leading path
+	// segment (sub/a.txt) must still be forward-slash-normalized.
+	out, err := g.Execute(context.Background(), dir, `{"pattern":"System\\d+"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `C:\Windows\System32`) {
+		t.Fatalf("expected matched content's backslashes preserved untouched, got %q", out)
+	}
+	if !strings.Contains(out, "sub/a.txt:1:") {
+		t.Fatalf("expected forward-slash-normalized path prefix, got %q", out)
+	}
+}
+
 func TestGrepToolRequiresPattern(t *testing.T) {
 	dir := t.TempDir()
 	g := grepTool{}
