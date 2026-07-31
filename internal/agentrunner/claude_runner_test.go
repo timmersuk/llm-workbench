@@ -839,6 +839,158 @@ func TestClaudeRunner_ClientFor_ErrorsWhenWorkspaceEmpty(t *testing.T) {
 	assert.Contains(t, err.Error(), "claude-code requires a project repository")
 }
 
+// TestClaudeRunner_ClientFor_ResumesRealSessionWhenIDSet locks in the
+// resume-first contract: when in.ResumeSessionID is set and no client is
+// cached, clientFor attempts claudecode.WithResume(id) — not
+// systemPromptWithHistory's rendered-transcript replay, even though History
+// is also populated (a caller always supplies both; resume wins when it
+// succeeds).
+func TestClaudeRunner_ClientFor_ResumesRealSessionWhenIDSet(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	fake := &fakeClaudeClient{}
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		captured = captureOptions(opts...)
+		return fake
+	}
+
+	client, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:       t.TempDir(),
+		SystemPrompt:    "base prompt",
+		ResumeSessionID: "sess-123",
+		History:         []chat.Message{{Role: "user", Content: "earlier turn"}},
+	})
+	require.NoError(t, err)
+	assert.Same(t, fake, client)
+	require.NotNil(t, captured.Resume)
+	assert.Equal(t, "sess-123", *captured.Resume)
+	require.NotNil(t, captured.SystemPrompt)
+	assert.Equal(t, "base prompt", *captured.SystemPrompt, "a resumed session must not also get history rendered into its system prompt")
+}
+
+// TestClaudeRunner_ClientFor_FallsBackAfterSessionNotFound locks in the
+// same-turn fallback: a resume attempt failing with a "not found"-shaped
+// error must not fail the turn — clientFor retries against a fresh,
+// non-resumed client using systemPromptWithHistory's replay instead, and
+// that fresh client becomes the one cached/returned.
+func TestClaudeRunner_ClientFor_FallsBackAfterSessionNotFound(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	failed := &fakeClaudeClient{connectErr: errors.New("No conversation found with session ID: sess-stale")}
+	var fallbackOpts claudecode.Options
+	fresh := &fakeClaudeClient{}
+	calls := 0
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		calls++
+		if calls == 1 {
+			return failed
+		}
+		fallbackOpts = captureOptions(opts...)
+		return fresh
+	}
+
+	client, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:       t.TempDir(),
+		SystemPrompt:    "base prompt",
+		ResumeSessionID: "sess-stale",
+		History:         []chat.Message{{Role: "user", Content: "earlier turn"}},
+	})
+	require.NoError(t, err)
+	assert.Same(t, fresh, client)
+	assert.Equal(t, 2, calls, "must attempt exactly one fallback connect, not loop")
+	assert.Nil(t, fallbackOpts.Resume, "the fallback connect must not itself pass WithResume")
+	require.NotNil(t, fallbackOpts.SystemPrompt)
+	assert.Contains(t, *fallbackOpts.SystemPrompt, "earlier turn", "the fallback connect must replay history into the system prompt")
+
+	r.mu.Lock()
+	cached := r.clients["task-a:requirements"]
+	r.mu.Unlock()
+	assert.Same(t, fresh, cached, "the fresh fallback client, not the failed one, must be cached")
+}
+
+// TestClaudeRunner_ClientFor_PropagatesNonNotFoundConnectError locks in
+// that only a "not found"-shaped resume failure triggers the fallback
+// retry — a genuine failure (auth, rate limit, ...) must propagate
+// directly, with no second connect attempt.
+func TestClaudeRunner_ClientFor_PropagatesNonNotFoundConnectError(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	failed := &fakeClaudeClient{connectErr: errors.New("authentication failed")}
+	calls := 0
+	r.newClient = func(...claudecode.Option) claudecode.Client {
+		calls++
+		return failed
+	}
+
+	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:       t.TempDir(),
+		ResumeSessionID: "sess-123",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+	assert.Equal(t, 1, calls, "a non-'not found' connect error must not trigger a fallback retry")
+}
+
+// TestClaudeRunner_ClientFor_NoResumeIDUsesHistoryReplayDirectly locks in
+// that the pre-existing behavior (no ResumeSessionID at all) is unchanged:
+// a single connect, straight to systemPromptWithHistory, no resume attempt.
+func TestClaudeRunner_ClientFor_NoResumeIDUsesHistoryReplayDirectly(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	calls := 0
+	fake := &fakeClaudeClient{}
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		calls++
+		captured = captureOptions(opts...)
+		return fake
+	}
+
+	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:    t.TempDir(),
+		SystemPrompt: "base prompt",
+		History:      []chat.Message{{Role: "user", Content: "earlier turn"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	assert.Nil(t, captured.Resume)
+	require.NotNil(t, captured.SystemPrompt)
+	assert.Contains(t, *captured.SystemPrompt, "earlier turn")
+}
+
+func TestIsSessionNotFoundError_MatchesKnownPatterns(t *testing.T) {
+	for _, msg := range []string{
+		"No conversation found with session ID: abc-123",
+		"session not found",
+		"Session ID not found",
+		"unknown session",
+		"no session found for id",
+	} {
+		assert.True(t, isSessionNotFoundError(errors.New(msg)), "expected %q to match", msg)
+	}
+}
+
+func TestIsSessionNotFoundError_IgnoresUnrelatedErrors(t *testing.T) {
+	assert.False(t, isSessionNotFoundError(errors.New("authentication failed")))
+	assert.False(t, isSessionNotFoundError(errors.New("rate limit exceeded")))
+}
+
+// TestProcessMessage_CapturesSessionIDFromResultMessage locks in that
+// out.SessionID is populated from every ResultMessage regardless of
+// whether the turn resumed a real session or fell back to a fresh one —
+// the caller persists this unconditionally as the SessionKey's next
+// ResumeSessionID.
+func TestProcessMessage_CapturesSessionIDFromResultMessage(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+
+	done, err := processMessage(&claudecode.ResultMessage{SessionID: "sess-abc"}, nil, &content, &out, nil, nil)
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.Equal(t, "sess-abc", out.SessionID)
+}
+
 // captureOptions applies opts to a fresh claudecode.Options so a test can
 // inspect exactly what a ClaudeRunner call configured — the same pattern
 // docs/adr/0022's fix depends on: WithTools must be set, not just
@@ -1040,17 +1192,22 @@ func TestClaudeRunner_CloseAll_OnEmptyCacheIsANoOp(t *testing.T) {
 
 // fakeClaudeClient is a minimal claudecode.Client stub for exercising
 // ClaudeRunner without a live subprocess. queryErr scripts Query's return
-// value (e.g. a stale-pipe error); ReceiveMessages always returns a
-// real, already-closed channel (not nil, which a for-range would block on
-// forever) so Run's drain loop completes immediately once Query succeeds.
+// value (e.g. a stale-pipe error); connectErr scripts Connect's return
+// value (e.g. a "no conversation found" resume failure); ReceiveMessages
+// always returns a real, already-closed channel (not nil, which a
+// for-range would block on forever) so Run's drain loop completes
+// immediately once Query succeeds.
 type fakeClaudeClient struct {
 	disconnected bool
+	connectErr   error
 	queryErr     error
 	queryCalls   int
 }
 
-func (f *fakeClaudeClient) Connect(context.Context, ...claudecode.StreamMessage) error { return nil }
-func (f *fakeClaudeClient) Disconnect() error                                          { f.disconnected = true; return nil }
+func (f *fakeClaudeClient) Connect(context.Context, ...claudecode.StreamMessage) error {
+	return f.connectErr
+}
+func (f *fakeClaudeClient) Disconnect() error { f.disconnected = true; return nil }
 func (f *fakeClaudeClient) Query(context.Context, string) error {
 	f.queryCalls++
 	return f.queryErr

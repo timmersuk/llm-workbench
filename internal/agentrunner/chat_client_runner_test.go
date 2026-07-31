@@ -112,6 +112,31 @@ func TestChatClientRunner_Run_BuildsMessagesAndStreams(t *testing.T) {
 	assert.Equal(t, []chat.Delta{{Content: "hi back"}}, gotDeltas)
 }
 
+// TestChatClientRunner_Run_IgnoresResumeSessionIDAndNeverReportsOne locks in
+// ChatClientRunner's permanent no-op on the generic resume fields
+// (RunInput.ResumeSessionID/RunOutput.SessionID): it has no session/thread
+// concept of its own to resume, so a caller-supplied id is simply ignored
+// (never surfaced to the underlying chat.ChatClient) and RunOutput.SessionID
+// always comes back empty, regardless of ResumeSessionID.
+func TestChatClientRunner_Run_IgnoresResumeSessionIDAndNeverReportsOne(t *testing.T) {
+	client := &fakeChatClient{streamContent: "hi back"}
+	runner := NewChatClientRunner(client, nil)
+
+	out, err := runner.Run(context.Background(), RunInput{
+		SessionKey:      "sess-1",
+		SystemPrompt:    "be nice",
+		UserMessage:     "hello",
+		ResumeSessionID: "some-id-from-a-different-executor",
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Empty(t, out.SessionID)
+	require.Len(t, client.gotRequests, 1)
+	// The system prompt is exactly what was passed — no trace of the
+	// ignored ResumeSessionID anywhere in what's sent upstream.
+	assert.Equal(t, chat.Message{Role: "system", Content: "be nice"}, client.gotRequests[0].Messages[0])
+}
+
 func TestChatClientRunner_Run_EnableBashOffersReviewToolset(t *testing.T) {
 	dir := t.TempDir()
 	client := &fakeChatClient{streamContent: "reviewing"}

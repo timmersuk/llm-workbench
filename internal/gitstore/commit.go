@@ -199,6 +199,25 @@ func (s *TaskStore) ReplaceConversationMessages(projectID, id, stage string, msg
 	return conv, nil
 }
 
+// GetSessionID delegates straight to the wrapped task.FileStore — a read,
+// no git or locking involved.
+func (s *TaskStore) GetSessionID(projectID, id, stage, executor string) (string, error) {
+	return s.files.GetSessionID(projectID, id, stage, executor)
+}
+
+// SetSessionID persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick — the same
+// commit-on-push-tick mechanism AppendConversationMessages uses, so a
+// resumed/refreshed session id is durable across a process restart without
+// adding a `git` subprocess spawn to the request that produced it.
+func (s *TaskStore) SetSessionID(projectID, id, stage, executor, sessionID string) error {
+	return s.core.withPending(
+		fmt.Sprintf("Record %s session id for %s/%s/%s", executor, projectID, id, stage),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error { return s.files.SetSessionID(projectID, id, stage, executor, sessionID) },
+	)
+}
+
 // GetTaskDraftConversation delegates straight to the wrapped
 // task.FileStore.
 func (s *TaskStore) GetTaskDraftConversation(projectID, sessionID string) (task.Conversation, error) {
@@ -251,6 +270,23 @@ func (s *TaskStore) ReplaceTaskDraftConversationMessages(projectID, sessionID st
 		return task.Conversation{}, err
 	}
 	return conv, nil
+}
+
+// GetTaskDraftSessionID delegates straight to the wrapped task.FileStore —
+// a read, no git or locking involved.
+func (s *TaskStore) GetTaskDraftSessionID(projectID, sessionID, executor string) (string, error) {
+	return s.files.GetTaskDraftSessionID(projectID, sessionID, executor)
+}
+
+// SetTaskDraftSessionID persists via the wrapped task.FileStore and
+// enqueues the result to be committed on the push worker's next tick —
+// mirrors SetSessionID for a task-drafts session.
+func (s *TaskStore) SetTaskDraftSessionID(projectID, sessionID, executor, value string) error {
+	return s.core.withPending(
+		fmt.Sprintf("Record %s session id for task draft %s/%s", executor, projectID, sessionID),
+		func() string { return s.core.taskDraftDir(projectID, sessionID) },
+		func() error { return s.files.SetTaskDraftSessionID(projectID, sessionID, executor, value) },
+	)
 }
 
 // FinalizeRequirements persists via the wrapped task.FileStore and enqueues

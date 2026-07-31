@@ -30,14 +30,62 @@ const codexDraftServerName = "llm-workbench-draft"
 // in ExecuteInput.SystemPrompt (sent via developerInstructionsArgs).
 const codexKickoffMessage = "Begin executing the plan."
 
+// codexThread narrows *codex.Thread to what CodexRunner needs from it — an
+// interface so tests can substitute a fake thread without a live `codex
+// app-server` subprocess, the same seam claude_runner.go's
+// claudecode.Client interface already provides for ClaudeRunner.
+type codexThread interface {
+	ID() string
+	RunStreamed(ctx context.Context, prompt string, opts *types.RunOptions) (<-chan types.ThreadEvent, error)
+}
+
+// codexClient narrows *codex.Client to what CodexRunner needs from it — an
+// interface for the same testability reason as codexThread.
+// realCodexClient (below) adapts a live *codex.Client to this interface;
+// tests substitute their own fake implementation via
+// CodexRunner.newCodexClient.
+type codexClient interface {
+	Connect(ctx context.Context) error
+	Close(ctx context.Context) error
+	StartThread(ctx context.Context, opts *types.ThreadOptions) (codexThread, error)
+	ResumeThread(ctx context.Context, threadID string, opts *types.ResumeOptions) (codexThread, error)
+}
+
+// realCodexClient adapts a live *codex.Client to the codexClient
+// interface — Connect/Close are promoted directly via embedding (their
+// signatures already match); StartThread/ResumeThread need explicit
+// adapters purely because the concrete SDK returns *codex.Thread rather
+// than the codexThread interface (which it satisfies structurally, so the
+// adapter is a one-line forward, not real logic).
+type realCodexClient struct{ *codex.Client }
+
+func (c realCodexClient) StartThread(ctx context.Context, opts *types.ThreadOptions) (codexThread, error) {
+	return c.Client.StartThread(ctx, opts)
+}
+
+func (c realCodexClient) ResumeThread(ctx context.Context, threadID string, opts *types.ResumeOptions) (codexThread, error) {
+	return c.Client.ResumeThread(ctx, threadID, opts)
+}
+
+// newRealCodexClient is CodexRunner.newCodexClient's production default —
+// indirected purely so tests can substitute a fake client/thread pair
+// without spawning a real `codex app-server` subprocess.
+func newRealCodexClient(ctx context.Context, opts *types.CodexOptions) (codexClient, error) {
+	c, err := codex.NewClient(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return realCodexClient{c}, nil
+}
+
 // CodexRunner implements AgentRunner backed by
 // github.com/hishamkaram/codex-agent-sdk-go, which drives `codex
-// app-server` as a subprocess over JSON-RPC. Unlike ClaudeRunner, no
-// per-session client is cached: codex has no "system prompt fixed at
-// connect time" concept to make caching worthwhile the way severity1's SDK
-// does, so every Run/Execute call connects a fresh client and closes it
-// when done — the same pattern ClaudeRunner.Execute already uses for its
-// one-shot autonomous runs.
+// app-server` as a subprocess over JSON-RPC. One client+thread pair is
+// created lazily per RunInput.SessionKey and kept alive until CloseSession
+// is called for that key — mirroring ClaudeRunner's clients cache exactly
+// (developer_instructions, unlike severity1's system prompt, is still a
+// process-level option fixed at client-construction time, so a client
+// cannot be shared across keys with different prompts/workspaces either).
 //
 // codex-agent-sdk-go has no in-process "SDK MCP server" helper (unlike
 // severity1's WithSdkMcpServer) and its per-thread WithMCPServers config
@@ -53,6 +101,8 @@ const codexKickoffMessage = "Begin executing the plan."
 type CodexRunner struct {
 	mu       sync.Mutex
 	inFlight map[string]bool
+	clients  map[string]codexClient
+	threads  map[string]codexThread
 
 	timeout        time.Duration
 	executeTimeout time.Duration
@@ -62,6 +112,12 @@ type CodexRunner struct {
 
 	registerOnce sync.Once
 	registerErr  error
+
+	// newCodexClient constructs a codexClient from ctx/opts — indirected
+	// (defaulting to newRealCodexClient) purely so tests can substitute a
+	// fake client without spawning a real `codex app-server` subprocess,
+	// the same seam ClaudeRunner.newClient provides.
+	newCodexClient func(ctx context.Context, opts *types.CodexOptions) (codexClient, error)
 }
 
 // NewCodexRunner returns a CodexRunner whose Run calls are each bounded by
@@ -81,11 +137,14 @@ type CodexRunner struct {
 func NewCodexRunner(timeout, executeTimeout time.Duration, reposRoot string, draftMCPPath string, knowledgeRoot string) *CodexRunner {
 	return &CodexRunner{
 		inFlight:       make(map[string]bool),
+		clients:        make(map[string]codexClient),
+		threads:        make(map[string]codexThread),
 		timeout:        timeout,
 		executeTimeout: executeTimeout,
 		reposRoot:      reposRoot,
 		draftMCPPath:   draftMCPPath,
 		knowledgeRoot:  knowledgeRoot,
+		newCodexClient: newRealCodexClient,
 	}
 }
 
@@ -125,12 +184,52 @@ func (r *CodexRunner) ListModels(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
-// CloseSession implements AgentRunner. CodexRunner never caches a session
-// across calls (see the type doc comment), so there is nothing to
-// discard — safe to call for any key.
-func (r *CodexRunner) CloseSession(_ string) {}
+// CloseSession implements AgentRunner: disconnects and forgets the cached
+// client+thread for sessionKey, if one exists. CodexRunner now caches a
+// live thread per SessionKey the same way ClaudeRunner caches a
+// claudecode.Client (see the type doc comment), so this is a real
+// disconnect+forget — no longer a no-op.
+func (r *CodexRunner) CloseSession(sessionKey string) {
+	r.mu.Lock()
+	client, ok := r.clients[sessionKey]
+	if ok {
+		delete(r.clients, sessionKey)
+		delete(r.threads, sessionKey)
+	}
+	r.mu.Unlock()
+	if ok {
+		_ = client.Close(context.Background())
+	}
+}
 
-// Run implements AgentRunner.
+// CloseAll disconnects every cached codex client this runner is holding,
+// regardless of session key — mirrors ClaudeRunner.CloseAll exactly (see
+// its doc comment for the full process-shutdown rationale); discovered by
+// main.go's shutdown via the same `interface{ CloseAll() }` type
+// assertion. Without it, a `codex app-server` subprocess left connected
+// when the server exits is orphaned rather than terminated.
+func (r *CodexRunner) CloseAll() {
+	r.mu.Lock()
+	clients := r.clients
+	r.clients = make(map[string]codexClient)
+	r.threads = make(map[string]codexThread)
+	r.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, client := range clients {
+		wg.Add(1)
+		go func(c codexClient) {
+			defer wg.Done()
+			_ = c.Close(context.Background())
+		}(client)
+	}
+	wg.Wait()
+}
+
+// Run implements AgentRunner. Unlike an earlier version of this method,
+// which connected a fresh client+thread on every single call (see the type
+// doc comment's superseded framing), this now reuses a cached thread per
+// SessionKey the same way ClaudeRunner.Run does — see threadFor.
 func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.Delta) error) (RunOutput, error) {
 	if err := r.ensureRegistered(ctx); err != nil {
 		return RunOutput{}, fmt.Errorf("registering codex draft MCP server: %w", err)
@@ -148,26 +247,9 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	runCtx, cancel := context.WithTimeout(ctx, r.runTimeout(in))
 	defer cancel()
 
-	opts := types.NewCodexOptions().
-		WithSandbox(types.SandboxReadOnly).
-		WithApprovalPolicy(types.ApprovalNever).
-		WithExtraArgs(developerInstructionsArgs(systemPromptWithHistory(in.SystemPrompt, in.History))...)
-	if in.Model != "" {
-		opts = opts.WithModel(in.Model)
-	}
-
-	client, err := codex.NewClient(runCtx, opts)
+	thread, err := r.threadFor(runCtx, key, in)
 	if err != nil {
-		return RunOutput{}, fmt.Errorf("creating codex client for %s: %w", key, err)
-	}
-	if err := client.Connect(runCtx); err != nil {
-		return RunOutput{}, fmt.Errorf("connecting codex agent for %s: %w", key, err)
-	}
-	defer func() { _ = client.Close(context.Background()) }()
-
-	thread, err := client.StartThread(runCtx, &types.ThreadOptions{Cwd: in.Workspace})
-	if err != nil {
-		return RunOutput{}, fmt.Errorf("starting codex thread for %s: %w", key, err)
+		return RunOutput{}, err
 	}
 
 	names := toolNames(in.Tools)
@@ -182,6 +264,11 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	}
 
 	var out RunOutput
+	// Captured regardless of resumed-vs-fresh: a fresh (fallback) thread
+	// still gets its own real thread id from codex, which is exactly what
+	// the caller should persist as this SessionKey's next
+	// RunInput.ResumeSessionID (see threadFor's doc comment).
+	out.SessionID = thread.ID()
 	var content assistantText
 	for ev := range events {
 		done, err := processCodexRunEvent(ev, names, &content, &out, onDelta, in.OnToolCall, in.OnToolResult)
@@ -193,6 +280,157 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 		}
 	}
 	return out, runCtx.Err()
+}
+
+// threadFor returns the cached thread for key, or creates one — mirroring
+// ClaudeRunner.clientFor's cache/resume-first contract exactly, just for a
+// codex client+thread pair instead of a single claudecode.Client. Callers
+// must hold key's in-flight lock (via tryLock) so two calls for the same
+// key never race to create one.
+//
+// When no thread is cached and in.ResumeSessionID is set, this attempts a
+// real thread resume (client.ResumeThread) first — replaying the CLI's own
+// transcript rather than an approximation rendered into
+// developer_instructions (systemPromptWithHistory), and avoiding a fresh
+// subprocess spawn every idle-turn reconnect. If that resume attempt fails
+// with a "not found"-shaped error (isCodexSessionNotFoundError — the
+// persisted id is stale, e.g. codex's own thread storage was pruned
+// independently of this process), the id is abandoned and this falls
+// through to a fresh, non-resumed thread with systemPromptWithHistory's
+// replay, the same as if no id had ever been on record; any other error
+// (auth, rate limit, an unreachable CLI) propagates directly, with no
+// fallback retry. Either path's resulting client+thread are cached under
+// key for reuse by later same-process turns (RunStreamed), instead of
+// spawning a fresh subprocess every call the way this runner used to.
+func (r *CodexRunner) threadFor(ctx context.Context, key string, in RunInput) (codexThread, error) {
+	r.mu.Lock()
+	thread, ok := r.threads[key]
+	r.mu.Unlock()
+	if ok {
+		return thread, nil
+	}
+
+	if in.ResumeSessionID != "" {
+		client, thread, err := r.connectAndResumeThread(ctx, in, in.ResumeSessionID)
+		if err == nil {
+			r.cacheClientAndThread(key, client, thread)
+			return thread, nil
+		}
+		if !isCodexSessionNotFoundError(err) {
+			return nil, fmt.Errorf("resuming codex thread for %s: %w", key, err)
+		}
+		// Stale/cleared thread id — fall through to a fresh, non-resumed
+		// thread below, rather than failing this turn.
+	}
+
+	client, thread, err := r.connectAndStartThread(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("starting codex thread for %s: %w", key, err)
+	}
+	r.cacheClientAndThread(key, client, thread)
+	return thread, nil
+}
+
+// cacheClientAndThread records client/thread as key's live session.
+func (r *CodexRunner) cacheClientAndThread(key string, client codexClient, thread codexThread) {
+	r.mu.Lock()
+	r.clients[key] = client
+	r.threads[key] = thread
+	r.mu.Unlock()
+}
+
+// connectAndStartThread connects a fresh codex client — developer_instructions
+// set from in.SystemPrompt widened by systemPromptWithHistory's replay,
+// since there is no session to resume — and starts a brand-new thread on
+// it.
+func (r *CodexRunner) connectAndStartThread(ctx context.Context, in RunInput) (codexClient, codexThread, error) {
+	client, err := r.connectClient(ctx, in, systemPromptWithHistory(in.SystemPrompt, in.History))
+	if err != nil {
+		return nil, nil, err
+	}
+	thread, err := client.StartThread(ctx, &types.ThreadOptions{Cwd: in.Workspace})
+	if err != nil {
+		_ = client.Close(context.Background())
+		return nil, nil, err
+	}
+	return client, thread, nil
+}
+
+// connectAndResumeThread connects a fresh codex client — developer_instructions
+// set from in.SystemPrompt verbatim, since a resumed thread already has its
+// own real history and replaying an approximation on top would just
+// duplicate it — and resumes threadID on it. The returned error is left
+// unwrapped so threadFor can pattern-match it via
+// isCodexSessionNotFoundError before deciding whether to wrap and return it
+// or fall through to a fresh thread.
+func (r *CodexRunner) connectAndResumeThread(ctx context.Context, in RunInput, threadID string) (codexClient, codexThread, error) {
+	client, err := r.connectClient(ctx, in, in.SystemPrompt)
+	if err != nil {
+		return nil, nil, err
+	}
+	thread, err := client.ResumeThread(ctx, threadID, &types.ResumeOptions{Cwd: in.Workspace})
+	if err != nil {
+		_ = client.Close(context.Background())
+		return nil, nil, err
+	}
+	return client, thread, nil
+}
+
+// connectClient constructs and connects a fresh codex client with
+// developer_instructions set to systemPrompt (already resolved by the
+// caller — either a resumed thread's raw prompt, or a fresh thread's
+// systemPromptWithHistory-widened one) and in.Model, if set. Closing the
+// returned client on any later failure is the caller's responsibility
+// (connectAndStartThread/connectAndResumeThread), since only they know
+// whether a subsequent StartThread/ResumeThread call also failed.
+func (r *CodexRunner) connectClient(ctx context.Context, in RunInput, systemPrompt string) (codexClient, error) {
+	opts := types.NewCodexOptions().
+		WithSandbox(types.SandboxReadOnly).
+		WithApprovalPolicy(types.ApprovalNever).
+		WithExtraArgs(developerInstructionsArgs(systemPrompt)...)
+	if in.Model != "" {
+		opts = opts.WithModel(in.Model)
+	}
+
+	client, err := r.newCodexClient(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("creating codex client: %w", err)
+	}
+	if err := client.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("connecting codex agent: %w", err)
+	}
+	return client, nil
+}
+
+// isCodexSessionNotFoundError reports whether err indicates a
+// client.ResumeThread(threadID, ...) attempt failed because codex itself
+// has no record of that thread — its own thread storage was pruned,
+// cleared, or otherwise diverged from what this process had persisted — as
+// opposed to a genuine failure (bad auth, rate limit, an unreachable CLI)
+// that retrying without resume wouldn't fix and must propagate directly.
+// Detected by message content since neither the SDK
+// (github.com/hishamkaram/codex-agent-sdk-go) nor the underlying `codex`
+// CLI exposes a stable sentinel/error code for this — the same
+// content-matching posture isSessionNotFoundError (claude_runner.go) takes
+// for ClaudeRunner's equivalent failure mode, and the same posture the SDK
+// itself already takes internally for a "not found"-shaped thread/read or
+// thread/list error (thread_history.go's threadHistoryRPCError). This
+// pattern-matching is inherently fragile across CLI/SDK version bumps
+// (accepted tradeoff — see docs/architecture/agentrunner-session-resume.md).
+func isCodexSessionNotFoundError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, substr := range []string{
+		"thread not found",
+		"no thread found",
+		"session not found",
+		"unknown thread",
+		"unknown session",
+	} {
+		if strings.Contains(msg, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // Execute implements AgentRunner. Like ClaudeRunner.Execute, never reuses

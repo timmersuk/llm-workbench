@@ -1,6 +1,8 @@
 package agentrunner
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -69,6 +71,279 @@ func TestCodexRunner_ListModels_ReturnsNil(t *testing.T) {
 func TestCodexRunner_CloseSession_NoopSafeForUnknownKey(t *testing.T) {
 	r := NewCodexRunner(time.Minute, time.Minute, "/repos", "/bin/draftmcp", "")
 	r.CloseSession("never-existed")
+}
+
+// fakeCodexThread is a minimal codexThread stub for exercising CodexRunner
+// without a live subprocess.
+type fakeCodexThread struct {
+	id     string
+	events chan types.ThreadEvent
+	runErr error
+}
+
+func (f *fakeCodexThread) ID() string { return f.id }
+
+func (f *fakeCodexThread) RunStreamed(context.Context, string, *types.RunOptions) (<-chan types.ThreadEvent, error) {
+	if f.runErr != nil {
+		return nil, f.runErr
+	}
+	if f.events != nil {
+		return f.events, nil
+	}
+	ch := make(chan types.ThreadEvent)
+	close(ch)
+	return ch, nil
+}
+
+// fakeCodexClient is a minimal codexClient stub for exercising
+// CodexRunner's thread cache/resume logic without a live `codex
+// app-server` subprocess. connectErr/startErr/resumeErr script their
+// respective calls' failures; resumeCalledWith records the threadID
+// ResumeThread was actually called with.
+type fakeCodexClient struct {
+	closed bool
+
+	connectErr error
+	startErr   error
+	resumeErr  error
+
+	startThread  *fakeCodexThread
+	resumeThread *fakeCodexThread
+
+	resumeCalledWith string
+}
+
+func (f *fakeCodexClient) Connect(context.Context) error { return f.connectErr }
+func (f *fakeCodexClient) Close(context.Context) error   { f.closed = true; return nil }
+
+func (f *fakeCodexClient) StartThread(context.Context, *types.ThreadOptions) (codexThread, error) {
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
+	return f.startThread, nil
+}
+
+func (f *fakeCodexClient) ResumeThread(_ context.Context, threadID string, _ *types.ResumeOptions) (codexThread, error) {
+	f.resumeCalledWith = threadID
+	if f.resumeErr != nil {
+		return nil, f.resumeErr
+	}
+	return f.resumeThread, nil
+}
+
+// TestCodexRunner_ThreadFor_ResumesRealThreadWhenIDSet locks in the
+// resume-first contract: when in.ResumeSessionID is set and no thread is
+// cached, threadFor attempts client.ResumeThread(id) — not
+// systemPromptWithHistory's rendered-transcript replay, even though History
+// is also populated (a caller always supplies both; resume wins when it
+// succeeds). The resumed client+thread are cached for key.
+func TestCodexRunner_ThreadFor_ResumesRealThreadWhenIDSet(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+
+	resumed := &fakeCodexThread{id: "thread-abc"}
+	client := &fakeCodexClient{resumeThread: resumed}
+	var capturedArgs []string
+	r.newCodexClient = func(_ context.Context, opts *types.CodexOptions) (codexClient, error) {
+		capturedArgs = opts.ExtraArgs
+		return client, nil
+	}
+
+	thread, err := r.threadFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:       "/repo",
+		SystemPrompt:    "base prompt",
+		ResumeSessionID: "thread-abc",
+		History:         []chat.Message{{Role: "user", Content: "earlier turn"}},
+	})
+	require.NoError(t, err)
+	assert.Same(t, resumed, thread)
+	assert.Equal(t, "thread-abc", client.resumeCalledWith)
+	require.Len(t, capturedArgs, 2)
+	assert.Equal(t, `developer_instructions="base prompt"`, capturedArgs[1],
+		"a resumed thread must not also get history rendered into developer_instructions")
+
+	r.mu.Lock()
+	cachedThread := r.threads["task-a:requirements"]
+	cachedClient := r.clients["task-a:requirements"]
+	r.mu.Unlock()
+	assert.Same(t, resumed, cachedThread)
+	assert.Same(t, client, cachedClient)
+}
+
+// TestCodexRunner_ThreadFor_FallsBackAfterThreadNotFound locks in the
+// same-turn fallback: a resume attempt failing with a "not found"-shaped
+// error must not fail the turn — threadFor retries against a fresh,
+// non-resumed thread using systemPromptWithHistory's replay instead, and
+// that fresh client+thread become the ones cached.
+func TestCodexRunner_ThreadFor_FallsBackAfterThreadNotFound(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+
+	failedClient := &fakeCodexClient{resumeErr: errors.New("Thread not found: thread-stale")}
+	fresh := &fakeCodexThread{id: "thread-new"}
+	freshClient := &fakeCodexClient{startThread: fresh}
+	var fallbackArgs []string
+	calls := 0
+	r.newCodexClient = func(_ context.Context, opts *types.CodexOptions) (codexClient, error) {
+		calls++
+		if calls == 1 {
+			return failedClient, nil
+		}
+		fallbackArgs = opts.ExtraArgs
+		return freshClient, nil
+	}
+
+	thread, err := r.threadFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:       "/repo",
+		SystemPrompt:    "base prompt",
+		ResumeSessionID: "thread-stale",
+		History:         []chat.Message{{Role: "user", Content: "earlier turn"}},
+	})
+	require.NoError(t, err)
+	assert.Same(t, fresh, thread)
+	assert.Equal(t, 2, calls, "must attempt exactly one fallback connect, not loop")
+	assert.True(t, failedClient.closed, "the failed resume attempt's client must be closed, not leaked")
+	require.Len(t, fallbackArgs, 2)
+	assert.Contains(t, fallbackArgs[1], "earlier turn", "the fallback thread must replay history into developer_instructions")
+
+	r.mu.Lock()
+	cachedThread := r.threads["task-a:requirements"]
+	r.mu.Unlock()
+	assert.Same(t, fresh, cachedThread, "the fresh fallback thread, not the failed one, must be cached")
+}
+
+// TestCodexRunner_ThreadFor_PropagatesNonNotFoundError locks in that only a
+// "not found"-shaped resume failure triggers the fallback retry — a
+// genuine failure (auth, rate limit, ...) must propagate directly, with no
+// second connect attempt.
+func TestCodexRunner_ThreadFor_PropagatesNonNotFoundError(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+
+	failedClient := &fakeCodexClient{resumeErr: errors.New("authentication failed")}
+	calls := 0
+	r.newCodexClient = func(context.Context, *types.CodexOptions) (codexClient, error) {
+		calls++
+		return failedClient, nil
+	}
+
+	_, err := r.threadFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:       "/repo",
+		ResumeSessionID: "thread-123",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+	assert.Equal(t, 1, calls, "a non-'not found' resume error must not trigger a fallback retry")
+}
+
+// TestCodexRunner_ThreadFor_NoResumeIDUsesHistoryReplayDirectly locks in
+// that the pre-existing behavior (no ResumeSessionID at all) is unchanged:
+// a single connect, straight to systemPromptWithHistory, no resume attempt.
+func TestCodexRunner_ThreadFor_NoResumeIDUsesHistoryReplayDirectly(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+
+	started := &fakeCodexThread{id: "thread-new"}
+	client := &fakeCodexClient{startThread: started}
+	var capturedArgs []string
+	calls := 0
+	r.newCodexClient = func(_ context.Context, opts *types.CodexOptions) (codexClient, error) {
+		calls++
+		capturedArgs = opts.ExtraArgs
+		return client, nil
+	}
+
+	thread, err := r.threadFor(context.Background(), "task-a:requirements", RunInput{
+		Workspace:    "/repo",
+		SystemPrompt: "base prompt",
+		History:      []chat.Message{{Role: "user", Content: "earlier turn"}},
+	})
+	require.NoError(t, err)
+	assert.Same(t, started, thread)
+	assert.Equal(t, 1, calls)
+	require.Len(t, capturedArgs, 2)
+	assert.Contains(t, capturedArgs[1], "earlier turn")
+}
+
+// TestCodexRunner_ThreadFor_ReusesCachedThread locks in that a second call
+// for the same key, once a thread is cached, never calls newCodexClient
+// again — the whole point of caching a live thread per SessionKey (see the
+// type doc comment).
+func TestCodexRunner_ThreadFor_ReusesCachedThread(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+
+	cached := &fakeCodexThread{id: "thread-cached"}
+	r.mu.Lock()
+	r.threads["task-a:requirements"] = cached
+	r.mu.Unlock()
+
+	r.newCodexClient = func(context.Context, *types.CodexOptions) (codexClient, error) {
+		t.Fatal("newCodexClient must not be called when a thread is already cached")
+		return nil, nil
+	}
+
+	thread, err := r.threadFor(context.Background(), "task-a:requirements", RunInput{Workspace: "/repo"})
+	require.NoError(t, err)
+	assert.Same(t, cached, thread)
+}
+
+func TestIsCodexSessionNotFoundError_MatchesKnownPatterns(t *testing.T) {
+	for _, msg := range []string{
+		"Thread not found: abc-123",
+		"thread not found",
+		"session not found",
+		"unknown thread",
+		"no thread found for id",
+	} {
+		assert.True(t, isCodexSessionNotFoundError(errors.New(msg)), "expected %q to match", msg)
+	}
+}
+
+func TestIsCodexSessionNotFoundError_IgnoresUnrelatedErrors(t *testing.T) {
+	assert.False(t, isCodexSessionNotFoundError(errors.New("authentication failed")))
+	assert.False(t, isCodexSessionNotFoundError(errors.New("rate limit exceeded")))
+}
+
+// TestCodexRunner_CloseSession_DisconnectsAndRemovesCachedClientAndThread
+// locks in that CloseSession is now a real disconnect+forget (no longer a
+// no-op) — evicting both the cached client and its thread.
+func TestCodexRunner_CloseSession_DisconnectsAndRemovesCachedClientAndThread(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+	client := &fakeCodexClient{}
+	r.mu.Lock()
+	r.clients["task-a:planning"] = client
+	r.threads["task-a:planning"] = &fakeCodexThread{id: "thread-x"}
+	r.mu.Unlock()
+
+	r.CloseSession("task-a:planning")
+
+	assert.True(t, client.closed)
+	r.mu.Lock()
+	_, clientOK := r.clients["task-a:planning"]
+	_, threadOK := r.threads["task-a:planning"]
+	r.mu.Unlock()
+	assert.False(t, clientOK)
+	assert.False(t, threadOK)
+}
+
+func TestCodexRunner_CloseAll_DisconnectsEveryCachedClientAndClearsCache(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+	clientA := &fakeCodexClient{}
+	clientB := &fakeCodexClient{}
+	r.mu.Lock()
+	r.clients["task-a:planning"] = clientA
+	r.threads["task-a:planning"] = &fakeCodexThread{id: "thread-a"}
+	r.clients["task-b:review"] = clientB
+	r.threads["task-b:review"] = &fakeCodexThread{id: "thread-b"}
+	r.mu.Unlock()
+
+	r.CloseAll()
+
+	assert.True(t, clientA.closed)
+	assert.True(t, clientB.closed)
+	assert.Empty(t, r.clients)
+	assert.Empty(t, r.threads)
+}
+
+func TestCodexRunner_CloseAll_OnEmptyCacheIsANoOp(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+	assert.NotPanics(t, func() { r.CloseAll() })
 }
 
 func TestTomlQuote(t *testing.T) {

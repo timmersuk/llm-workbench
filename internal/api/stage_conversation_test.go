@@ -55,6 +55,7 @@ func TestHandleGetStageConversation_OK(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).
 		Return(task.Conversation{Stage: task.StageRequirements, Messages: []task.ConversationMessage{{Role: "user", Content: "hi"}}}, nil)
@@ -84,6 +85,7 @@ func TestHandleGetStageConversation_AllowsNonCurrentStage(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).
 		Return(task.Conversation{Stage: task.StageRequirements, Messages: []task.ConversationMessage{{Role: "user", Content: "past turn"}}}, nil)
 
@@ -155,6 +157,7 @@ func newAdvisoryPostRequest(t *testing.T) *http.Request {
 
 func TestHandlePostStageMessage_SystemPromptOmitsAdvisoryNotesOnCleanCheckout(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
@@ -181,6 +184,7 @@ func TestHandlePostStageMessage_SystemPromptOmitsAdvisoryNotesOnCleanCheckout(t 
 
 func TestHandlePostStageMessage_SystemPromptIncludesDirtyNote(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
@@ -207,6 +211,7 @@ func TestHandlePostStageMessage_SystemPromptIncludesDirtyNote(t *testing.T) {
 
 func TestHandlePostStageMessage_SystemPromptIncludesBehindOriginNote(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.Anything).Return(task.Conversation{}, nil)
@@ -285,6 +290,7 @@ func TestHandleStartStageConversation_UnknownExecutor(t *testing.T) {
 // names a valid Conversation stage.
 func TestHandleStartStageConversation_StageMismatch(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	runner := new(mockAgentRunner)
@@ -309,6 +315,7 @@ func TestHandleStartStageConversation_StageMismatch(t *testing.T) {
 // handlePostStageMessage instead.
 func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage:    task.StageRequirements,
@@ -338,6 +345,7 @@ func TestHandleStartStageConversation_RejectsWhenAlreadyStarted(t *testing.T) {
 // with no synthetic "user" turn alongside it.
 func TestHandleStartStageConversation_RunsKickoffTurnAndPersistsOnlyAssistant(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements, Objective: "ship login"}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{Stage: task.StageRequirements}, nil)
 	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
@@ -415,6 +423,7 @@ func TestHandlePostStageMessage_ProjectNotFound(t *testing.T) {
 // the URL names a valid Conversation stage.
 func TestHandlePostStageMessage_StageMismatch(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	runner := new(mockAgentRunner)
@@ -435,6 +444,7 @@ func TestHandlePostStageMessage_StageMismatch(t *testing.T) {
 
 func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{
 		ID: "TASK-0001", Stage: task.StageRequirements, Objective: "ship login", Constraints: []string{"must use existing auth service"},
 		References: task.References{Knowledge: []string{"team/style"}},
@@ -491,6 +501,7 @@ func TestHandlePostStageMessage_SeedsSystemPromptAndToolSchema(t *testing.T) {
 // message's content rather than reconstructed structurally.
 func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
@@ -535,6 +546,7 @@ func TestHandlePostStageMessage_PassesPersistedConversationAsHistory(t *testing.
 
 func TestHandlePostStageMessage_SelectsPlanToolForPlanningStage(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
@@ -569,6 +581,7 @@ func TestHandlePostStageMessage_SelectsPlanToolForPlanningStage(t *testing.T) {
 // below covers an explicitly-selected executor via the identical code path.
 func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
@@ -630,6 +643,7 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 // conversation later still shows what the agent did.
 func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
@@ -683,6 +697,7 @@ func TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage(t *testin
 // stay derived from Segments, in the same order.
 func TestHandlePostStageMessage_PersistsSegmentsInRealInterleavedOrder(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
@@ -763,6 +778,7 @@ func TestHandlePostStageMessage_PersistsSegmentsInRealInterleavedOrder(t *testin
 // real one regardless.
 func TestHandlePostStageMessage_AttachesResultsByIDNotArrivalOrder(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
@@ -819,6 +835,7 @@ func TestHandlePostStageMessage_AttachesResultsByIDNotArrivalOrder(t *testing.T)
 // surfaced as a Draft proposal or persisted.
 func TestHandlePostStageMessage_IgnoresMismatchedToolCallName(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
@@ -881,6 +898,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 	require.NoError(t, os.Mkdir(filepath.Join(reposRoot, "logthing"), 0o755))
 
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 
@@ -942,6 +960,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 
 func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesAsSSEError(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
@@ -985,6 +1004,7 @@ func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesA
 // Workspace instead of aborting like a genuine misconfiguration would.
 func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StagePlanning}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StagePlanning).Return(task.Conversation{}, nil)
 	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StagePlanning, mock.Anything).Return(task.Conversation{}, nil)
@@ -1024,6 +1044,7 @@ func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testin
 // reply with no record anything went wrong.
 func TestHandlePostStageMessage_PersistsErrorOnFailedTurn(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
 
@@ -1092,6 +1113,7 @@ func TestHandleDeleteStageMessage_StageMismatch(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages/0", nil)
@@ -1111,6 +1133,7 @@ func TestHandleDeleteStageMessage_OutOfRangeIndex(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
@@ -1141,6 +1164,7 @@ func TestHandleDeleteStageMessage_RemovesOnlyThatMessageAndEvictsSessions(t *tes
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
@@ -1199,6 +1223,7 @@ func TestHandleRegenerateStageMessage_InvalidStage(t *testing.T) {
 // conversation just because the URL names a valid Conversation stage.
 func TestHandleRegenerateStageMessage_StageMismatch(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageImplementation}, nil)
 
 	runner := new(mockAgentRunner)
@@ -1223,6 +1248,7 @@ func TestHandleRegenerateStageMessage_RejectsNonUserIndex(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
@@ -1251,6 +1277,7 @@ func TestHandleRegenerateStageMessage_RejectsNonUserIndex(t *testing.T) {
 // everything from index onward with a fresh [user, assistant] pair.
 func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
@@ -1313,6 +1340,7 @@ func TestHandleRegenerateStageMessage_TruncatesHistoryEvictsSessionAndPersists(t
 // alongside the edit.
 func TestHandleRegenerateStageMessage_EditUsesNewContent(t *testing.T) {
 	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
 	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{
 		Stage: task.StageRequirements,
