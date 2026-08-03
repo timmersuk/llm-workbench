@@ -1003,7 +1003,18 @@ export function StageConversationPanel<D, S = never>({
             <select
               id={`stage-executor-${conversationKey}`}
               value={executor}
-              onChange={(e) => setExecutor(e.target.value)}
+              onChange={(e) => {
+                const nextExecutor = e.target.value
+                setExecutor(nextExecutor)
+                setSelectedModel('')
+                setModelsError(null)
+                listModels(nextExecutor)
+                  .then((result) => {
+                    setModels(result.models)
+                    setSelectedModel(result.models[0] ?? '')
+                  })
+                  .catch((err) => setModelsError(err instanceof Error ? err.message : String(err)))
+              }}
               disabled={executorOptions.length === 0}
             >
               {executorOptions.length === 0 && <option value="">No executor available</option>}
@@ -1014,7 +1025,7 @@ export function StageConversationPanel<D, S = never>({
               ))}
             </select>
 
-            {!executor && executorOptions.some((opt) => opt.value === '') && (
+            {executorOptions.length > 0 && executor !== 'claude-code' && (
               <>
                 <label htmlFor={`stage-model-${conversationKey}`}>Model</label>
                 <select id={`stage-model-${conversationKey}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>

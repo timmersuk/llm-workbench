@@ -10,7 +10,7 @@
 // Because of that difference they carry their own execution logic here too
 // (ExecuteList/ExecuteGet), shared by every caller that can run a tool for
 // real: internal/toolloop (ChatClientRunner), ClaudeRunner's in-process MCP
-// handler, and cmd/draftmcp's static server (CodexRunner) — so the exact
+// handler, and CodexRunner's private internal/draftmcp listener — so the exact
 // same query, against the exact same Store interface, produces the exact
 // same result text regardless of which executor asked.
 package knowledgetool
@@ -32,7 +32,7 @@ const (
 // Definition is one query tool's name, human-readable description, and JSON
 // Schema for its arguments — enough to build a chat.Tool
 // (internal/toolloop), an SDK MCP tool (ClaudeRunner), or an MCP
-// tools/list entry (cmd/draftmcp).
+// tools/list entry (internal/draftmcp).
 type Definition struct {
 	Name        string
 	Description string

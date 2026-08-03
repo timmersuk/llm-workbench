@@ -417,6 +417,14 @@ doesn't have to be re-derived or re-litigated later.
   framework (e.g. AgenticGoKit) instead of this hand-rolled layer was
   considered and deferred — see
   `docs/adr/0005-defer-agenticgokit-adoption.md`.
+* Codex's Workbench-specific Draft/Knowledge tools are served by a private,
+  ephemeral loopback HTTP listener owned by `CodexRunner` (`internal/draftmcp`),
+  not by a sidecar executable or the main Workbench API server. The runner
+  passes that listener's URL only to each app-server subprocess with
+  `--config` overrides. Never write the Workbench MCP server or its approval
+  settings into the operator's global Codex config: the endpoint and tool
+  permissions belong to that runner instance, avoiding both a path-dependent
+  installation and leaking Codex transport into the application API surface.
 * `chat.ChatClient.StreamSessionTurn` holds a session's conversation
   history in-memory (`openAIClient.sessions`, keyed by `sessionKey`) rather
   than the caller resending full history each call — same
@@ -501,11 +509,11 @@ doesn't have to be re-derived or re-litigated later.
   successful Finalize (`internal/api/finalize.go`; deliberately *not*
   Revise, which resumes the same `Conversation` by design) and the Chat
   tab's "New chat" action (`POST /api/v1/chat/sessions/close`) — rather
-  than left as an unused capability. `CodexRunner` caches a client+thread
-  pair the same way, per `SessionKey`, and `CloseSession` is likewise a
-  real disconnect+forget for both fields (superseding an earlier version
-  that reconnected a fresh `codex app-server` subprocess on every single
-  turn).
+  than left as an unused capability. `CodexRunner` deliberately does not
+  cache app-server clients or threads: each Run/Execute call owns one
+  short-lived `codex app-server` subprocess, so `CloseSession` is a no-op.
+  Its separate `CloseAll` shuts down only the private loopback MCP listener
+  it owns for those subprocesses.
 * When no live in-memory client/thread is cached for a `SessionKey` (a
   fresh process, or one evicted by `CloseSession`), both `ClaudeRunner` and
   `CodexRunner` attempt a real session/thread resume first —

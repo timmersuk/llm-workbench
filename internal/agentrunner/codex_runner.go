@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -18,14 +20,15 @@ import (
 	"github.com/pmenglund/codex-sdk-go/rpc"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/draftmcp"
 	"github.com/timmersuk/llm-workbench/internal/drafttool"
 	"github.com/timmersuk/llm-workbench/internal/gitutil"
 	"github.com/timmersuk/llm-workbench/internal/knowledgetool"
 )
 
-// codexDraftServerName is the MCP server name CodexRunner registers
-// cmd/draftmcp's binary under (config key: mcp_servers.<name>). Chosen to
-// be distinctive enough it won't collide with a user's own MCP servers.
+// codexDraftServerName is the private MCP server name passed to each Codex
+// app-server subprocess. It is distinctive enough not to collide with a
+// user's own MCP servers.
 const codexDraftServerName = "llm-workbench-draft"
 
 // codexKickoffMessage is Execute's fixed opening turn — mirrors
@@ -41,13 +44,10 @@ const codexKickoffMessage = "Begin executing the plan."
 // when done — the same pattern ClaudeRunner.Execute already uses for its
 // one-shot autonomous runs.
 //
-// The only mechanism that actually works is a *statically*
-// registered MCP server (persisted to the user's codex config, the same
-// as running `codex mcp add`) plus a persisted per-tool
-// `approval_mode: "approve"` — both confirmed to let a brand-new,
-// never-before-seen tool succeed on its very first non-interactive call,
-// with no human approval step. ensureRegistered does this once, lazily,
-// via app-server's config/batchWrite method.
+// The Workbench-owned Draft MCP server is configured dynamically on each
+// app-server subprocess through --config overrides. This deliberately never
+// mutates the operator's global Codex config and makes the tool lifecycle
+// match the CodexRunner instance that owns its private loopback endpoint.
 type CodexRunner struct {
 	mu       sync.Mutex
 	inFlight map[string]bool
@@ -55,11 +55,11 @@ type CodexRunner struct {
 	timeout        time.Duration
 	executeTimeout time.Duration
 	reposRoot      string
-	draftMCPPath   string
-	knowledgeRoot  string
+	knowledgeStore knowledgetool.Store
 
-	registerOnce sync.Once
-	registerErr  error
+	mcpMu     sync.Mutex
+	mcpServer *http.Server
+	mcpURL    string
 }
 
 // NewCodexRunner returns a CodexRunner whose Run calls are each bounded by
@@ -67,23 +67,15 @@ type CodexRunner struct {
 // — split the same way and for the same reason as NewClaudeRunner's
 // timeout/executeTimeout, including runTimeout's EnableBashTool exception
 // (see NewClaudeRunner's doc comment). reposRoot is the configured REPOS_ROOT
-// value (same role as NewClaudeRunner's). draftMCPPath is the absolute path
-// to the compiled cmd/draftmcp binary; CodexRunner registers it as an MCP
-// server the first time Run or Execute is actually called (see
-// ensureRegistered), not at construction time. knowledgeRoot, if non-empty,
-// is passed to that same draftmcp process as its --knowledge-root flag
-// (docs/milestones/done/milestone9.md), so codex threads get the same real
-// list_knowledge_concepts/get_knowledge_concept tools ClaudeRunner and
-// ChatClientRunner do — an empty knowledgeRoot just omits the flag, the
-// same as running draftmcp directly with no --knowledge-root.
-func NewCodexRunner(timeout, executeTimeout time.Duration, reposRoot string, draftMCPPath string, knowledgeRoot string) *CodexRunner {
+// value (same role as NewClaudeRunner's). knowledgeStore backs the private
+// loopback MCP listener that this runner starts on demand for Codex only.
+func NewCodexRunner(timeout, executeTimeout time.Duration, reposRoot string, knowledgeStore knowledgetool.Store) *CodexRunner {
 	return &CodexRunner{
 		inFlight:       make(map[string]bool),
 		timeout:        timeout,
 		executeTimeout: executeTimeout,
 		reposRoot:      reposRoot,
-		draftMCPPath:   draftMCPPath,
-		knowledgeRoot:  knowledgeRoot,
+		knowledgeStore: knowledgeStore,
 	}
 }
 
@@ -96,18 +88,13 @@ func (r *CodexRunner) runTimeout(in RunInput) time.Duration {
 	return r.timeout
 }
 
-// CheckHealth implements AgentRunner. reposRoot and draftMCPPath must both
-// be configured, and the `codex` CLI must be discoverable on PATH — the
-// cheapest real signal available without spawning a subprocess per check
-// (mirrors ClaudeRunner.CheckHealth). This deliberately does not attempt
-// ensureRegistered: that spawns a real `codex app-server` subprocess, too
-// expensive to run on every health poll.
+// CheckHealth implements AgentRunner. reposRoot must be configured and the
+// `codex` CLI must be discoverable on PATH — the cheapest real signal
+// available without spawning a subprocess per check
+// (mirrors ClaudeRunner.CheckHealth).
 func (r *CodexRunner) CheckHealth(_ context.Context) error {
 	if r.reposRoot == "" {
 		return errors.New("REPOS_ROOT is not configured")
-	}
-	if r.draftMCPPath == "" {
-		return errors.New("codex draft MCP server binary is not configured")
 	}
 	if _, err := lookPath("codex"); err != nil {
 		return fmt.Errorf("codex CLI not found on PATH: %w", err)
@@ -119,8 +106,23 @@ func (r *CodexRunner) CheckHealth(_ context.Context) error {
 // -c/--model per call (RunInput.Model/ExecuteInput.Model, honored directly
 // by Run/Execute), not discovered through a listing call here — mirrors
 // ClaudeRunner.ListModels' "no models" convention.
-func (r *CodexRunner) ListModels(_ context.Context) ([]string, error) {
-	return nil, nil
+func (r *CodexRunner) ListModels(ctx context.Context) ([]string, error) {
+	client, err := newCodexClient(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = client.Close() }()
+	result, err := client.ListModels(ctx, codex.ListModelsOptions{})
+	if err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(result.Data))
+	for _, model := range result.Data {
+		if !model.Hidden && model.ID != "" {
+			models = append(models, model.ID)
+		}
+	}
+	return models, nil
 }
 
 // CloseSession implements AgentRunner. CodexRunner never caches a session
@@ -128,11 +130,23 @@ func (r *CodexRunner) ListModels(_ context.Context) ([]string, error) {
 // discard — safe to call for any key.
 func (r *CodexRunner) CloseSession(_ string) {}
 
+// CloseAll stops the Codex-only loopback MCP listener during server shutdown.
+func (r *CodexRunner) CloseAll() {
+	r.mcpMu.Lock()
+	server := r.mcpServer
+	r.mcpServer = nil
+	r.mcpURL = ""
+	r.mcpMu.Unlock()
+	if server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = server.Shutdown(ctx)
+}
+
 // Run implements AgentRunner.
 func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.Delta) error) (RunOutput, error) {
-	if err := r.ensureRegistered(ctx); err != nil {
-		return RunOutput{}, fmt.Errorf("registering codex draft MCP server: %w", err)
-	}
 	if in.Workspace == "" {
 		return RunOutput{}, errors.New("codex requires a project repository checked out under REPOS_ROOT")
 	}
@@ -146,7 +160,11 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	runCtx, cancel := context.WithTimeout(ctx, r.runTimeout(in))
 	defer cancel()
 
-	client, err := newCodexClient(runCtx, nil)
+	configOverrides, err := r.mcpConfigOverrides()
+	if err != nil {
+		return RunOutput{}, fmt.Errorf("starting codex MCP endpoint: %w", err)
+	}
+	client, err := newCodexClient(runCtx, configOverrides)
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("creating codex client for %s: %w", key, err)
 	}
@@ -218,9 +236,6 @@ func isCodexSessionNotFoundError(err error) bool {
 // a client across calls — an execution is one autonomous run to
 // completion with no further turns.
 func (r *CodexRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func(ExecuteEvent) error) (ExecuteOutput, error) {
-	if err := r.ensureRegistered(ctx); err != nil {
-		return ExecuteOutput{}, fmt.Errorf("registering codex draft MCP server: %w", err)
-	}
 
 	key := in.SessionKey
 	if !r.tryLock(key) {
@@ -251,7 +266,10 @@ func (r *CodexRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func
 	// that will never arrive, until our own context timeout fires).
 	// sandbox_workspace_write.writable_roots is the config-level
 	// equivalent app-server actually accepts.
-	var configOverrides []string
+	configOverrides, err := r.mcpConfigOverrides()
+	if err != nil {
+		return ExecuteOutput{}, fmt.Errorf("starting codex MCP endpoint: %w", err)
+	}
 	if gitDir, err := worktreeGitDir(runCtx, in.Workspace); err == nil {
 		configOverrides = append(configOverrides, "sandbox_workspace_write.writable_roots=["+tomlQuote(gitDir)+"]")
 	} else {
@@ -317,68 +335,46 @@ func (r *CodexRunner) unlock(key string) {
 	delete(r.inFlight, key)
 }
 
-// ensureRegistered registers cmd/draftmcp as a persistent MCP server
-// (config key mcp_servers.<codexDraftServerName>) and grants every known
-// Draft tool a persisted approval_mode="approve", exactly once per
-// process lifetime. Both edits are equivalent to what a human would get
-// running `codex mcp add` plus interactively choosing "Always allow" once
-// per tool — done here so no human step is required on a fresh machine.
-// A failed attempt is not retried (sync.Once) — restart the process to
-// retry after fixing the underlying problem (e.g. installing codex).
-func (r *CodexRunner) ensureRegistered(ctx context.Context) error {
-	r.registerOnce.Do(func() {
-		r.registerErr = r.registerDraftServer(ctx)
-	})
-	return r.registerErr
+// mcpConfigOverrides configure the Workbench MCP endpoint only for the
+// app-server subprocess being created. --config values use TOML syntax.
+func (r *CodexRunner) mcpConfigOverrides() ([]string, error) {
+	mcpURL, err := r.ensureMCPServer()
+	if err != nil {
+		return nil, err
+	}
+	overrides := []string{
+		// Replace the whole server entry, rather than setting only `.url`:
+		// an older Workbench release may have left a `command`/`args` stdio
+		// configuration under this same name in the user's config.
+		"mcp_servers." + codexDraftServerName + "={url=" + tomlQuote(mcpURL) + "}",
+	}
+	for _, def := range drafttool.All() {
+		overrides = append(overrides, fmt.Sprintf("mcp_servers.%s.tools.%s.approval_mode=\"approve\"", codexDraftServerName, def.Name))
+	}
+	for _, def := range knowledgetool.All() {
+		overrides = append(overrides, fmt.Sprintf("mcp_servers.%s.tools.%s.approval_mode=\"approve\"", codexDraftServerName, def.Name))
+	}
+	return overrides, nil
 }
 
-func (r *CodexRunner) registerDraftServer(ctx context.Context) error {
-	if r.draftMCPPath == "" {
-		return errors.New("codex draft MCP server binary path is not configured")
+// ensureMCPServer starts an ephemeral, loopback-only HTTP listener owned by
+// this runner. It is intentionally not mounted on Workbench's public API
+// router: only the Codex subprocess receives its address.
+func (r *CodexRunner) ensureMCPServer() (string, error) {
+	r.mcpMu.Lock()
+	defer r.mcpMu.Unlock()
+	if r.mcpURL != "" {
+		return r.mcpURL, nil
 	}
-
-	client, err := newCodexClient(ctx, nil)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return fmt.Errorf("creating codex client: %w", err)
+		return "", fmt.Errorf("listening on loopback: %w", err)
 	}
-	defer func() { _ = client.Close() }()
-
-	serverConfig := map[string]any{"command": r.draftMCPPath}
-	if r.knowledgeRoot != "" {
-		serverConfig["args"] = []string{"--knowledge-root", r.knowledgeRoot}
-	}
-	edits := []protocol.ConfigEdit{
-		{
-			KeyPath:       "mcp_servers." + codexDraftServerName,
-			MergeStrategy: protocol.MergeStrategyUpsert,
-			Value:         serverConfig,
-		},
-	}
-	// Every tool this same draftmcp process might serve — both the Draft
-	// proposal tools and (when knowledgeRoot is configured) the knowledge
-	// query tools — gets the same persisted "always allow" approval, so a
-	// codex thread never blocks on an interactive approval prompt for
-	// either kind, the first time it calls any of them.
-	approvedNames := make([]string, 0, len(drafttool.All())+len(knowledgetool.All()))
-	for _, def := range drafttool.All() {
-		approvedNames = append(approvedNames, def.Name)
-	}
-	if r.knowledgeRoot != "" {
-		for _, def := range knowledgetool.All() {
-			approvedNames = append(approvedNames, def.Name)
-		}
-	}
-	for _, name := range approvedNames {
-		edits = append(edits, protocol.ConfigEdit{
-			KeyPath:       fmt.Sprintf("mcp_servers.%s.tools.%s.approval_mode", codexDraftServerName, name),
-			MergeStrategy: protocol.MergeStrategyUpsert,
-			Value:         "approve",
-		})
-	}
-	if _, err := client.Client().ConfigBatchWrite(ctx, protocol.ConfigBatchWriteParams{Edits: edits}); err != nil {
-		return fmt.Errorf("writing draft MCP server config: %w", err)
-	}
-	return nil
+	r.mcpURL = "http://" + listener.Addr().String()
+	server := &http.Server{Handler: draftmcp.NewHTTPHandler(r.knowledgeStore)}
+	r.mcpServer = server
+	go func() { _ = server.Serve(listener) }()
+	return r.mcpURL, nil
 }
 
 // newCodexClient starts the current Codex app-server protocol client. The

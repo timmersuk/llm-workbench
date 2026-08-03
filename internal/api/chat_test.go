@@ -178,5 +178,5 @@ func TestHandleListModels_NoLocalExecutorRegistered(t *testing.T) {
 	w := httptest.NewRecorder()
 	(&Server{AgentRunners: map[string]agentrunner.AgentRunner{}}).handleListModels()(w, req)
 
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

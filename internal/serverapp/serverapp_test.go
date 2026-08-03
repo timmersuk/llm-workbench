@@ -40,7 +40,6 @@ func testConfig(t *testing.T) Config {
 		AgentTimeout:          time.Second,
 		AgentExecutionTimeout: time.Second,
 		ReposRoot:             t.TempDir(),
-		DraftMCPPath:          "draftmcp",
 		ShutdownTimeout:       5 * time.Second,
 		BuildID:               "test",
 	}

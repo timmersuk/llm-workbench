@@ -263,8 +263,8 @@ export async function getHealthStatus(): Promise<HealthStatus> {
   return res.json() as Promise<HealthStatus>
 }
 
-export function listModels(): Promise<ModelsListResult> {
-  return getJSON<ModelsListResult>('/api/v1/chat/models')
+export function listModels(executor = 'local'): Promise<ModelsListResult> {
+	return getJSON<ModelsListResult>(`/api/v1/chat/models?executor=${encodeURIComponent(executor)}`)
 }
 
 // listAgentExecutors reports which registered agentRunners entries

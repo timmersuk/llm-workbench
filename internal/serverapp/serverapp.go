@@ -12,11 +12,9 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -55,7 +53,6 @@ type Config struct {
 	LLMTimeout            time.Duration
 	AgentTimeout          time.Duration
 	AgentExecutionTimeout time.Duration
-	DraftMCPPath          string
 	ShutdownTimeout       time.Duration
 	// BuildID identifies the running binary (git rev-parse --short HEAD by
 	// convention, see each cmd/*/main.go's BuildID var). Not read from the
@@ -125,10 +122,6 @@ func LoadConfig() Config {
 		// autonomous executions off mid-run well before they could finish (see
 		// docs/engineering conventions.md's AGENT_TIMEOUT entry).
 		AgentExecutionTimeout: utils.GetEnvDefault("AGENT_EXECUTION_TIMEOUT", 30*time.Minute),
-		// draftmcp is built as a sibling binary alongside this one (see
-		// Makefile's build-go-local) — defaults to that convention, override
-		// via DRAFTMCP_PATH for a non-standard layout (e.g. local `go run`).
-		DraftMCPPath: utils.GetEnvDefault("DRAFTMCP_PATH", defaultDraftMCPPath()),
 		// Bounds how long graceful shutdown (http.Server.Shutdown plus
 		// per-agent-runner cleanup, e.g. ClaudeRunner.CloseAll disconnecting
 		// cached `claude` CLI subprocesses) is allowed to take after Ctrl+C
@@ -252,7 +245,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// answer identically regardless of which executor a conversation uses.
 	agentRunners := map[string]agentrunner.AgentRunner{
 		"claude-code": agentrunner.NewClaudeRunner(cfg.AgentTimeout, cfg.AgentExecutionTimeout, cfg.ReposRoot, knowledgeStore),
-		"codex":       agentrunner.NewCodexRunner(cfg.AgentTimeout, cfg.AgentExecutionTimeout, cfg.ReposRoot, cfg.DraftMCPPath, knowledgeRoot),
+		"codex":       agentrunner.NewCodexRunner(cfg.AgentTimeout, cfg.AgentExecutionTimeout, cfg.ReposRoot, knowledgeStore),
 		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
 			client: chat.NewOpenAIClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMTimeout),
 			model:  cfg.LLMModel,
@@ -319,24 +312,6 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("graceful shutdown: %w", shutdownErr)
 	}
 	return nil
-}
-
-// defaultDraftMCPPath returns the expected path of cmd/draftmcp's compiled
-// binary, sitting alongside this server binary (see Makefile's
-// build-go-local). Falls back to a bare "draftmcp" (PATH-resolved by the
-// codex CLI) if the calling binary's own executable path can't be
-// determined — CodexRunner.CheckHealth surfaces a clear error rather than
-// this silently producing an unusable path.
-func defaultDraftMCPPath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return "draftmcp"
-	}
-	name := "draftmcp"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	return filepath.Join(filepath.Dir(exe), name)
 }
 
 func configureLogging(level, format string) {

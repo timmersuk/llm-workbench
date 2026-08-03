@@ -2,6 +2,9 @@ package agentrunner
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,10 +14,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
+	"github.com/timmersuk/llm-workbench/internal/drafttool"
 )
 
 func TestCodexRunner_TryLockRejectsConcurrentSameKey(t *testing.T) {
-	r := NewCodexRunner(time.Minute, time.Minute, "", "", "")
+	r := NewCodexRunner(time.Minute, time.Minute, "", nil)
 
 	assert.True(t, r.tryLock("task-a:planning"))
 	assert.False(t, r.tryLock("task-a:planning"), "a second lock for the same key must be rejected")
@@ -25,12 +29,12 @@ func TestCodexRunner_TryLockRejectsConcurrentSameKey(t *testing.T) {
 }
 
 func TestCodexRunner_RunTimeout_UsesExecuteTimeoutWhenBashEnabled(t *testing.T) {
-	r := NewCodexRunner(5*time.Minute, 30*time.Minute, "", "", "")
+	r := NewCodexRunner(5*time.Minute, 30*time.Minute, "", nil)
 	assert.Equal(t, 30*time.Minute, r.runTimeout(RunInput{EnableBashTool: true}))
 }
 
 func TestCodexRunner_RunTimeout_UsesRunTimeoutWhenBashDisabled(t *testing.T) {
-	r := NewCodexRunner(5*time.Minute, 30*time.Minute, "", "", "")
+	r := NewCodexRunner(5*time.Minute, 30*time.Minute, "", nil)
 	assert.Equal(t, 5*time.Minute, r.runTimeout(RunInput{EnableBashTool: false}))
 }
 
@@ -39,37 +43,38 @@ func TestCodexRunner_CheckHealth(t *testing.T) {
 	defer func() { lookPath = origLookPath }()
 
 	t.Run("missing reposRoot", func(t *testing.T) {
-		r := NewCodexRunner(time.Minute, time.Minute, "", "/bin/draftmcp", "")
+		r := NewCodexRunner(time.Minute, time.Minute, "", nil)
 		assert.Error(t, r.CheckHealth(t.Context()))
 	})
 
-	t.Run("missing draftMCPPath", func(t *testing.T) {
-		r := NewCodexRunner(time.Minute, time.Minute, "/repos", "", "")
-		assert.Error(t, r.CheckHealth(t.Context()))
+	t.Run("healthy without starting MCP listener", func(t *testing.T) {
+		r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
+		lookPath = func(string) (string, error) { return "/usr/bin/codex", nil }
+		assert.NoError(t, r.CheckHealth(t.Context()))
 	})
 
 	t.Run("codex not on PATH", func(t *testing.T) {
 		lookPath = func(string) (string, error) { return "", assert.AnError }
-		r := NewCodexRunner(time.Minute, time.Minute, "/repos", "/bin/draftmcp", "")
+		r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
 		assert.Error(t, r.CheckHealth(t.Context()))
 	})
 
 	t.Run("healthy", func(t *testing.T) {
 		lookPath = func(string) (string, error) { return "/usr/bin/codex", nil }
-		r := NewCodexRunner(time.Minute, time.Minute, "/repos", "/bin/draftmcp", "")
+		r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
 		assert.NoError(t, r.CheckHealth(t.Context()))
 	})
 }
 
-func TestCodexRunner_ListModels_ReturnsNil(t *testing.T) {
-	r := NewCodexRunner(time.Minute, time.Minute, "/repos", "/bin/draftmcp", "")
+func TestCodexRunner_ListModels_ReturnsCodexModels(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
 	models, err := r.ListModels(t.Context())
 	assert.NoError(t, err)
-	assert.Nil(t, models)
+	assert.NotEmpty(t, models)
 }
 
 func TestCodexRunner_CloseSession_NoopSafeForUnknownKey(t *testing.T) {
-	r := NewCodexRunner(time.Minute, time.Minute, "/repos", "/bin/draftmcp", "")
+	r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
 	r.CloseSession("never-existed")
 }
 
@@ -89,6 +94,34 @@ func TestTomlQuote(t *testing.T) {
 			assert.Equal(t, tc.want, tomlQuote(tc.in))
 		})
 	}
+}
+
+func TestCodexRunner_MCPConfigOverridesAreProcessLocalHTTP(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
+	defer r.CloseAll()
+	overrides, err := r.mcpConfigOverrides()
+
+	require.NoError(t, err)
+	require.NotEmpty(t, overrides)
+	assert.Contains(t, overrides[0], "mcp_servers."+codexDraftServerName+"={url=")
+	assert.Contains(t, overrides[0], "http://127.0.0.1:")
+	assert.NotContains(t, strings.Join(overrides, "\n"), "command=")
+	assert.NotContains(t, strings.Join(overrides, "\n"), "draftmcp.exe")
+}
+
+func TestCodexRunner_PrivateMCPServerServesDraftTools(t *testing.T) {
+	r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
+	defer r.CloseAll()
+	url, err := r.ensureMCPServer()
+	require.NoError(t, err)
+
+	resp, err := http.Post(url, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Contains(t, fmt.Sprint(body), drafttool.AskQuestionName)
 }
 
 func sdkNotification(method string, params any) rpc.Notification {

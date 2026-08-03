@@ -291,7 +291,18 @@ export function ChatPanel() {
         <select
           id="chat-executor-select"
           value={executor}
-          onChange={(e) => setExecutor(e.target.value)}
+          onChange={(e) => {
+            const nextExecutor = e.target.value
+            setExecutor(nextExecutor)
+            setSelectedModel('')
+            setModelsError(null)
+            listModels(nextExecutor)
+              .then((result) => {
+                setModels(result.models)
+                setSelectedModel(result.models[0] ?? '')
+              })
+              .catch((err) => setModelsError(err instanceof Error ? err.message : String(err)))
+          }}
           disabled={executorOptions.length === 0}
         >
           {executorOptions.length === 0 && <option value="">No executors available</option>}
@@ -302,7 +313,7 @@ export function ChatPanel() {
           ))}
         </select>
 
-        {executor === 'local' && (
+        {executor !== 'claude-code' && (
           <>
             <label htmlFor="chat-model-select">Model</label>
             <select

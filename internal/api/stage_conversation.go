@@ -24,7 +24,7 @@ import (
 // propose_context, Planning Mode registers propose_plan, and Review
 // registers both propose_review and propose_knowledge at once. The actual
 // name/description/schema live in internal/drafttool, shared with
-// cmd/draftmcp's static MCP server (CodexRunner's Draft-tool mechanism) so
+// CodexRunner's private internal/draftmcp MCP listener so
 // both call sites see the same tool shape by construction.
 const (
 	proposeContextToolName   = drafttool.ProposeContextName
@@ -145,7 +145,7 @@ func chatToolFor(d drafttool.Definition) chat.Tool {
 // order; ask_question is deliberately not offered there — reviewSystemPrompt
 // has no "one question per turn" interview discipline for this to compose
 // with. Name/description/schema come from internal/drafttool, shared with
-// cmd/draftmcp.
+// internal/draftmcp.
 func stageTool(stage string) ([]chat.Tool, bool) {
 	switch stage {
 	case task.StageRequirements:

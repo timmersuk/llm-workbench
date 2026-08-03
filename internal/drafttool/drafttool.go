@@ -2,7 +2,7 @@
 // (propose_context, propose_plan) plus the ask_question interview
 // affordance, shared between internal/api's stage conversations (which
 // register them per-conversation against ClaudeRunner/ChatClientRunner) and
-// cmd/draftmcp (which exposes them as a static MCP server for CodexRunner,
+// internal/draftmcp (which exposes them through CodexRunner's private MCP listener,
 // since codex-agent-sdk-go has no in-process "SDK MCP server" equivalent —
 // a real external MCP server is the only way to offer a custom tool to a
 // codex thread). Defining the name/description/schema once here means both
@@ -33,7 +33,7 @@ const (
 // Definition is one Draft tool's name, human-readable description, and
 // JSON Schema for its arguments — enough to build either a chat.Tool
 // (internal/api/stage_conversation.go) or an MCP tools/list entry
-// (cmd/draftmcp).
+// (internal/draftmcp).
 type Definition struct {
 	Name        string
 	Description string
@@ -242,7 +242,7 @@ var AskQuestion = Definition{
 }
 
 // All returns every known Draft tool definition, in a stable order — used
-// by cmd/draftmcp to build its static tools/list response.
+// by internal/draftmcp to build its MCP tools/list response.
 func All() []Definition {
 	return []Definition{ProposeTask, ProposeContext, ProposePlan, ProposeReview, ProposeKnowledge, AskQuestion}
 }

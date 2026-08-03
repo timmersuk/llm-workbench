@@ -202,9 +202,13 @@ func (s *Server) handleCloseChatSession() http.HandlerFunc {
 
 func (s *Server) handleListModels() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		runner, ok := s.AgentRunners[defaultChatExecutor]
+		executor := r.URL.Query().Get("executor")
+		if executor == "" {
+			executor = defaultChatExecutor
+		}
+		runner, ok := s.AgentRunners[executor]
 		if !ok {
-			writeAPIError(w, http.StatusInternalServerError, "no local chat executor registered")
+			writeAPIError(w, http.StatusBadRequest, "unknown executor: "+executor)
 			return
 		}
 		models, err := runner.ListModels(r.Context())

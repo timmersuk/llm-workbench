@@ -140,7 +140,7 @@ describe('getJSON-backed requests', () => {
     const body = { models: ['model-a'] }
     const fetchMock = stubFetch(jsonResponse(body))
     await expect(listModels()).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/models', { signal: expect.any(AbortSignal) })
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/models?executor=local', { signal: expect.any(AbortSignal) })
   })
 
   it('listAgentExecutors hits the right path and returns the parsed body', async () => {

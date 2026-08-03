@@ -6,7 +6,6 @@ ifeq ($(GOOS),windows)
 EXE := .exe
 endif
 BIN := bin/$(GOOS)/$(GOARCH)/workbench$(EXE)
-DRAFTMCP_BIN := bin/$(GOOS)/$(GOARCH)/draftmcp$(EXE)
 TRAY_BIN := bin/$(GOOS)/$(GOARCH)/workbench-tray$(EXE)
 
 .PHONY: all
@@ -23,7 +22,6 @@ build: build-go-local
 .PHONY: build-go-local
 build-go-local:
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "-s -w -X main.BuildID=$(BUILD_ID)" -o $(BIN) ./cmd/server
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "-s -w" -o $(DRAFTMCP_BIN) ./cmd/draftmcp
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "-s -w -X main.BuildID=$(BUILD_ID)" -o $(TRAY_BIN) ./cmd/tray
 
 .PHONY: frontend-test
