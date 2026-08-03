@@ -1,10 +1,12 @@
 package agentrunner
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/hishamkaram/codex-agent-sdk-go/types"
+	"github.com/pmenglund/codex-sdk-go/rpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -89,13 +91,70 @@ func TestTomlQuote(t *testing.T) {
 	}
 }
 
-func TestDeveloperInstructionsArgs(t *testing.T) {
-	assert.Nil(t, developerInstructionsArgs(""))
+func sdkNotification(method string, params any) rpc.Notification {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		panic(err)
+	}
+	return rpc.Notification{Method: method, Raw: raw}
+}
 
-	args := developerInstructionsArgs("be terse")
-	require.Len(t, args, 2)
-	assert.Equal(t, "-c", args[0])
-	assert.Equal(t, `developer_instructions="be terse"`, args[1])
+func TestProcessCodexSDKRunEvent_UsesThreadStartProtocolItems(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+
+	_, err := processCodexSDKRunEvent(sdkNotification("item/agentMessage/delta", map[string]any{"delta": "hello"}), nil, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	_, err = processCodexSDKRunEvent(sdkNotification("item/completed", map[string]any{"item": map[string]any{
+		"type": "mcpToolCall", "id": "call-1", "tool": "propose_plan", "arguments": map[string]any{"approach": "thread/start"}, "status": "completed",
+	}}), []string{"propose_plan"}, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	done, err := processCodexSDKRunEvent(sdkNotification("turn/completed", map[string]any{"turn": map[string]any{"status": "completed"}}), nil, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.Equal(t, "hello", out.Content)
+	require.NotNil(t, out.ToolCall)
+	assert.JSONEq(t, `{"approach":"thread/start"}`, out.ToolCall.Function.Arguments)
+}
+
+func TestProcessCodexSDKExecuteEvent_ForwardsToolAndTokenUsage(t *testing.T) {
+	var content assistantText
+	var out ExecuteOutput
+	var events []ExecuteEvent
+	_, err := processCodexSDKExecuteEvent(sdkNotification("item/completed", map[string]any{"item": map[string]any{
+		"type": "commandExecution", "id": "cmd-1", "command": "git status", "aggregatedOutput": "clean", "status": "completed",
+	}}), &content, &out, func(event ExecuteEvent) error { events = append(events, event); return nil })
+	require.NoError(t, err)
+	_, err = processCodexSDKExecuteEvent(sdkNotification("thread/tokenUsage/updated", map[string]any{"tokenUsage": map[string]any{"total": map[string]any{"totalTokens": 42}}}), &content, &out, nil)
+	require.NoError(t, err)
+	done, err := processCodexSDKExecuteEvent(sdkNotification("turn/completed", map[string]any{"turn": map[string]any{"status": "completed"}}), &content, &out, nil)
+	require.NoError(t, err)
+	assert.True(t, done)
+	assert.Equal(t, 42, out.TokensUsed)
+	require.Len(t, events, 2)
+	assert.Equal(t, "git status", events[0].ToolInput)
+	assert.Equal(t, "clean", events[1].ToolResult)
+}
+
+func TestProcessCodexSDKRunEvent_CompletedMessageFallsBackToDelta(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	var streamed string
+	done, err := processCodexSDKRunEvent(sdkNotification("item/completed", map[string]any{"item": map[string]any{
+		"type": "agentMessage", "id": "message-1", "text": "final without deltas",
+	}}), nil, &content, &out, func(delta chat.Delta) error { streamed += delta.Content; return nil }, nil, nil)
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Equal(t, "final without deltas", streamed)
+}
+
+func TestProcessCodexSDKRunEvent_NonRetryableErrorIsTerminal(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	done, err := processCodexSDKRunEvent(sdkNotification("error", map[string]any{"willRetry": false, "error": map[string]any{"message": "quota exceeded"}}), nil, &content, &out, nil, nil, nil)
+	assert.True(t, done)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "quota exceeded")
 }
 
 func TestDraftToolInstruction_NamesToolAndServer(t *testing.T) {

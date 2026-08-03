@@ -8,6 +8,7 @@ require (
 	github.com/hishamkaram/codex-agent-sdk-go v0.5.1
 	github.com/openai/openai-go v1.12.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
+	github.com/pmenglund/codex-sdk-go v0.145.0
 	github.com/severity1/claude-agent-sdk-go v0.6.22
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1

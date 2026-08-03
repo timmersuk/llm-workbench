@@ -106,7 +106,7 @@ type RunInput struct {
 	// these hooks. Every AgentRunner implementation drives them today
 	// (ChatClientRunner via toolloop.Config.OnToolCall/OnToolResult,
 	// ClaudeRunner via processMessage's toolActivityHooks, CodexRunner via
-	// processCodexRunEvent) — both are nil-safe regardless, since free-chat
+	// processCodexSDKRunEvent) — both are nil-safe regardless, since free-chat
 	// and rehydration callers leave them unset. id is a per-call correlation
 	// key (the underlying provider's own call id, e.g. the claude CLI's
 	// ToolUseID) — a call and its result share the same id, letting a caller

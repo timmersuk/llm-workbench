@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	codex "github.com/hishamkaram/codex-agent-sdk-go"
 	"github.com/hishamkaram/codex-agent-sdk-go/types"
+	codex "github.com/pmenglund/codex-sdk-go"
+	"github.com/pmenglund/codex-sdk-go/protocol"
+	"github.com/pmenglund/codex-sdk-go/rpc"
 
 	"github.com/timmersuk/llm-workbench/internal/chat"
 	"github.com/timmersuk/llm-workbench/internal/drafttool"
@@ -27,29 +30,24 @@ const codexDraftServerName = "llm-workbench-draft"
 
 // codexKickoffMessage is Execute's fixed opening turn — mirrors
 // claude_runner.go's executionKickoffMessage; all real instructions live
-// in ExecuteInput.SystemPrompt (sent via developerInstructionsArgs).
+// in ExecuteInput.SystemPrompt (sent as a thread's developer instructions).
 const codexKickoffMessage = "Begin executing the plan."
 
-// CodexRunner implements AgentRunner backed by
-// github.com/hishamkaram/codex-agent-sdk-go, which drives `codex
-// app-server` as a subprocess over JSON-RPC. Unlike ClaudeRunner, no
+// CodexRunner implements AgentRunner backed by codex-sdk-go, which drives
+// `codex app-server` as a subprocess over JSON-RPC. Unlike ClaudeRunner, no
 // per-session client is cached: codex has no "system prompt fixed at
 // connect time" concept to make caching worthwhile the way severity1's SDK
 // does, so every Run/Execute call connects a fresh client and closes it
 // when done — the same pattern ClaudeRunner.Execute already uses for its
 // one-shot autonomous runs.
 //
-// codex-agent-sdk-go has no in-process "SDK MCP server" helper (unlike
-// severity1's WithSdkMcpServer) and its per-thread WithMCPServers config
-// does not reliably reach the underlying `codex` CLI (verified against
-// codex-cli 0.143.0 — the registered tool never appeared in the model's
-// tool list). The only mechanism that actually works is a *statically*
+// The only mechanism that actually works is a *statically*
 // registered MCP server (persisted to the user's codex config, the same
 // as running `codex mcp add`) plus a persisted per-tool
 // `approval_mode: "approve"` — both confirmed to let a brand-new,
 // never-before-seen tool succeed on its very first non-interactive call,
 // with no human approval step. ensureRegistered does this once, lazily,
-// via Client.WriteConfigBatch.
+// via app-server's config/batchWrite method.
 type CodexRunner struct {
 	mu       sync.Mutex
 	inFlight map[string]bool
@@ -148,24 +146,19 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	runCtx, cancel := context.WithTimeout(ctx, r.runTimeout(in))
 	defer cancel()
 
-	opts := types.NewCodexOptions().
-		WithSandbox(types.SandboxReadOnly).
-		WithApprovalPolicy(types.ApprovalNever).
-		WithExtraArgs(developerInstructionsArgs(systemPromptWithHistory(in.SystemPrompt, in.History))...)
-	if in.Model != "" {
-		opts = opts.WithModel(in.Model)
-	}
-
-	client, err := codex.NewClient(runCtx, opts)
+	client, err := newCodexClient(runCtx, nil)
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("creating codex client for %s: %w", key, err)
 	}
-	if err := client.Connect(runCtx); err != nil {
-		return RunOutput{}, fmt.Errorf("connecting codex agent for %s: %w", key, err)
-	}
-	defer func() { _ = client.Close(context.Background()) }()
+	defer func() { _ = client.Close() }()
 
-	thread, err := client.StartThread(runCtx, &types.ThreadOptions{Cwd: in.Workspace})
+	thread, err := client.StartThread(runCtx, codex.ThreadStartOptions{
+		Cwd:                   in.Workspace,
+		Model:                 in.Model,
+		SandboxPolicy:         codex.SandboxModeReadOnly,
+		ApprovalPolicy:        codex.ApprovalPolicyNever,
+		DeveloperInstructions: systemPromptWithHistory(in.SystemPrompt, in.History),
+	})
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("starting codex thread for %s: %w", key, err)
 	}
@@ -176,15 +169,20 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 		prompt = prompt + "\n\n" + draftToolInstruction(names)
 	}
 
-	events, err := thread.RunStreamed(runCtx, prompt, nil)
+	events, err := thread.RunStreamed(runCtx, []codex.Input{codex.TextInput(prompt)}, nil)
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("running codex turn for %s: %w", key, err)
 	}
 
 	var out RunOutput
 	var content assistantText
-	for ev := range events {
-		done, err := processCodexRunEvent(ev, names, &content, &out, onDelta, in.OnToolCall, in.OnToolResult)
+	defer events.Close()
+	for {
+		ev, err := events.Next(runCtx)
+		if err != nil {
+			return out, fmt.Errorf("reading codex event for %s: %w", key, err)
+		}
+		done, err := processCodexSDKRunEvent(ev, names, &content, &out, onDelta, in.OnToolCall, in.OnToolResult)
 		if err != nil {
 			return out, err
 		}
@@ -192,7 +190,6 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 			return out, nil
 		}
 	}
-	return out, runCtx.Err()
 }
 
 // Execute implements AgentRunner. Like ClaudeRunner.Execute, never reuses
@@ -232,44 +229,45 @@ func (r *CodexRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func
 	// that will never arrive, until our own context timeout fires).
 	// sandbox_workspace_write.writable_roots is the config-level
 	// equivalent app-server actually accepts.
-	extraArgs := developerInstructionsArgs(in.SystemPrompt)
+	var configOverrides []string
 	if gitDir, err := worktreeGitDir(runCtx, in.Workspace); err == nil {
-		extraArgs = append(extraArgs, "-c", "sandbox_workspace_write.writable_roots=["+tomlQuote(gitDir)+"]")
+		configOverrides = append(configOverrides, "sandbox_workspace_write.writable_roots=["+tomlQuote(gitDir)+"]")
 	} else {
 		return ExecuteOutput{}, fmt.Errorf("resolving worktree git-dir for execution %s: %w", key, err)
 	}
 
-	opts := types.NewCodexOptions().
-		WithSandbox(types.SandboxWorkspaceWrite).
-		WithApprovalPolicy(types.ApprovalNever).
-		WithExtraArgs(extraArgs...)
-	if in.Model != "" {
-		opts = opts.WithModel(in.Model)
-	}
-
-	client, err := codex.NewClient(runCtx, opts)
+	client, err := newCodexClient(runCtx, configOverrides)
 	if err != nil {
 		return ExecuteOutput{}, fmt.Errorf("creating codex client for execution %s: %w", key, err)
 	}
-	if err := client.Connect(runCtx); err != nil {
-		return ExecuteOutput{}, fmt.Errorf("connecting codex agent for execution %s: %w", key, err)
-	}
-	defer func() { _ = client.Close(context.Background()) }()
+	defer func() { _ = client.Close() }()
 
-	thread, err := client.StartThread(runCtx, &types.ThreadOptions{Cwd: in.Workspace})
+	thread, err := client.StartThread(runCtx, codex.ThreadStartOptions{
+		Cwd:                   in.Workspace,
+		Model:                 in.Model,
+		SandboxPolicy:         codex.SandboxModeWorkspaceWrite,
+		ApprovalPolicy:        codex.ApprovalPolicyNever,
+		DeveloperInstructions: in.SystemPrompt,
+	})
 	if err != nil {
 		return ExecuteOutput{}, fmt.Errorf("starting codex execution thread %s: %w", key, err)
 	}
 
-	events, err := thread.RunStreamed(runCtx, codexKickoffMessage, nil)
+	events, err := thread.RunStreamed(runCtx, []codex.Input{codex.TextInput(codexKickoffMessage)}, nil)
 	if err != nil {
 		return ExecuteOutput{}, fmt.Errorf("starting codex execution: %w", err)
 	}
 
 	var out ExecuteOutput
 	var content assistantText
-	for ev := range events {
-		done, err := processCodexExecuteEvent(ev, &content, &out, onEvent)
+	defer events.Close()
+	for {
+		ev, err := events.Next(runCtx)
+		if err != nil {
+			out.DurationSeconds = time.Since(start).Seconds()
+			return out, fmt.Errorf("reading codex execution event: %w", err)
+		}
+		done, err := processCodexSDKExecuteEvent(ev, &content, &out, onEvent)
 		if err != nil {
 			out.DurationSeconds = time.Since(start).Seconds()
 			return out, err
@@ -279,8 +277,6 @@ func (r *CodexRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func
 			return out, nil
 		}
 	}
-	out.DurationSeconds = time.Since(start).Seconds()
-	return out, runCtx.Err()
 }
 
 func (r *CodexRunner) tryLock(key string) bool {
@@ -319,23 +315,21 @@ func (r *CodexRunner) registerDraftServer(ctx context.Context) error {
 		return errors.New("codex draft MCP server binary path is not configured")
 	}
 
-	client, err := codex.NewClient(ctx, types.NewCodexOptions().WithSandbox(types.SandboxReadOnly))
+	client, err := newCodexClient(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("creating codex client: %w", err)
 	}
-	if err := client.Connect(ctx); err != nil {
-		return fmt.Errorf("connecting codex client: %w", err)
-	}
-	defer func() { _ = client.Close(context.Background()) }()
+	defer func() { _ = client.Close() }()
 
 	serverConfig := map[string]any{"command": r.draftMCPPath}
 	if r.knowledgeRoot != "" {
 		serverConfig["args"] = []string{"--knowledge-root", r.knowledgeRoot}
 	}
-	edits := []types.ConfigEntry{
+	edits := []protocol.ConfigEdit{
 		{
-			KeyPath: "mcp_servers." + codexDraftServerName,
-			Value:   serverConfig,
+			KeyPath:       "mcp_servers." + codexDraftServerName,
+			MergeStrategy: protocol.MergeStrategyUpsert,
+			Value:         serverConfig,
 		},
 	}
 	// Every tool this same draftmcp process might serve — both the Draft
@@ -353,15 +347,29 @@ func (r *CodexRunner) registerDraftServer(ctx context.Context) error {
 		}
 	}
 	for _, name := range approvedNames {
-		edits = append(edits, types.ConfigEntry{
-			KeyPath: fmt.Sprintf("mcp_servers.%s.tools.%s.approval_mode", codexDraftServerName, name),
-			Value:   "approve",
+		edits = append(edits, protocol.ConfigEdit{
+			KeyPath:       fmt.Sprintf("mcp_servers.%s.tools.%s.approval_mode", codexDraftServerName, name),
+			MergeStrategy: protocol.MergeStrategyUpsert,
+			Value:         "approve",
 		})
 	}
-	if _, err := client.WriteConfigBatch(ctx, edits); err != nil {
+	if _, err := client.Client().ConfigBatchWrite(ctx, protocol.ConfigBatchWriteParams{Edits: edits}); err != nil {
 		return fmt.Errorf("writing draft MCP server config: %w", err)
 	}
 	return nil
+}
+
+// newCodexClient starts the current Codex app-server protocol client. The
+// generated SDK deliberately validates the CLI version; the SDK is currently
+// one minor behind the installed CLI, so warn rather than rejecting a known
+// newer compatible binary. Use the default logger so this compatibility
+// warning remains observable in the server log.
+func newCodexClient(ctx context.Context, configOverrides []string) (*codex.Codex, error) {
+	return codex.New(ctx, codex.Options{
+		CompatibilityPolicy: codex.Warn,
+		Logger:              slog.Default(),
+		Spawn:               codex.SpawnOptions{ConfigOverrides: configOverrides},
+	})
 }
 
 // worktreeGitDir resolves the real git directory backing an isolated
@@ -398,19 +406,6 @@ func draftToolInstruction(toolNames []string) string {
 	)
 }
 
-// developerInstructionsArgs renders systemPrompt as codex's
-// `-c developer_instructions=<toml string>` override — codex has no
-// dedicated --system-prompt flag/option (verified: neither ThreadOptions
-// nor RunOptions expose one), but developer_instructions is honored the
-// same way, confirmed live. Returns nil for an empty prompt so callers
-// don't pass a meaningless "-c developer_instructions=\"\"" arg.
-func developerInstructionsArgs(systemPrompt string) []string {
-	if systemPrompt == "" {
-		return nil
-	}
-	return []string{"-c", "developer_instructions=" + tomlQuote(systemPrompt)}
-}
-
 // tomlQuote renders s as a TOML basic string (RFC-ish: quoted, with
 // backslashes, quotes, and control characters escaped) suitable for a
 // `-c key=value` override, where value is parsed as TOML.
@@ -436,6 +431,218 @@ func tomlQuote(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// processCodexSDKRunEvent adapts an app-server notification into the stable
+// AgentRunner contract. App-server carries completed items as JSON unions, so
+// this deliberately reads only the fields shared by the current item shapes.
+func processCodexSDKRunEvent(ev rpc.Notification, toolNames []string, content *assistantText, out *RunOutput, onDelta func(chat.Delta) error, onToolCall func(id, name, argsJSON string), onToolResult func(id, name, result string, isError bool)) (bool, error) {
+	if ev.Method == "item/agentMessage/delta" {
+		var payload protocol.AgentMessageDeltaNotification
+		if err := ev.UnmarshalParams(&payload); err != nil {
+			return true, fmt.Errorf("decoding codex message delta: %w", err)
+		}
+		return false, content.appendDelta(payload.Delta, onDelta)
+	}
+	if text, ok, err := completedAgentMessageText(ev); err != nil {
+		return true, err
+	} else if ok && content.String() == "" {
+		return false, content.appendDelta(text, onDelta)
+	}
+	return processCodexSDKEvent(ev, content, &out.Content, func(item codexSDKItem) error {
+		if item.Type == "mcpToolCall" && slices.Contains(toolNames, item.Tool) {
+			if out.ToolCall == nil && item.Status != "failed" {
+				out.ToolCall = &chat.ToolCall{ID: item.ID, Type: "function", Function: chat.ToolCallFunction{Name: item.Tool, Arguments: jsonValue(item.Arguments)}}
+			}
+			return nil
+		}
+		return forwardCodexSDKTool(item, onToolCall, onToolResult)
+	}, "codex agent run")
+}
+
+// processCodexSDKExecuteEvent adapts app-server notifications for an
+// autonomous execution, including every completed tool action.
+func processCodexSDKExecuteEvent(ev rpc.Notification, content *assistantText, out *ExecuteOutput, onEvent func(ExecuteEvent) error) (bool, error) {
+	if ev.Method == "item/agentMessage/delta" {
+		var payload protocol.AgentMessageDeltaNotification
+		if err := ev.UnmarshalParams(&payload); err != nil {
+			return true, fmt.Errorf("decoding codex execution delta: %w", err)
+		}
+		return false, content.appendExecuteText(payload.Delta, onEvent)
+	}
+	if text, ok, err := completedAgentMessageText(ev); err != nil {
+		return true, err
+	} else if ok && content.String() == "" {
+		return false, content.appendExecuteText(text, onEvent)
+	}
+	if ev.Method == "thread/tokenUsage/updated" {
+		var payload protocol.ThreadTokenUsageUpdatedNotification
+		if err := ev.UnmarshalParams(&payload); err != nil {
+			return true, fmt.Errorf("decoding codex token usage: %w", err)
+		}
+		out.TokensUsed = payload.TokenUsage.Total.TotalTokens
+		return false, nil
+	}
+	done, err := processCodexSDKEvent(ev, content, &out.Content, func(item codexSDKItem) error {
+		if onEvent == nil {
+			return nil
+		}
+		var eventErr error
+		if err := forwardCodexSDKTool(item,
+			func(id, name, input string) {
+				eventErr = onEvent(ExecuteEvent{Kind: "tool_call", ID: id, ToolName: name, ToolInput: input})
+			},
+			func(id, _ string, result string, isError bool) {
+				if eventErr == nil {
+					eventErr = onEvent(ExecuteEvent{Kind: "tool_result", ID: id, ToolResult: result, IsError: isError})
+				}
+			},
+		); err != nil {
+			return err
+		}
+		return eventErr
+	}, "codex execution")
+	if done && err == nil {
+		out.NumTurns = 1
+	}
+	return done, err
+}
+
+type codexSDKItem struct {
+	Type             string          `json:"type"`
+	ID               string          `json:"id"`
+	Text             string          `json:"text"`
+	Command          string          `json:"command"`
+	AggregatedOutput string          `json:"aggregatedOutput"`
+	Output           string          `json:"output"`
+	Status           string          `json:"status"`
+	Changes          json.RawMessage `json:"changes"`
+	Tool             string          `json:"tool"`
+	Arguments        json.RawMessage `json:"arguments"`
+	Result           json.RawMessage `json:"result"`
+	Error            json.RawMessage `json:"error"`
+}
+
+func processCodexSDKEvent(ev rpc.Notification, content *assistantText, output *string, onItem func(codexSDKItem) error, failurePrefix string) (bool, error) {
+	switch ev.Method {
+	case "item/started":
+		var payload protocol.ItemCompletedNotification
+		if err := ev.UnmarshalParams(&payload); err != nil {
+			return true, fmt.Errorf("decoding codex item start: %w", err)
+		}
+		var item codexSDKItem
+		if err := json.Unmarshal(payload.Item, &item); err != nil {
+			return true, fmt.Errorf("decoding codex item: %w", err)
+		}
+		if item.Type == "agentMessage" {
+			content.startNewRound()
+		}
+	case "item/completed":
+		var payload protocol.ItemCompletedNotification
+		if err := ev.UnmarshalParams(&payload); err != nil {
+			return true, fmt.Errorf("decoding completed codex item: %w", err)
+		}
+		var item codexSDKItem
+		if err := json.Unmarshal(payload.Item, &item); err != nil {
+			return true, fmt.Errorf("decoding completed codex item: %w", err)
+		}
+		if err := onItem(item); err != nil {
+			return true, err
+		}
+	case "turn/failed":
+		return true, turnNotificationError(ev, failurePrefix)
+	case "error":
+		var payload protocol.ErrorNotification
+		if err := ev.UnmarshalParams(&payload); err != nil {
+			return true, fmt.Errorf("decoding codex error notification: %w", err)
+		}
+		if payload.WillRetry != nil && *payload.WillRetry {
+			return false, nil
+		}
+		if payload.Error != nil && payload.Error.Message != "" {
+			return true, fmt.Errorf("%s failed: %s", failurePrefix, payload.Error.Message)
+		}
+		return true, fmt.Errorf("%s failed", failurePrefix)
+	case "turn/completed":
+		var payload protocol.TurnCompletedNotification
+		if err := ev.UnmarshalParams(&payload); err != nil {
+			return true, fmt.Errorf("decoding codex turn completion: %w", err)
+		}
+		*output = content.String()
+		if payload.Turn != nil && payload.Turn.Status == "failed" {
+			if payload.Turn.Error != nil && payload.Turn.Error.Message != "" {
+				return true, fmt.Errorf("%s failed: %s", failurePrefix, payload.Turn.Error.Message)
+			}
+			return true, fmt.Errorf("%s failed", failurePrefix)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func completedAgentMessageText(ev rpc.Notification) (string, bool, error) {
+	if ev.Method != "item/completed" {
+		return "", false, nil
+	}
+	var payload protocol.ItemCompletedNotification
+	if err := ev.UnmarshalParams(&payload); err != nil {
+		return "", false, fmt.Errorf("decoding completed codex item: %w", err)
+	}
+	var item codexSDKItem
+	if err := json.Unmarshal(payload.Item, &item); err != nil {
+		return "", false, fmt.Errorf("decoding completed codex item: %w", err)
+	}
+	return item.Text, item.Type == "agentMessage" && item.Text != "", nil
+}
+
+func turnNotificationError(ev rpc.Notification, failurePrefix string) error {
+	var payload protocol.TurnCompletedNotification
+	if err := ev.UnmarshalParams(&payload); err != nil {
+		return fmt.Errorf("decoding failed codex turn: %w", err)
+	}
+	if payload.Turn != nil && payload.Turn.Error != nil && payload.Turn.Error.Message != "" {
+		return fmt.Errorf("%s failed: %s", failurePrefix, payload.Turn.Error.Message)
+	}
+	return fmt.Errorf("%s failed", failurePrefix)
+}
+
+func forwardCodexSDKTool(item codexSDKItem, onToolCall func(id, name, argsJSON string), onToolResult func(id, name, result string, isError bool)) error {
+	var name, input, result string
+	switch item.Type {
+	case "commandExecution":
+		name, input, result = "Bash", item.Command, item.AggregatedOutput
+		if result == "" {
+			result = item.Output
+		}
+	case "fileChange":
+		name, input, result = "FileChange", jsonValue(item.Changes), item.Status
+	case "mcpToolCall":
+		name, input, result = item.Tool, jsonValue(item.Arguments), jsonValue(item.Result)
+	default:
+		return nil
+	}
+	if onToolCall != nil {
+		onToolCall(item.ID, name, input)
+	}
+	if onToolResult != nil {
+		isError := item.Status == "failed" || item.Status == "denied"
+		if isError && len(item.Error) > 0 {
+			result = jsonValue(item.Error)
+		}
+		onToolResult(item.ID, name, result, isError)
+	}
+	return nil
+}
+
+func jsonValue(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return value
+	}
+	return string(raw)
 }
 
 // processCodexRunEvent folds one types.ThreadEvent from a codex thread
