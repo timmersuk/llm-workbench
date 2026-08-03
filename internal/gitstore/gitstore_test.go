@@ -204,3 +204,35 @@ func TestStore_UpdateEnqueuesPendingChange(t *testing.T) {
 	commits = logMessages(t, workspaceRoot)
 	assert.Len(t, commits, 2)
 }
+
+// TestStore_SetSessionID_EnqueuesPendingChangeAndPersists exercises
+// SetSessionID's withPending wiring (mirroring AppendConversationMessages'
+// own commit-on-push-tick behavior): the write lands on disk immediately,
+// nothing is committed until commitPending runs, and the value round-trips
+// through GetSessionID afterward — the durability an API process restart
+// relies on.
+func TestStore_SetSessionID_EnqueuesPendingChangeAndPersists(t *testing.T) {
+	remote := newBareRemote(t)
+	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
+	store, err := Open(workspaceRoot, remote)
+	require.NoError(t, err)
+
+	p, err := store.Projects.Create(newProjectCreateInput("Demo Project"))
+	require.NoError(t, err)
+	_, err = store.Tasks.Create(p.ID, newTask("first-task"))
+	require.NoError(t, err)
+	require.NoError(t, store.core.commitPending(time.Hour))
+
+	require.NoError(t, store.Tasks.SetSessionID(p.ID, "first-task", task.StageRequirements, "claude-code", "sess-123"))
+	assert.FileExists(t, filepath.Join(workspaceRoot, "projects", p.ID, "tasks", "first-task", "conversation-requirements.session.yaml"))
+	assert.Len(t, logMessages(t, workspaceRoot), 1, "nothing should be committed before commitPending runs")
+
+	require.NoError(t, store.core.commitPending(time.Hour))
+	commits := logMessages(t, workspaceRoot)
+	require.Len(t, commits, 2)
+	assert.Equal(t, `Record claude-code session id for demo-project/first-task/requirements`, commits[0])
+
+	id, err := store.Tasks.GetSessionID(p.ID, "first-task", task.StageRequirements, "claude-code")
+	require.NoError(t, err)
+	assert.Equal(t, "sess-123", id)
+}

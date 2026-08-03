@@ -53,6 +53,19 @@ type TaskStore interface {
 	AppendConversationMessages(projectID, id, stage string, msgs ...task.ConversationMessage) (task.Conversation, error)
 	ReplaceConversationMessages(projectID, id, stage string, msgs []task.ConversationMessage) (task.Conversation, error)
 
+	// GetSessionID/SetSessionID back a stage Conversation's durable,
+	// per-executor session/thread id (agentrunner.RunInput.ResumeSessionID/
+	// RunOutput.SessionID) — a sibling of conversation-<stage>.yaml itself
+	// (conversation-<stage>.session.yaml), so a runner's real session/thread
+	// resume survives an API process restart the same way the message
+	// transcript already does. executor is the AgentRunners map key
+	// ("claude-code" | "codex") — each runner only ever reads/writes its own
+	// key, so switching executors mid-conversation just falls back to
+	// systemPromptWithHistory for the other runner rather than misreading a
+	// foreign session id as its own.
+	GetSessionID(projectID, id, stage, executor string) (string, error)
+	SetSessionID(projectID, id, stage, executor, sessionID string) error
+
 	// GetTaskDraftConversation/AppendTaskDraftConversationMessages/
 	// ReplaceTaskDraftConversationMessages back the task-drafts backend
 	// (internal/api/task_draft_conversation.go) — the pre-creation "New
@@ -64,6 +77,13 @@ type TaskStore interface {
 	GetTaskDraftConversation(projectID, sessionID string) (task.Conversation, error)
 	AppendTaskDraftConversationMessages(projectID, sessionID string, msgs ...task.ConversationMessage) (task.Conversation, error)
 	ReplaceTaskDraftConversationMessages(projectID, sessionID string, msgs []task.ConversationMessage) (task.Conversation, error)
+
+	// GetTaskDraftSessionID/SetTaskDraftSessionID mirror GetSessionID/
+	// SetSessionID for a task-drafts session (conversation.session.yaml,
+	// keyed by project+sessionID rather than task+stage).
+	GetTaskDraftSessionID(projectID, sessionID, executor string) (string, error)
+	SetTaskDraftSessionID(projectID, sessionID, executor, value string) error
+
 	FinalizeRequirements(projectID, id string, draft task.RequirementsDraft) (task.Task, error)
 	FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error)
 	FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error)

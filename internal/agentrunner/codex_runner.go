@@ -152,13 +152,26 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	}
 	defer func() { _ = client.Close() }()
 
-	thread, err := client.StartThread(runCtx, codex.ThreadStartOptions{
-		Cwd:                   in.Workspace,
-		Model:                 in.Model,
-		SandboxPolicy:         codex.SandboxModeReadOnly,
-		ApprovalPolicy:        codex.ApprovalPolicyNever,
-		DeveloperInstructions: systemPromptWithHistory(in.SystemPrompt, in.History),
-	})
+	var thread *codex.Thread
+	if in.ResumeSessionID != "" {
+		thread, err = client.ResumeThread(runCtx, codex.ThreadResumeOptions{
+			ThreadID:              in.ResumeSessionID,
+			Cwd:                   in.Workspace,
+			Model:                 in.Model,
+			Sandbox:               codex.SandboxModeReadOnly,
+			ApprovalPolicy:        codex.ApprovalPolicyNever,
+			DeveloperInstructions: in.SystemPrompt,
+		})
+	}
+	if thread == nil && (in.ResumeSessionID == "" || isCodexSessionNotFoundError(err)) {
+		thread, err = client.StartThread(runCtx, codex.ThreadStartOptions{
+			Cwd:                   in.Workspace,
+			Model:                 in.Model,
+			SandboxPolicy:         codex.SandboxModeReadOnly,
+			ApprovalPolicy:        codex.ApprovalPolicyNever,
+			DeveloperInstructions: systemPromptWithHistory(in.SystemPrompt, in.History),
+		})
+	}
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("starting codex thread for %s: %w", key, err)
 	}
@@ -175,6 +188,7 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	}
 
 	var out RunOutput
+	out.SessionID = thread.ID()
 	var content assistantText
 	defer events.Close()
 	for {
@@ -190,6 +204,14 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 			return out, nil
 		}
 	}
+}
+
+func isCodexSessionNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "thread not found") || strings.Contains(message, "no thread found") || strings.Contains(message, "unknown thread")
 }
 
 // Execute implements AgentRunner. Like ClaudeRunner.Execute, never reuses

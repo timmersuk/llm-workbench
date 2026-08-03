@@ -17,6 +17,28 @@ import (
 // which tests assert on via .On/.AssertCalled like any other argument.
 type mockTaskStore struct{ mock.Mock }
 
+// stubSessionIDCalls installs a catch-all "no session id on record, and
+// don't care what gets persisted" expectation for GetSessionID/
+// SetSessionID on tasks — every stage-conversation turn now consults/
+// records these unconditionally (mirroring how History already works), so
+// any test driving handlePostStageMessage/handleStartStageConversation/
+// handleRegenerateStageMessage needs this stubbed even when the test's own
+// assertions have nothing to do with session resume. Tests specifically
+// exercising resume behavior set up their own narrower .On expectations
+// instead of calling this.
+func stubSessionIDCalls(tasks *mockTaskStore) {
+	tasks.On("GetSessionID", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("", nil)
+	tasks.On("SetSessionID", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+}
+
+// stubTaskDraftSessionIDCalls mirrors stubSessionIDCalls for the
+// task-drafts session endpoints (GetTaskDraftSessionID/
+// SetTaskDraftSessionID).
+func stubTaskDraftSessionIDCalls(tasks *mockTaskStore) {
+	tasks.On("GetTaskDraftSessionID", mock.Anything, mock.Anything, mock.Anything).Return("", nil)
+	tasks.On("SetTaskDraftSessionID", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+}
+
 func (m *mockTaskStore) List(projectID string) (task.ListResult, error) {
 	args := m.Called(projectID)
 	var result task.ListResult
@@ -96,6 +118,26 @@ func (m *mockTaskStore) ReplaceConversationMessages(projectID, id, stage string,
 		c = v.(task.Conversation)
 	}
 	return c, args.Error(1)
+}
+
+func (m *mockTaskStore) GetSessionID(projectID, id, stage, executor string) (string, error) {
+	args := m.Called(projectID, id, stage, executor)
+	return args.String(0), args.Error(1)
+}
+
+func (m *mockTaskStore) SetSessionID(projectID, id, stage, executor, sessionID string) error {
+	args := m.Called(projectID, id, stage, executor, sessionID)
+	return args.Error(0)
+}
+
+func (m *mockTaskStore) GetTaskDraftSessionID(projectID, sessionID, executor string) (string, error) {
+	args := m.Called(projectID, sessionID, executor)
+	return args.String(0), args.Error(1)
+}
+
+func (m *mockTaskStore) SetTaskDraftSessionID(projectID, sessionID, executor, value string) error {
+	args := m.Called(projectID, sessionID, executor, value)
+	return args.Error(0)
 }
 
 func (m *mockTaskStore) GetTaskDraftConversation(projectID, sessionID string) (task.Conversation, error) {

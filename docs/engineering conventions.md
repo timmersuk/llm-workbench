@@ -78,12 +78,13 @@ doesn't have to be re-derived or re-litigated later.
 * After `Shutdown`, `run()` walks the `agentRunners` map and type-asserts
   each entry against `interface{ CloseAll() }` — deliberately not an
   `AgentRunner` interface method — to release any resources a live
-  conversation left open. Today only `*ClaudeRunner` implements it,
-  disconnecting every cached `claude` CLI client (`ClaudeRunner.CloseAll`,
-  `internal/agentrunner/claude_runner.go`) so no `claude` subprocess is left
-  orphaned when the server exits. `ChatClientRunner`/`CodexRunner` own
-  nothing to close, so a type assertion means they need no no-op stub the
-  way adding this to the `AgentRunner` interface would have forced.
+  conversation left open. Both `*ClaudeRunner` and `*CodexRunner` implement
+  it, disconnecting every cached `claude`/`codex app-server` client
+  (`ClaudeRunner.CloseAll`/`CodexRunner.CloseAll`,
+  `internal/agentrunner/claude_runner.go`/`codex_runner.go`) so no subprocess
+  is left orphaned when the server exits. `ChatClientRunner` owns nothing to
+  close, so a type assertion means it needs no no-op stub the way adding
+  this to the `AgentRunner` interface would have forced.
 
 ## Server app extraction & cmd/tray
 
@@ -409,10 +410,12 @@ doesn't have to be re-derived or re-litigated later.
   `RunInput.Tools` to `chat.ChatClient.StreamSessionTurn`'s `tools` param so
   Draft proposals (`propose_context`/`propose_plan`; Review offers two at
   once, `propose_review`/`propose_knowledge`, `docs/milestones/done/milestone9.md`)
-  work identically to `ClaudeRunner`'s. A `codex_runner.go` is expected to follow the same
-  `AgentRunner` interface later. Adopting a third-party multi-agent
-  orchestration framework (e.g. AgenticGoKit) instead of this hand-rolled
-  layer was considered and deferred — see
+  work identically to `ClaudeRunner`'s. `*CodexRunner` (`codex_runner.go`)
+  follows the same `AgentRunner` interface, backed by
+  `github.com/hishamkaram/codex-agent-sdk-go` driving `codex app-server` as a
+  JSON-RPC subprocess. Adopting a third-party multi-agent orchestration
+  framework (e.g. AgenticGoKit) instead of this hand-rolled layer was
+  considered and deferred — see
   `docs/adr/0005-defer-agenticgokit-adoption.md`.
 * `chat.ChatClient.StreamSessionTurn` holds a session's conversation
   history in-memory (`openAIClient.sessions`, keyed by `sessionKey`) rather
@@ -498,7 +501,41 @@ doesn't have to be re-derived or re-litigated later.
   successful Finalize (`internal/api/finalize.go`; deliberately *not*
   Revise, which resumes the same `Conversation` by design) and the Chat
   tab's "New chat" action (`POST /api/v1/chat/sessions/close`) — rather
-  than left as an unused capability.
+  than left as an unused capability. `CodexRunner` caches a client+thread
+  pair the same way, per `SessionKey`, and `CloseSession` is likewise a
+  real disconnect+forget for both fields (superseding an earlier version
+  that reconnected a fresh `codex app-server` subprocess on every single
+  turn).
+* When no live in-memory client/thread is cached for a `SessionKey` (a
+  fresh process, or one evicted by `CloseSession`), both `ClaudeRunner` and
+  `CodexRunner` attempt a real session/thread resume first —
+  `claudecode.WithResume`/`client.ResumeThread` — using the durable,
+  per-executor id `RunOutput.SessionID` returned from a prior turn on that
+  same conversation. This replays the CLI's own server-side transcript
+  instead of `systemPromptWithHistory`'s rendered-into-the-prompt
+  approximation, which both avoids the OS argv-length ceiling
+  (`maxHistoryReplayBytes` is a truncation compromise, not a fix) and
+  avoids paying that re-render's growing input-token cost every turn. If
+  the resume attempt itself fails with a "not found"-shaped error
+  (`isSessionNotFoundError`/`isCodexSessionNotFoundError`, matched by
+  message content — neither SDK exposes a stable sentinel) the persisted
+  id is cleared and the same turn is retried immediately via a fresh
+  client and `systemPromptWithHistory`, so the user's turn still succeeds;
+  any other error (auth, rate limit, unreachable CLI) propagates directly,
+  with no fallback retry. `RunInput.ResumeSessionID`/`RunOutput.SessionID`
+  (`internal/agentrunner/runner.go`) are the generic, opaque carriers —
+  `ChatClientRunner` permanently no-ops on both. The id itself is
+  persisted per-executor in a `conversation-<stage>.session.yaml` sibling
+  of `conversation-<stage>.yaml` (and `conversation.session.yaml` for a
+  task-drafts session), via `TaskStore.Get/SetSessionID` and
+  `Get/SetTaskDraftSessionID` (`internal/task/session.go`, wrapped in
+  `gitstore.TaskStore` through the same `withPending` commit-on-push-tick
+  mechanism `AppendConversationMessages` uses) — read before `Run` and
+  unconditionally written back after, mirroring `RunInput.History`'s own
+  read-only, caller-mediated contract. Live-verified against real
+  `claude`/`codex` CLIs, including whether the prompt-caching hypothesis
+  holds up on real usage data — see
+  `data/knowledge/architecture/agentrunner-session-resume.md`.
 
 ## Build & single-binary packaging
 

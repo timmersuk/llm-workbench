@@ -97,6 +97,24 @@ type RunInput struct {
 	// callers, which have no durable transcript to replay from, leave this
 	// nil.
 	History []chat.Message
+	// ResumeSessionID is the durable, per-executor session/thread id a prior
+	// turn on this same SessionKey produced (RunOutput.SessionID), used to
+	// rehydrate an AgentRunner's real underlying session/thread — rather
+	// than an approximate systemPromptWithHistory replay — after a server
+	// restart wiped its in-memory client cache. Mirrors History's own
+	// contract exactly: only ever consulted when the runner has no live
+	// in-memory session for SessionKey already (resuming into an
+	// established session would be redundant, and could duplicate
+	// history), so callers always populate it from the durable record
+	// regardless of whether a live session might still exist. Empty means
+	// "no id on record" — a brand-new conversation, an executor that never
+	// recorded one, or one cleared after a prior "not found" resume
+	// failure — in which case the runner falls back to
+	// systemPromptWithHistory the same as if this were never set at all.
+	// Free-chat callers, which have no durable record to resume from, leave
+	// this "". ChatClientRunner ignores it unconditionally (no session/
+	// thread concept of its own to resume).
+	ResumeSessionID string
 	// OnToolCall/OnToolResult, if non-nil, surface the loop's INTERMEDIATE
 	// tool activity — each executed read_file/grep_search/glob/bash call and
 	// its result — as it happens, so a stage-conversation stream can render
@@ -126,6 +144,18 @@ type RunInput struct {
 type RunOutput struct {
 	Content  string
 	ToolCall *chat.ToolCall
+	// SessionID is this turn's resulting real session/thread id — the value
+	// a caller should persist and later feed back as this SessionKey's next
+	// RunInput.ResumeSessionID, so a subsequent turn with no live
+	// in-memory session can resume the real underlying session/thread
+	// instead of falling back to systemPromptWithHistory's replay. Empty
+	// when the runner doesn't support a session/thread id at all
+	// (ChatClientRunner, always), or when the turn errored before one was
+	// produced. A caller persists this unconditionally after every turn —
+	// including "", which correctly clears a stale id once a resume attempt
+	// has already fallen back for this turn (see ClaudeRunner/CodexRunner's
+	// "not found" handling).
+	SessionID string
 }
 
 // ErrExecuteNotSupported is returned by an AgentRunner.Execute
