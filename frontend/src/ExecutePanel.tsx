@@ -310,6 +310,8 @@ export function ExecutePanel({ projectId, taskId, onExecuted, defaultSelection }
           <p className={`last-run-status execution-status-${lastExecution.status}`}>
             Last run {lastExecution.execution_id}: {lastExecution.status}
             {lastExecution.failure && <> — {lastExecution.failure.message}</>}
+            {lastExecution.metrics.tokens_used > 0 && <> &middot; {lastExecution.metrics.tokens_used} tokens</>}
+            {lastExecution.metrics.cost_estimate > 0 && <> &middot; ${lastExecution.metrics.cost_estimate.toFixed(2)}</>}
           </p>
         )
       )}

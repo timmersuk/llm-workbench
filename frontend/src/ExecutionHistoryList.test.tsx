@@ -102,3 +102,19 @@ describe('ExecutionHistoryList — replaying a persisted log', () => {
     expect(text.indexOf('Bash')).toBeLessThan(text.indexOf('all green'))
   })
 })
+
+describe('ExecutionHistoryList — usage summary', () => {
+  it('shows tokens and cost in the summary line when the executor reported them', () => {
+    const execution = makeExecution({ metrics: { duration_seconds: 12, tokens_used: 4321, cost_estimate: 0.15 } })
+    render(<ExecutionHistoryList projectId={projectId} taskId={taskId} executions={[execution]} />)
+
+    expect(screen.getByText(/4321 tokens/)).toBeInTheDocument()
+    expect(screen.getByText(/\$0\.15/)).toBeInTheDocument()
+  })
+
+  it('omits tokens and cost when the executor did not report them', () => {
+    render(<ExecutionHistoryList projectId={projectId} taskId={taskId} executions={[makeExecution()]} />)
+
+    expect(screen.queryByText(/tokens/)).not.toBeInTheDocument()
+  })
+})

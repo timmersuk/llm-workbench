@@ -103,6 +103,8 @@ export function ReviewPanel({ projectId, taskId, onFinalized, defaultSelection }
           <p>
             {latest.execution_id} &middot; {latest.status}
             {latest.output.git_branch && <> &middot; {latest.output.git_branch}</>}
+            {latest.metrics.tokens_used > 0 && <> &middot; {latest.metrics.tokens_used} tokens</>}
+            {latest.metrics.cost_estimate > 0 && <> &middot; ${latest.metrics.cost_estimate.toFixed(2)}</>}
           </p>
           {(latest.output.commits?.length ?? 0) > 0 && (
             <>

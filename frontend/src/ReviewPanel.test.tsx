@@ -67,6 +67,19 @@ describe('ReviewPanel', () => {
     expect(within(diffView).getByText(/new line/)).toBeInTheDocument()
   })
 
+  it('shows tokens and cost in the execution summary when the executor reported them', async () => {
+    stubConversation()
+    vi.mocked(api.listExecutions).mockResolvedValue({
+      executions: [{ ...makeExecution(), metrics: { duration_seconds: 1, tokens_used: 500, cost_estimate: 0.05 } }],
+    })
+    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: '' })
+
+    render(<ReviewPanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    expect(await screen.findByText(/500 tokens/)).toBeInTheDocument()
+    expect(screen.getByText(/\$0\.05/)).toBeInTheDocument()
+  })
+
   it('does not auto-start the conversation — it waits for an explicit Start Review', async () => {
     stubConversation()
     vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })

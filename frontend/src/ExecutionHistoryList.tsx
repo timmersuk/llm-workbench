@@ -99,6 +99,8 @@ export function ExecutionHistoryList({ projectId, taskId, executions }: Executio
                 {(e.output.commits?.length ?? 0) > 0 && <> &middot; {e.output.commits.length} commit(s)</>}
                 {e.failure && <> &middot; {e.failure.message}</>}
                 {e.output.workspace_dirty && <> &middot; workspace still has uncommitted changes</>}
+                {e.metrics.tokens_used > 0 && <> &middot; {e.metrics.tokens_used} tokens</>}
+                {e.metrics.cost_estimate > 0 && <> &middot; ${e.metrics.cost_estimate.toFixed(2)}</>}
               </summary>
               {logState?.status === 'loading' && <p className="execution-log-status">Loading log…</p>}
               {logState?.status === 'error' && <p className="error">Could not load log: {logState.message}</p>}

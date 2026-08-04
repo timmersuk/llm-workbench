@@ -70,6 +70,17 @@ describe('ExecutePanel — past executions', () => {
     expect(await screen.findByText('Last run exec-002: failure — boom')).toBeInTheDocument()
   })
 
+  it('shows tokens and cost on the last-run status line when the executor reported them', async () => {
+    vi.mocked(api.listExecutions).mockResolvedValue({
+      executions: [makeExecution({ metrics: { duration_seconds: 1.5, tokens_used: 777, cost_estimate: 0.02 } })],
+    })
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    const status = await screen.findByText(/Last run exec-001: success/)
+    expect(within(status).getByText(/777 tokens/)).toBeInTheDocument()
+    expect(within(status).getByText(/\$0\.02/)).toBeInTheDocument()
+  })
+
   it('renders nothing extra when there are no prior attempts', async () => {
     render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
     await waitFor(() => expect(api.listExecutions).toHaveBeenCalledWith(projectId, taskId))
