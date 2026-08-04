@@ -171,6 +171,33 @@ describe('ExecutePanel — running an execution', () => {
     )
   })
 
+  it('filters the effort select to the selected executor\'s advertised efforts, and resets to its default when the previous choice is unsupported', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code', 'codex'] })
+    vi.mocked(api.listModels).mockImplementation((executor) =>
+      executor === 'claude-code'
+        ? Promise.resolve({ models: ['sonnet'], efforts: ['high'], default_effort: 'high' })
+        : Promise.resolve({ models: ['gpt-5.4'], efforts: ['low', 'medium'], default_effort: 'medium' }),
+    )
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    // claude-code only advertises "high" — the effort select is narrowed to
+    // that single option and the previous (unset) choice resolves to it.
+    await waitFor(() => expect(screen.getByLabelText('Effort')).toHaveValue('high'))
+    expect(screen.queryByRole('option', { name: 'low' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'medium' })).not.toBeInTheDocument()
+
+    // Switching to codex (low/medium only) drops the now-unsupported "high"
+    // selection and falls back to its declared default, "medium" — not
+    // silently left on a value the newly-selected executor never offered.
+    await user.selectOptions(screen.getByLabelText('Executor'), 'codex')
+    await waitFor(() => expect(screen.getByLabelText('Effort')).toHaveValue('medium'))
+    expect(screen.getByRole('option', { name: 'low' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'medium' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'high' })).not.toBeInTheDocument()
+  })
+
   it('streams text, tool_call, and tool_result events into the trace', async () => {
     const user = userEvent.setup()
     vi.mocked(api.startExecution).mockImplementation(async (_projectId, _taskId, _executor, onEvent) => {

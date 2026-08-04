@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, listModels, listReviews, startExecution } from './api'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { MarkdownMessage } from './MarkdownMessage'
+import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
 import { ToolActivitySequence } from './ToolActivity'
 import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
 import type { ToolActivityBlock } from './toolActivityBlocks'
-import type { AgentSelection, Execution, ExecuteStreamEvent, Review } from './types'
+import type { AgentSelection, Execution, ExecuteStreamEvent, ReasoningEffort, Review } from './types'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
 interface ExecutePanelProps {
@@ -38,7 +39,12 @@ export function ExecutePanel({ projectId, taskId, onExecuted, defaultSelection }
   const [executorOptions, setExecutorOptions] = useState<string[]>([])
   const [models, setModels] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState(defaultSelection?.model ?? '')
-  const [effort, setEffort] = useState(defaultSelection?.effort ?? 'medium')
+  const [effort, setEffort] = useState<ReasoningEffort>(defaultSelection?.effort ?? 'medium')
+  // efforts mirrors models below: the currently-selected executor's
+  // advertised effort choices, re-derived on every executor change instead
+  // of offering a static low/medium/high list regardless of what that
+  // executor actually supports — see reasoningEffort.ts.
+  const [efforts, setEfforts] = useState<ReasoningEffort[]>(ALL_REASONING_EFFORTS)
   const [modelsError, setModelsError] = useState<string | null>(null)
   // executorsError is set when listAgentExecutors itself fails (server
   // unreachable, 500, etc.) — distinct from a successful response reporting
@@ -129,6 +135,9 @@ export function ExecutePanel({ projectId, taskId, onExecuted, defaultSelection }
           const availableModels = result.models ?? []
           setModels(availableModels)
           setSelectedModel((current) => availableModels.includes(current) ? current : (availableModels[0] ?? ''))
+          const availableEfforts = result.efforts ?? ALL_REASONING_EFFORTS
+          setEfforts(availableEfforts)
+          setEffort((current) => resolveEffort(current, availableEfforts, result.default_effort))
         }
       })
       .catch((err) => {
@@ -269,8 +278,13 @@ export function ExecutePanel({ projectId, taskId, onExecuted, defaultSelection }
           </>
         )}
         <label htmlFor="execute-effort">Effort</label>
-        <select id="execute-effort" value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)} disabled={running}>
-          <option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+        <select id="execute-effort" value={effort} onChange={(e) => setEffort(e.target.value as ReasoningEffort)} disabled={running}>
+          {!efforts.includes(effort) && <option value={effort}>{effort}</option>}
+          {efforts.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
         </select>
       </div>
 

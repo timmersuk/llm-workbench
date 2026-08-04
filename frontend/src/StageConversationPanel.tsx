@@ -3,10 +3,11 @@ import type { KeyboardEvent, ReactNode } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { isAbortError, listAgentExecutors, listModels } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
+import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
 import { ToolActivitySequence } from './ToolActivity'
 import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
 import type { ToolActivityBlock } from './toolActivityBlocks'
-import type { AgentSelection, ChatStreamEvent, Conversation, ConversationMessage } from './types'
+import type { AgentSelection, ChatStreamEvent, Conversation, ConversationMessage, ReasoningEffort } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
@@ -350,7 +351,16 @@ export function StageConversationPanel<D, S = never>({
   // the real "local" key once something (that auto-preference, an explicit
   // defaultSelection, or the human) actually sets it.
   const [executor, setExecutor] = useState(defaultSelection?.executor ?? '')
-  const [effort, setEffort] = useState(defaultSelection?.effort ?? 'medium')
+  const [effort, setEffort] = useState<ReasoningEffort>(defaultSelection?.effort ?? 'medium')
+  // efforts mirrors models: the currently-selected executor's advertised
+  // effort choices (ModelsListResult.efforts, ultimately
+  // agentrunner.ExecutorCapabilities.Efforts), narrowed on every executor
+  // change the same way models is. Starts as the full low/medium/high set
+  // before capability data has loaded, or when a resolved executor's
+  // capability entry doesn't carry `efforts` at all (an older/mocked
+  // ModelsListResult) — never empty, so the effort select is never left
+  // with nothing to offer.
+  const [efforts, setEfforts] = useState<ReasoningEffort[]>(ALL_REASONING_EFFORTS)
   // executorOptions starts empty rather than defaulting to [localChatOption]
   // — until listAgentExecutors actually reports "local" healthy, offering it
   // would be the same silent-default bug this and executorsError below both
@@ -510,6 +520,9 @@ export function StageConversationPanel<D, S = never>({
           setModels(result.models)
           resolvedModel = result.models[0] ?? ''
           setSelectedModel((current) => current || resolvedModel)
+          const resolvedEfforts = result.efforts ?? ALL_REASONING_EFFORTS
+          setEfforts(resolvedEfforts)
+          setEffort((current) => resolveEffort(current, resolvedEfforts, result.default_effort))
         }
       } catch (err) {
         if (!cancelled) {
@@ -1019,6 +1032,9 @@ export function StageConversationPanel<D, S = never>({
                   .then((result) => {
                     setModels(result.models)
                     setSelectedModel(result.models[0] ?? '')
+                    const nextEfforts = result.efforts ?? ALL_REASONING_EFFORTS
+                    setEfforts(nextEfforts)
+                    setEffort((current) => resolveEffort(current, nextEfforts, result.default_effort))
                   })
                   .catch((err) => setModelsError(err instanceof Error ? err.message : String(err)))
               }}
@@ -1046,8 +1062,13 @@ export function StageConversationPanel<D, S = never>({
               </>
             )}
             <label htmlFor={`stage-effort-${conversationKey}`}>Effort</label>
-            <select id={`stage-effort-${conversationKey}`} value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>
-              <option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+            <select id={`stage-effort-${conversationKey}`} value={effort} onChange={(e) => setEffort(e.target.value as ReasoningEffort)}>
+              {!efforts.includes(effort) && <option value={effort}>{effort}</option>}
+              {efforts.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
             </select>
           </div>
 

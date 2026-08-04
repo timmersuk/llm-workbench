@@ -129,8 +129,20 @@ export interface ProjectListResult {
   errors: LoadError[] | null
 }
 
+// ModelsListResult.efforts/default_effort mirror the matching
+// ExecutorCapability entry listModels resolves against (api.ts) — present
+// whenever that executor is found in the consolidated capabilities
+// response, so callers can dynamically filter their effort picker the same
+// way they already filter models, instead of offering a static
+// low/medium/high list regardless of what the selected executor actually
+// supports. Left optional (rather than always populated) so existing test
+// fixtures that construct a bare {models: [...]} literal keep compiling and
+// behaving the same — callers fall back to the full ReasoningEffort set
+// when absent.
 export interface ModelsListResult {
   models: string[]
+  efforts?: ReasoningEffort[]
+  default_effort?: ReasoningEffort
 }
 
 // AgentExecutorsListResult mirrors internal/api/agent_executors.go's

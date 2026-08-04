@@ -264,9 +264,10 @@ export async function getHealthStatus(): Promise<HealthStatus> {
 }
 
 export function listModels(executor = 'local'): Promise<ModelsListResult> {
-	return listExecutorCapabilities().then((result) => ({
-		models: result.executors.find((entry) => entry.name === executor)?.models ?? [],
-	}))
+	return listExecutorCapabilities().then((result) => {
+		const capability = result.executors.find((entry) => entry.name === executor)
+		return { models: capability?.models ?? [], efforts: capability?.efforts, default_effort: capability?.default_effort }
+	})
 }
 
 // listAgentExecutors reports which registered agentRunners entries

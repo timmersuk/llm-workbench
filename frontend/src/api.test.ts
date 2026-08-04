@@ -143,15 +143,16 @@ describe('getJSON-backed requests', () => {
   // — GET /api/v1/chat/models was retired in favor of it, so both now hit
   // the same path and reshape its executors array for their older, narrower
   // callers (ChatPanel et al.).
-  it("listModels hits the consolidated capabilities endpoint and extracts the named executor's models", async () => {
+  it("listModels hits the consolidated capabilities endpoint and extracts the named executor's models, efforts, and default effort", async () => {
     const body = {
       executors: [
         { name: 'local', models: ['model-a'], efforts: ['medium'], default_model: 'model-a', default_effort: 'medium' },
         { name: 'claude-code', models: ['sonnet'], efforts: ['high'], default_model: 'sonnet', default_effort: 'high' },
       ],
     }
-    const fetchMock = stubFetch(jsonResponse(body))
-    await expect(listModels()).resolves.toEqual({ models: ['model-a'] })
+    const fetchMock = stubFetch(jsonResponse(body), jsonResponse(body))
+    await expect(listModels()).resolves.toEqual({ models: ['model-a'], efforts: ['medium'], default_effort: 'medium' })
+    await expect(listModels('claude-code')).resolves.toEqual({ models: ['sonnet'], efforts: ['high'], default_effort: 'high' })
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors', { signal: expect.any(AbortSignal) })
   })
 
@@ -400,6 +401,17 @@ describe('streamChatCompletion / postStageMessage request shape', () => {
     })
   })
 
+  it('startExecution POSTs the selected effort alongside the model', async () => {
+    const fetchMock = stubFetch(sseResponse(['data: {"type":"done"}\n\n']))
+    await startExecution('demo project', 'task one', 'codex', vi.fn(), undefined, undefined, 'gpt-5.4', 'high')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project/tasks/task%20one/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ executor: 'codex', model: 'gpt-5.4', effort: 'high', continue_from_execution_id: undefined }),
+      signal: undefined,
+    })
+  })
+
   it('streamChatCompletion POSTs content+model+executor+session_key to /api/v1/chat/completions', async () => {
     const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
     await streamChatCompletion('hello', 'my-model', 'local', 'sess-1', vi.fn())
@@ -429,6 +441,19 @@ describe('streamChatCompletion / postStageMessage request shape', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: 'hello', model: 'my-model', executor: 'claude-code' }),
+      },
+    )
+  })
+
+  it('postStageMessage POSTs the selected effort alongside content/model/executor', async () => {
+    const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
+    await postStageMessage('demo project', 'task one', 'requirements', 'hello', 'my-model', 'claude-code', vi.fn(), undefined, 'low')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/projects/demo%20project/tasks/task%20one/stages/requirements/messages',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'hello', model: 'my-model', executor: 'claude-code', effort: 'low' }),
       },
     )
   })
