@@ -18,12 +18,9 @@ import (
 )
 
 // defaultExecutionExecutor is the agentRunners key handleStartExecution
-// falls back to when the request doesn't name one. Only claude-code
-// implements real Execute behavior in this milestone —
-// ChatClientRunner.Execute returns agentrunner.ErrExecuteNotSupported
-// until chatclient-tool-loop lands (see data/projects/llm-workbench/tasks/
-// chatclient-tool-loop/) — so this is also, for now, the only executor
-// worth selecting at all.
+// falls back to when the request doesn't name one. Callers can explicitly
+// select any registered executor that implements Execute, including local's
+// ChatClientRunner and Codex.
 const defaultExecutionExecutor = "claude-code"
 
 // executionMaxTurns bounds an autonomous Execute run's tool-call

@@ -17,11 +17,8 @@ interface ExecutePanelProps {
   onExecuted: (execution: Execution) => void
 }
 
-// executorLabels maps an agent executor key to its display label — "local"
-// is never offered here since ChatClientRunner.Execute returns "not
-// supported" until chatclient-tool-loop lands (same exclusion
-// StageConversationPanel applies for stage conversations).
-const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex CLI' }
+// executorLabels maps an agent executor key to its display label.
+const executorLabels: Record<string, string> = { local: 'Local LLM chat', 'claude-code': 'Claude Code', codex: 'Codex CLI' }
 
 // ExecutePanel is the Implementation stage's autonomous run: a "Run
 // Execution" action that streams live tool activity (files written,
@@ -95,15 +92,12 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
       })
       .catch(() => undefined) // no reviews yet, or the lookup failed — either way, no banner shown
 
-    // "local" is excluded — ChatClientRunner.Execute has no real
-    // implementation yet (see chatclient-tool-loop), so offering it here
-    // would just 400 on Run.
     listAgentExecutors()
       .then((result) => {
         if (cancelled) {
           return
         }
-        const executors = result.executors.filter((key) => key !== 'local')
+        const executors = result.executors
         setExecutorOptions(executors)
         setExecutor((current) => current || executors[0] || '')
       })
@@ -145,6 +139,8 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
       cancelled = true
     }
   }, [executor])
+
+  const modelRequired = executor === 'codex' || executor === 'local'
 
   function handleStreamEvent(event: ExecuteStreamEvent) {
     switch (event.type) {
@@ -188,7 +184,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   }
 
   async function handleRun() {
-    if (running || !executor || (executor === 'codex' && !selectedModel)) {
+    if (running || !executor || (modelRequired && !selectedModel)) {
       return
     }
     setTrace([])
@@ -333,7 +329,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
             Stop
           </button>
         ) : (
-          <button type="button" onClick={handleRun} disabled={!executor || (executor === 'codex' && !selectedModel)}>
+          <button type="button" onClick={handleRun} disabled={!executor || (modelRequired && !selectedModel)}>
             {isReviewContinuation ? 'Continue from Review Feedback' : 'Run Execution'}
           </button>
         )}

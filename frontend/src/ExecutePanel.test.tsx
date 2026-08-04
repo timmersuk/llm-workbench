@@ -78,6 +78,44 @@ describe('ExecutePanel — past executions', () => {
 })
 
 describe('ExecutePanel — running an execution', () => {
+  it('does not allow Local execution until model discovery supplies a selection', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
+    vi.mocked(api.listModels).mockImplementation(() => new Promise(() => undefined))
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByLabelText('Executor')).toHaveValue('local')
+    expect(screen.getByRole('button', { name: 'Run Execution' })).toBeDisabled()
+  })
+
+  it('offers Local LLM execution with its selected model', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['gpt-oss-20b', 'qwen3-coder'] })
+    vi.mocked(api.startExecution).mockResolvedValue()
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    const executorSelect = await screen.findByLabelText('Executor')
+    expect(executorSelect).toHaveValue('local')
+    expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
+    const modelSelect = await screen.findByLabelText('Model')
+    await user.selectOptions(modelSelect, 'qwen3-coder')
+    await user.click(screen.getByRole('button', { name: 'Run Execution' }))
+
+    await waitFor(() =>
+      expect(api.startExecution).toHaveBeenCalledWith(
+        projectId,
+        taskId,
+        'local',
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        'qwen3-coder',
+      ),
+    )
+  })
+
   it('handles a null model list without crashing the task page', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['codex'] })
