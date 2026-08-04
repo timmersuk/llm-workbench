@@ -101,7 +101,16 @@ func newIntegrationServer(t *testing.T, upstream *httptest.Server) (baseURL stri
 	taskStore := task.NewFileStore(projectsRoot)
 	chatClient = chat.NewOpenAIClient(upstream.URL, "test-key", 5*time.Second)
 	knowledgeStore := knowledge.NewFileStore(filepath.Join(root, "knowledge"))
-	agentRunners := map[string]agentrunner.AgentRunner{"local": agentrunner.NewChatClientRunner(chatClient, nil)}
+	agentRunners := map[string]agentrunner.AgentRunner{
+		"local": agentrunner.NewChatClientRunner(chatClient, nil),
+		// "claude-code" is registered too (even though nothing here spawns
+		// the real CLI) because it's the default execution seed
+		// (newRouter's "claude-code" argument) that task creation consults
+		// via Server.newTaskAgentDefaults — Capabilities() is a static
+		// descriptor, so registering it costs nothing and doesn't require
+		// the CLI to be present or healthy.
+		"claude-code": agentrunner.NewClaudeRunner(5*time.Second, 5*time.Second, reposRoot, nil),
+	}
 
 	router := NewRouter(projectStore, taskStore, knowledgeStore, agentRunners, reposRoot, nil, nil, testFrontendFS(), "test-build")
 	server := httptest.NewServer(router)
@@ -441,9 +450,16 @@ func TestIntegration_ExecutorCapabilitiesRoundTripsThroughRealClient(t *testing.
 		Executors []agentrunner.ExecutorCapabilities `json:"executors"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	require.Len(t, got.Executors, 1)
-	assert.Equal(t, []string{"test-model", "other-model"}, got.Executors[0].Models)
-	assert.Equal(t, agentrunner.EffortMedium, got.Executors[0].DefaultEffort)
+	require.Len(t, got.Executors, 2)
+	var local *agentrunner.ExecutorCapabilities
+	for i := range got.Executors {
+		if got.Executors[i].Name == "local" {
+			local = &got.Executors[i]
+		}
+	}
+	require.NotNil(t, local, "expected a \"local\" executor entry")
+	assert.Equal(t, []string{"test-model", "other-model"}, local.Models)
+	assert.Equal(t, agentrunner.EffortMedium, local.DefaultEffort)
 }
 
 func TestIntegration_HealthcheckReflectsRealChatClient(t *testing.T) {

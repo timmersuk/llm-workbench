@@ -102,6 +102,17 @@ function stubNoContextOrPlan() {
     repository_configured: false,
     status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
   })
+  // TaskDetailPanel's always-visible Defaults section (AgentDefaultsEditor)
+  // fetches executor capabilities on mount regardless of stage; default to
+  // one capability per seed executor so every existing test's stubbed task
+  // (whose agent_defaults reference "local"/"claude-code") renders a valid,
+  // non-stale Defaults section unless a test overrides this itself.
+  vi.mocked(api.listExecutorCapabilities).mockResolvedValue({
+    executors: [
+      { name: 'local', models: ['test-model'], efforts: ['low', 'medium', 'high'], default_model: 'test-model', default_effort: 'medium' },
+      { name: 'claude-code', models: ['sonnet', 'opus', 'haiku'], efforts: ['low', 'medium', 'high'], default_model: 'sonnet', default_effort: 'high' },
+    ],
+  })
 }
 
 describe('TaskDetailPanel — stage-conditional rendering', () => {

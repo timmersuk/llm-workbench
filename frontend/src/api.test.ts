@@ -14,6 +14,7 @@ import {
   getTaskDraftConversation,
   getTaskPlan,
   listAgentExecutors,
+  listExecutorCapabilities,
   listModels,
   listProjectTasks,
   listProjects,
@@ -137,17 +138,38 @@ describe('getJSON-backed requests', () => {
     })
   })
 
-  it('listModels hits the right path and returns the parsed body', async () => {
-    const body = { models: ['model-a'] }
+  // listModels/listAgentExecutors are thin derivations over the one
+  // consolidated GET /api/v1/agent-executors endpoint (listExecutorCapabilities)
+  // — GET /api/v1/chat/models was retired in favor of it, so both now hit
+  // the same path and reshape its executors array for their older, narrower
+  // callers (ChatPanel et al.).
+  it("listModels hits the consolidated capabilities endpoint and extracts the named executor's models", async () => {
+    const body = {
+      executors: [
+        { name: 'local', models: ['model-a'], efforts: ['medium'], default_model: 'model-a', default_effort: 'medium' },
+        { name: 'claude-code', models: ['sonnet'], efforts: ['high'], default_model: 'sonnet', default_effort: 'high' },
+      ],
+    }
     const fetchMock = stubFetch(jsonResponse(body))
-    await expect(listModels()).resolves.toEqual(body)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/chat/models?executor=local', { signal: expect.any(AbortSignal) })
+    await expect(listModels()).resolves.toEqual({ models: ['model-a'] })
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors', { signal: expect.any(AbortSignal) })
   })
 
-  it('listAgentExecutors hits the right path and returns the parsed body', async () => {
-    const body = { executors: ['claude-code'] }
+  it('listAgentExecutors hits the consolidated capabilities endpoint and extracts executor names', async () => {
+    const body = {
+      executors: [{ name: 'claude-code', models: ['sonnet'], efforts: ['high'], default_model: 'sonnet', default_effort: 'high' }],
+    }
     const fetchMock = stubFetch(jsonResponse(body))
-    await expect(listAgentExecutors()).resolves.toEqual(body)
+    await expect(listAgentExecutors()).resolves.toEqual({ executors: ['claude-code'] })
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors', { signal: expect.any(AbortSignal) })
+  })
+
+  it('listExecutorCapabilities hits the right path and returns the parsed body', async () => {
+    const body = {
+      executors: [{ name: 'local', models: ['model-a'], efforts: ['medium'], default_model: 'model-a', default_effort: 'medium' }],
+    }
+    const fetchMock = stubFetch(jsonResponse(body))
+    await expect(listExecutorCapabilities()).resolves.toEqual(body)
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/agent-executors', { signal: expect.any(AbortSignal) })
   })
 

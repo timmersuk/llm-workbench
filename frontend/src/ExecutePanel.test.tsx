@@ -112,6 +112,7 @@ describe('ExecutePanel — running an execution', () => {
         expect.anything(),
         undefined,
         'qwen3-coder',
+        expect.anything(),
       ),
     )
   })
@@ -165,6 +166,7 @@ describe('ExecutePanel — running an execution', () => {
         expect.anything(),
         undefined,
         'gpt-5.4',
+        expect.anything(),
       ),
     )
   })

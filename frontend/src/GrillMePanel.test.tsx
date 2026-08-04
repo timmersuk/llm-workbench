@@ -196,7 +196,7 @@ describe('GrillMePanel — initial load', () => {
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
     await waitFor(() => expect(api.listAgentExecutors).toHaveBeenCalled())
-    expect(screen.getByLabelText('Executor')).toHaveValue('')
+    expect(screen.getByLabelText('Executor')).toHaveValue('local')
     expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
   })
 
@@ -277,6 +277,7 @@ describe('GrillMePanel — starting an empty conversation on demand', () => {
         'requirements',
         expect.anything(),
         'claude-code',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
       ),
@@ -426,6 +427,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
       taskId,
       'requirements',
       'Hello there',
+      expect.anything(),
       expect.anything(),
       expect.anything(),
       expect.anything(),
@@ -598,6 +600,7 @@ describe('GrillMePanel — message actions', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
+        expect.anything(),
       ),
     )
   })
@@ -652,6 +655,7 @@ describe('GrillMePanel — message actions', () => {
         'requirements',
         0,
         'first question',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
         expect.anything(),
@@ -849,6 +853,7 @@ describe('GrillMePanel — ask_question', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
+        expect.anything(),
       ),
     )
     expect(screen.queryByRole('button', { name: /No/ })).not.toBeInTheDocument()
@@ -872,6 +877,7 @@ describe('GrillMePanel — ask_question', () => {
         taskId,
         'requirements',
         'Actually, something else entirely',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
         expect.anything(),

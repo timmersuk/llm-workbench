@@ -146,37 +146,7 @@ func TestHandleCloseChatSession_MissingSessionKey_BadRequest(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestHandleListModels_OK(t *testing.T) {
-	runner := new(mockAgentRunner)
-	runner.On("ListModels", mock.Anything).Return([]string{"llama3", "mistral"}, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/models", nil)
-	w := httptest.NewRecorder()
-	(&Server{AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}}).handleListModels()(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var got struct {
-		Models []string `json:"models"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, []string{"llama3", "mistral"}, got.Models)
-}
-
-func TestHandleListModels_UpstreamError(t *testing.T) {
-	runner := new(mockAgentRunner)
-	runner.On("ListModels", mock.Anything).Return(nil, errors.New("upstream down"))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/models", nil)
-	w := httptest.NewRecorder()
-	(&Server{AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}}).handleListModels()(w, req)
-
-	assert.Equal(t, http.StatusBadGateway, w.Code)
-}
-
-func TestHandleListModels_NoLocalExecutorRegistered(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/models", nil)
-	w := httptest.NewRecorder()
-	(&Server{AgentRunners: map[string]agentrunner.AgentRunner{}}).handleListModels()(w, req)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
+// GET /api/v1/chat/models (and its handleListModels handler) was retired in
+// favor of the consolidated GET /api/v1/agent-executors capability endpoint
+// — see TestRouter_RemovedChatModelsRouteReturns404 (router_test.go) and
+// TestHandleListAgentExecutors_* (agent_executors_test.go).

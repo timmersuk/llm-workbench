@@ -51,6 +51,7 @@ describe('PlanningModePanel', () => {
         'codex',
         expect.anything(),
         expect.anything(),
+        expect.anything(),
       ),
     )
   })
@@ -146,6 +147,7 @@ describe('PlanningModePanel — ask_question', () => {
         taskId,
         'planning',
         'Small PRs',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
         expect.anything(),

@@ -292,10 +292,11 @@ interface StageConversationPanelProps<D, S = never> {
   defaultSelection?: AgentSelection
 }
 
-// localChatOption represents the local-LLM chat path (server-side, "" maps
-// to the same health-checked "local" AgentRunner every other executor goes
-// through — resolveStageStreamTarget, internal/api/stage_conversation.go).
-// It is only ever added to executorOptions when listAgentExecutors reports
+// localChatOption represents the local-LLM chat path — submitted and
+// persisted as the explicit executor key "local" (task-scoped selection has
+// no empty-string sentinel; resolveSelection, internal/api/selection.go,
+// treats a submitted executor of "" as "no override," not "local"). It is
+// only ever added to executorOptions when listAgentExecutors reports
 // "local" itself as healthy — offering it unconditionally would let the
 // human pick an executor that's known not to be responding.
 const localChatOption = { value: 'local', label: 'Local LLM chat' }
@@ -342,6 +343,12 @@ export function StageConversationPanel<D, S = never>({
   const [models, setModels] = useState<string[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState(defaultSelection?.model ?? '')
+  // Without a defaultSelection (no persisted task default to initialize
+  // from — see the mount effect below), executor starts genuinely unset
+  // ("") so the falsy check there can still auto-prefer "claude-code" once
+  // it's reported healthy; the submitted/displayed value only ever becomes
+  // the real "local" key once something (that auto-preference, an explicit
+  // defaultSelection, or the human) actually sets it.
   const [executor, setExecutor] = useState(defaultSelection?.executor ?? '')
   const [effort, setEffort] = useState(defaultSelection?.effort ?? 'medium')
   // executorOptions starts empty rather than defaulting to [localChatOption]
@@ -514,13 +521,8 @@ export function StageConversationPanel<D, S = never>({
       try {
         const result = await listAgentExecutors()
         if (!cancelled) {
-          // "local" resolves server-side to the exact same health-checked
-          // AgentRunner as the "" (localChatOption) value — resolveStageStreamTarget
-          // maps "" to defaultChatExecutor ("local") before the lookup — so
-          // its presence here is the live signal for whether local chat is
-          // actually reachable right now. Split out (not just mapped
-          // alongside the rest) so it's represented by localChatOption's ""
-          // value instead of a second, redundant "local"-keyed entry.
+          // localChatOption already carries the real "local" key — no
+          // separate sentinel value to fold it out of the rest of the list.
           const localHealthy = result.executors.includes('local')
           const executors = result.executors.filter((key) => key !== 'local')
           setExecutorOptions([
@@ -528,10 +530,14 @@ export function StageConversationPanel<D, S = never>({
             ...executors.map((key) => ({ value: key, label: executorLabels[key] ?? key })),
           ])
           // claude-code can ground its questions in the actual repository
-          // (Read/Grep/Glob), unlike the local chat path, so it's preferred
-          // whenever it's healthy — the picker still lets the human switch
-          // to local chat when that's healthy too.
-          if (executors.includes('claude-code')) {
+          // (Read/Grep/Glob), unlike the local chat path, so it was
+          // preferred whenever it's healthy — but only as a standalone
+          // fallback (no defaultSelection prop at all, e.g. a caller that
+          // hasn't wired task.agent_defaults yet). Once a defaultSelection
+          // is supplied it's the explicit, persisted choice for this scope
+          // (docs/task schema v0.md's agent_defaults) and must not be
+          // silently overridden by a health-based guess.
+          if (!defaultSelection && executors.includes('claude-code')) {
             resolvedExecutor = 'claude-code'
             setExecutor((current) => current || 'claude-code')
           }
@@ -1026,7 +1032,7 @@ export function StageConversationPanel<D, S = never>({
               ))}
             </select>
 
-            {executorOptions.length > 0 && models.length > 0 && (
+            {executorOptions.length > 0 && (
               <>
                 <label htmlFor={`stage-model-${conversationKey}`}>Model</label>
                 <select id={`stage-model-${conversationKey}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
@@ -1046,9 +1052,7 @@ export function StageConversationPanel<D, S = never>({
           </div>
 
           {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
-          {!executor && executorOptions.some((opt) => opt.value === '') && modelsError && (
-            <p className="error">Could not load models: {modelsError}</p>
-          )}
+          {executor === 'local' && modelsError && <p className="error">Could not load models: {modelsError}</p>}
         </>
       )}
 
