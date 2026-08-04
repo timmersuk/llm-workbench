@@ -2,7 +2,7 @@ import { finalizePlan } from './api'
 import { PlanDraftForm } from './PlanDraftForm'
 import { stageConversationOps } from './stageConversationOps'
 import { StageConversationPanel } from './StageConversationPanel'
-import type { Task, TaskPlan } from './types'
+import type { AgentSelection, Task, TaskPlan } from './types'
 
 const EMPTY_DRAFT: TaskPlan = {
   approach: '',
@@ -16,12 +16,13 @@ interface PlanningModePanelProps {
   projectId: string
   taskId: string
   onFinalized: (task: Task, plan: TaskPlan) => void
+  defaultSelection?: AgentSelection
 }
 
 // PlanningModePanel is the planning-stage interview (CONTEXT.md's
 // "Planning Mode"): StageConversationPanel scoped to stage "planning",
 // proposing/editing a TaskPlan, Finalizing into plan.yaml.
-export function PlanningModePanel({ projectId, taskId, onFinalized }: PlanningModePanelProps) {
+export function PlanningModePanel({ projectId, taskId, onFinalized, defaultSelection }: PlanningModePanelProps) {
   return (
     <StageConversationPanel<TaskPlan>
       conversationKey={`${projectId}:${taskId}:planning`}
@@ -32,6 +33,7 @@ export function PlanningModePanel({ projectId, taskId, onFinalized }: PlanningMo
       renderDraft={(draft, onChange) => <PlanDraftForm draft={draft} onChange={onChange} />}
       autoStart={false}
       startLabel="Start Planning"
+      defaultSelection={defaultSelection}
       onFinalize={async (draft) => {
         const result = await finalizePlan(projectId, taskId, draft)
         onFinalized(result.task, result.plan)

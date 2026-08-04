@@ -5,7 +5,7 @@ import { MarkdownMessage } from './MarkdownMessage'
 import { ToolActivitySequence } from './ToolActivity'
 import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
 import type { ToolActivityBlock } from './toolActivityBlocks'
-import type { Execution, ExecuteStreamEvent, Review } from './types'
+import type { AgentSelection, Execution, ExecuteStreamEvent, Review } from './types'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
 interface ExecutePanelProps {
@@ -15,6 +15,7 @@ interface ExecutePanelProps {
   // recorded Execution — TaskDetailPanel uses this to reload the task,
   // since a successful run auto-advances stage to "review" server-side.
   onExecuted: (execution: Execution) => void
+  defaultSelection?: AgentSelection
 }
 
 // executorLabels maps an agent executor key to its display label.
@@ -28,15 +29,16 @@ const executorLabels: Record<string, string> = { local: 'Local LLM chat', 'claud
 // docs/adr/0019); only the trace shape differs, since a single run can
 // interleave several tool-call sequences with narration in between, unlike
 // a Conversation turn's one bundled sequence.
-export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProps) {
+export function ExecutePanel({ projectId, taskId, onExecuted, defaultSelection }: ExecutePanelProps) {
   const [pastExecutions, setPastExecutions] = useState<Execution[]>([])
   const [trace, setTrace] = useState<ToolActivityBlock[]>([])
   const [running, setRunning] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
-  const [executor, setExecutor] = useState('')
+  const [executor, setExecutor] = useState(defaultSelection?.executor ?? '')
   const [executorOptions, setExecutorOptions] = useState<string[]>([])
   const [models, setModels] = useState<string[]>([])
-  const [selectedModel, setSelectedModel] = useState('')
+  const [selectedModel, setSelectedModel] = useState(defaultSelection?.model ?? '')
+  const [effort, setEffort] = useState(defaultSelection?.effort ?? 'medium')
   const [modelsError, setModelsError] = useState<string | null>(null)
   // executorsError is set when listAgentExecutors itself fails (server
   // unreachable, 500, etc.) — distinct from a successful response reporting
@@ -115,7 +117,6 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   useEffect(() => {
     let cancelled = false
     setModels([])
-    setSelectedModel('')
     setModelsError(null)
     if (!executor) {
       return () => {
@@ -127,7 +128,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
         if (!cancelled) {
           const availableModels = result.models ?? []
           setModels(availableModels)
-          setSelectedModel(availableModels[0] ?? '')
+          setSelectedModel((current) => availableModels.includes(current) ? current : (availableModels[0] ?? ''))
         }
       })
       .catch((err) => {
@@ -195,7 +196,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
 
     try {
       const continueFrom = continuableExecutionId && continueChoice === 'continue' ? continuableExecutionId : undefined
-      await startExecution(projectId, taskId, executor, handleStreamEvent, controller.signal, continueFrom, selectedModel)
+      await startExecution(projectId, taskId, executor, handleStreamEvent, controller.signal, continueFrom, selectedModel, effort)
     } catch (err) {
       if (!isAbortError(err)) {
         setRunError(err instanceof Error ? err.message : String(err))
@@ -267,6 +268,10 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
             </select>
           </>
         )}
+        <label htmlFor="execute-effort">Effort</label>
+        <select id="execute-effort" value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)} disabled={running}>
+          <option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+        </select>
       </div>
 
       {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}

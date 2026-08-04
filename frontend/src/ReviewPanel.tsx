@@ -5,7 +5,7 @@ import { KnowledgeDraftForm } from './KnowledgeDraftForm'
 import { ReviewDraftSummary } from './ReviewDraftSummary'
 import { stageConversationOps } from './stageConversationOps'
 import { StageConversationPanel } from './StageConversationPanel'
-import type { Execution, KnowledgeConceptDraft, Review, ReviewDraft, Task } from './types'
+import type { AgentSelection, Execution, KnowledgeConceptDraft, Review, ReviewDraft, Task } from './types'
 
 // needs_changes is the neutral default for a proposal that omits the field —
 // it neither approves nor rejects, so a malformed tool call can't accidentally
@@ -28,6 +28,7 @@ interface ReviewPanelProps {
   projectId: string
   taskId: string
   onFinalized: (task: Task, review: Review) => void
+  defaultSelection?: AgentSelection
 }
 
 // ReviewPanel is the Review-stage screen: a read-only summary of the execution
@@ -36,7 +37,7 @@ interface ReviewPanelProps {
 // autoStart is false — arriving here shows the diff and waits for an explicit
 // "Start Review", since the agent's first turn runs the real test suite in a
 // worktree, not just an opening question (docs/milestones/done/milestone6.md PR 3).
-export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps) {
+export function ReviewPanel({ projectId, taskId, onFinalized, defaultSelection }: ReviewPanelProps) {
   const [latest, setLatest] = useState<Execution | null>(null)
   const [patch, setPatch] = useState<string | null>(null)
   // cycleStartAt marks when this task most recently entered the review
@@ -136,6 +137,7 @@ export function ReviewPanel({ projectId, taskId, onFinalized }: ReviewPanelProps
           emptyDraft={EMPTY_DRAFT}
           autoStart={false}
           startLabel="Start Review"
+          defaultSelection={defaultSelection}
           cycleStartAt={cycleStartAt}
           draftIsEditable={false}
           renderDraft={(draft) => <ReviewDraftSummary draft={draft} />}

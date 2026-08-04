@@ -933,7 +933,7 @@ func TestHandlePostStageMessage_AgentExecutorStreamsToolCallAsSSEEventAndPersist
 		}},
 	}, nil)
 
-	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/planning/messages", stageMessageRequest{Content: "go ahead", Executor: "claude-code"})
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/planning/messages", stageMessageRequest{Content: "go ahead", Executor: "claude-code", Effort: "medium"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "planning")
@@ -981,7 +981,7 @@ func TestHandlePostStageMessage_AgentExecutorWorkspaceResolutionFailureSurfacesA
 
 	runner := new(mockAgentRunner)
 
-	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/planning/messages", stageMessageRequest{Content: "go ahead", Executor: "claude-code"})
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/planning/messages", stageMessageRequest{Content: "go ahead", Executor: "claude-code", Effort: "medium"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "planning")
@@ -1023,7 +1023,7 @@ func TestHandlePostStageMessage_NoRepositoryProceedsWithEmptyWorkspace(t *testin
 		return true
 	}), mock.Anything).Return(nil, agentrunner.RunOutput{Content: "ok"}, nil)
 
-	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/planning/messages", stageMessageRequest{Content: "go ahead", Executor: "local"})
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/planning/messages", stageMessageRequest{Content: "go ahead", Executor: "local", Effort: "medium"})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	req.SetPathValue("stage", "planning")

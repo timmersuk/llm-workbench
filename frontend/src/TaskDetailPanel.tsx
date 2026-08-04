@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listExecutions, listReviews, reviseRequirements, revisePlan } from './api'
 import { CollapsibleSection } from './CollapsibleSection'
+import { AgentDefaultsEditor } from './AgentDefaultsEditor'
 import { ExecutePanel } from './ExecutePanel'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { GrillMePanel } from './GrillMePanel'
@@ -271,6 +272,8 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
 
       <TimelinePanel projectId={projectId} taskId={task.id} />
 
+      <AgentDefaultsEditor projectId={projectId} task={task} onSaved={setTask} />
+
       {reviseError && <p className="error">{reviseError}</p>}
 
       {task.stage === 'requirements' && (
@@ -278,6 +281,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
           <GrillMePanel
             projectId={projectId}
             taskId={task.id}
+            defaultSelection={task.agent_defaults?.stage_conversation}
             onFinalized={(updatedTask, updatedContext) => {
               setTask(updatedTask)
               setContext(updatedContext)
@@ -291,6 +295,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
           <PlanningModePanel
             projectId={projectId}
             taskId={task.id}
+            defaultSelection={task.agent_defaults?.stage_conversation}
             onFinalized={(updatedTask, updatedPlan) => {
               setTask(updatedTask)
               setPlan(updatedPlan)
@@ -321,6 +326,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
           <ExecutePanel
             projectId={projectId}
             taskId={task.id}
+            defaultSelection={task.agent_defaults?.execution}
             onExecuted={(execution) => {
               setLatestExecution(execution)
               // The "done" event only carries the Execution record, not the
@@ -344,6 +350,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
           <ReviewPanel
             projectId={projectId}
             taskId={task.id}
+            defaultSelection={task.agent_defaults?.stage_conversation}
             // A verdict moves the task (approved→merged,
             // needs_changes→implementation, rejected→requirements);
             // re-rendering by the new stage is all the panel needs to do.

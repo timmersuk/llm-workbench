@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"sort"
+
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 )
 
 // handleListAgentExecutors reports which agentRunners entries
@@ -13,14 +15,16 @@ import (
 // executor" check) or silently fails.
 func (s *Server) handleListAgentExecutors() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		executors := make([]string, 0, len(s.AgentRunners))
+		executors := make([]agentrunner.ExecutorCapabilities, 0, len(s.AgentRunners))
 		for name, runner := range s.AgentRunners {
-			if err := runner.CheckHealth(r.Context()); err != nil {
+			capability, err := runner.Capabilities(r.Context())
+			if err != nil {
 				continue
 			}
-			executors = append(executors, name)
+			capability.Name = name
+			executors = append(executors, capability)
 		}
-		sort.Strings(executors)
-		writeJSON(w, http.StatusOK, map[string][]string{"executors": executors})
+		sort.Slice(executors, func(i, j int) bool { return executors[i].Name < executors[j].Name })
+		writeJSON(w, http.StatusOK, map[string][]agentrunner.ExecutorCapabilities{"executors": executors})
 	}
 }

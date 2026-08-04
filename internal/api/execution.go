@@ -37,6 +37,7 @@ const executionMaxTurns = 1000
 type executionStartRequest struct {
 	Model    string `json:"model"`
 	Executor string `json:"executor,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 	// ContinueFromExecutionID is the human's explicit choice to continue
 	// from a prior failed/partial execution's branch, echoing the
 	// execution_id handleGetContinuableExecution offered — re-validated
@@ -128,15 +129,11 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			writeAPIError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-
-		executorKey := req.Executor
-		if executorKey == "" {
-			executorKey = defaultExecutionExecutor
-		}
-		runner, ok := s.AgentRunners[executorKey]
-		if !ok {
-			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown executor %q", executorKey))
-			return
+		if req.Executor != "" {
+			if _, ok := s.AgentRunners[req.Executor]; !ok {
+				writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown executor %q", req.Executor))
+				return
+			}
 		}
 
 		projectId := r.PathValue("projectId")
@@ -162,6 +159,12 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			writeGetError(w, err)
 			return
 		}
+		selection, runner, err := s.resolveSelection(r.Context(), t, scopeExecution, agentrunner.Selection{Executor: req.Executor, Model: req.Model, Effort: agentrunner.ReasoningEffort(req.Effort)})
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		executorKey := selection.Executor
 		if t.Stage != task.StageImplementation {
 			writeAPIError(w, http.StatusConflict, fmt.Sprintf("task is not in implementation stage (currently %q)", t.Stage))
 			return
@@ -247,7 +250,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			// The workspace was never created — nothing to report yet for
 			// GitBranch/ForkedFromBranch, unlike the PR-comments failure
 			// below where it already exists.
-			recordAbortedExecution(r.Context(), writeEvent, store, projectId, taskId, executionID, executorKey, start,
+			recordAbortedExecution(r.Context(), writeEvent, store, projectId, taskId, executionID, task.ExecutionExecutor{Type: executorKey, Model: selection.Model, Effort: string(selection.Effort)}, start,
 				reviewFeedback, continuedFromExecutionID, "", "", fmt.Errorf("resolving execution workspace: %w", wsErr))
 			return
 		}
@@ -263,7 +266,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		if reviewFeedback != "" && t.PullRequest != nil {
 			prCommentsPath = filepath.Join(ws.Path, prCommentsExecutionFilename)
 			if err := s.writePRCommentsFile(r.Context(), ws.Path, prCommentsPath, t.PullRequest.Number); err != nil {
-				recordAbortedExecution(r.Context(), writeEvent, store, projectId, taskId, executionID, executorKey, start,
+				recordAbortedExecution(r.Context(), writeEvent, store, projectId, taskId, executionID, task.ExecutionExecutor{Type: executorKey, Model: selection.Model, Effort: string(selection.Effort)}, start,
 					reviewFeedback, continuedFromExecutionID, ws.Branch, forkFrom, fmt.Errorf("fetching PR comments: %w", err))
 				return
 			}
@@ -272,11 +275,12 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 		systemPrompt := buildExecutionPrompt(t, plan, reviewFeedback, priorFailureMessage, prCommentsPath != "")
 
 		out, execErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
-			SessionKey:   taskId + ":execute",
-			Workspace:    ws.Path,
-			SystemPrompt: systemPrompt,
-			Model:        req.Model,
-			MaxTurns:     executionMaxTurns,
+			SessionKey:      taskId + ":execute",
+			Workspace:       ws.Path,
+			SystemPrompt:    systemPrompt,
+			Model:           selection.Model,
+			ReasoningEffort: selection.Effort,
+			MaxTurns:        executionMaxTurns,
 		}, func(ev agentrunner.ExecuteEvent) error {
 			writeEvent(executeEventToWire(ev))
 			if logEv, ok := executeEventToLogEvent(ev); ok {
@@ -341,11 +345,12 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 				workspaceDirty = true
 			} else {
 				cleanupOut, cleanupErr := runner.Execute(r.Context(), agentrunner.ExecuteInput{
-					SessionKey:   taskId + ":execute-cleanup",
-					Workspace:    ws.Path,
-					SystemPrompt: buildWorkspaceCleanupPrompt(statusOut),
-					Model:        req.Model,
-					MaxTurns:     executionMaxTurns,
+					SessionKey:      taskId + ":execute-cleanup",
+					Workspace:       ws.Path,
+					SystemPrompt:    buildWorkspaceCleanupPrompt(statusOut),
+					Model:           selection.Model,
+					ReasoningEffort: selection.Effort,
+					MaxTurns:        executionMaxTurns,
 				}, func(ev agentrunner.ExecuteEvent) error {
 					writeEvent(executeEventToWire(ev))
 					if logEv, ok := executeEventToLogEvent(ev); ok {
@@ -385,7 +390,7 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 
 		exec := task.Execution{
 			ExecutionID: executionID,
-			Executor:    task.ExecutionExecutor{Type: executorKey},
+			Executor:    task.ExecutionExecutor{Type: executorKey, Model: selection.Model, Effort: string(selection.Effort)},
 			Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback, ContinuedFromExecutionID: continuedFromExecutionID},
 			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits, ForkedFromBranch: forkFrom, WorkspaceDirty: workspaceDirty},
 			Metrics: task.ExecutionMetrics{
@@ -448,10 +453,10 @@ func classifyExecutionOutcome(exec *task.Execution, err error, ctx context.Conte
 // convention of only ever surfacing a failure via the recorded Execution,
 // not a separate live error event) — or, best-effort, a bare error event if
 // even RecordExecution itself fails.
-func recordAbortedExecution(ctx context.Context, writeEvent func(executeStreamEvent), store TaskStore, projectId, taskId, executionID, executorKey string, start time.Time, reviewFeedback, continuedFromExecutionID, gitBranch, forkFrom string, abortErr error) {
+func recordAbortedExecution(ctx context.Context, writeEvent func(executeStreamEvent), store TaskStore, projectId, taskId, executionID string, executor task.ExecutionExecutor, start time.Time, reviewFeedback, continuedFromExecutionID, gitBranch, forkFrom string, abortErr error) {
 	exec := task.Execution{
 		ExecutionID: executionID,
-		Executor:    task.ExecutionExecutor{Type: executorKey},
+		Executor:    executor,
 		Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback, ContinuedFromExecutionID: continuedFromExecutionID},
 		Output:      task.ExecutionOutput{GitBranch: gitBranch, ForkedFromBranch: forkFrom},
 		Metrics:     task.ExecutionMetrics{DurationSeconds: time.Since(start).Seconds()},

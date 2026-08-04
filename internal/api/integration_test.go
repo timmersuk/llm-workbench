@@ -45,6 +45,15 @@ objective: Ship it
 constraints: []
 assumptions: []
 success_criteria: []
+agent_defaults:
+  stage_conversation:
+    executor: local
+    model: test-model
+    effort: medium
+  execution:
+    executor: local
+    model: test-model
+    effort: medium
 references:
   knowledge: []
   repo: []
@@ -418,21 +427,23 @@ func TestIntegration_ChatCompletionsRoundTripsThroughRealClient(t *testing.T) {
 	assert.Equal(t, "hello back", content.String())
 }
 
-func TestIntegration_ListModelsRoundTripsThroughRealClient(t *testing.T) {
+func TestIntegration_ExecutorCapabilitiesRoundTripsThroughRealClient(t *testing.T) {
 	upstream := fakeUpstream(t)
 	defer upstream.Close()
 	baseURL, _ := newIntegrationServer(t, upstream)
 
-	resp, err := http.Get(baseURL + "/api/v1/chat/models")
+	resp, err := http.Get(baseURL + "/api/v1/agent-executors")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var got struct {
-		Models []string `json:"models"`
+		Executors []agentrunner.ExecutorCapabilities `json:"executors"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	assert.Equal(t, []string{"test-model", "other-model"}, got.Models)
+	require.Len(t, got.Executors, 1)
+	assert.Equal(t, []string{"test-model", "other-model"}, got.Executors[0].Models)
+	assert.Equal(t, agentrunner.EffortMedium, got.Executors[0].DefaultEffort)
 }
 
 func TestIntegration_HealthcheckReflectsRealChatClient(t *testing.T) {
@@ -612,7 +623,7 @@ func TestIntegration_ReviewConversation_CarriesDiffAndProposesReview(t *testing.
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	body, err := json.Marshal(stageMessageRequest{Content: "start the review", Model: "test-model", Executor: "local"})
+	body, err := json.Marshal(stageMessageRequest{Content: "start the review", Model: "test-model", Executor: "local", Effort: "medium"})
 	require.NoError(t, err)
 	resp, err := http.Post(server.URL+"/api/v1/projects/demo-project/tasks/TASK-0001/stages/review/messages", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -674,7 +685,7 @@ func TestIntegration_StageMessageStreamsProposedDraftAsToolCallEvent(t *testing.
 	defer upstream.Close()
 	baseURL, _ := newIntegrationServer(t, upstream)
 
-	body, err := json.Marshal(stageMessageRequest{Content: "let's get started", Model: "test-model"})
+	body, err := json.Marshal(stageMessageRequest{Content: "let's get started"})
 	require.NoError(t, err)
 
 	resp, err := http.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", "application/json", bytes.NewReader(body))
@@ -724,7 +735,7 @@ func TestIntegration_StartStageConversation_SeedsFirstQuestionAndRejectsRestart(
 	defer upstream.Close()
 	baseURL, _ := newIntegrationServer(t, upstream)
 
-	body, err := json.Marshal(stageStartRequest{Model: "test-model"})
+	body, err := json.Marshal(stageStartRequest{})
 	require.NoError(t, err)
 
 	resp, err := http.Post(baseURL+"/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/start", "application/json", bytes.NewReader(body))

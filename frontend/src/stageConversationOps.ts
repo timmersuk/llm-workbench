@@ -40,13 +40,13 @@ import type { StageConversationOps } from './StageConversationPanel'
 export function stageConversationOps(projectId: string, taskId: string, stage: string): StageConversationOps {
   return {
     getConversation: () => getStageConversation(projectId, taskId, stage),
-    postMessage: (content, model, executor, onEvent, signal) =>
-      postStageMessage(projectId, taskId, stage, content, model, executor, onEvent, signal),
-    startConversation: (model, executor, onEvent, signal) =>
-      startStageConversation(projectId, taskId, stage, model, executor, onEvent, signal),
+    postMessage: (content, model, executor, effort, onEvent, signal) =>
+      postStageMessage(projectId, taskId, stage, content, model, executor, onEvent, signal, effort),
+    startConversation: (model, executor, effort, onEvent, signal) =>
+      startStageConversation(projectId, taskId, stage, model, executor, onEvent, signal, effort),
     deleteMessage: (index) => deleteStageMessage(projectId, taskId, stage, index),
-    regenerateMessage: (index, content, model, executor, onEvent, signal) =>
-      regenerateStageMessage(projectId, taskId, stage, index, content, model, executor, onEvent, signal),
+    regenerateMessage: (index, content, model, executor, effort, onEvent, signal) =>
+      regenerateStageMessage(projectId, taskId, stage, index, content, model, executor, onEvent, signal, effort),
   }
 }
 
@@ -58,12 +58,12 @@ export function stageConversationOps(projectId: string, taskId: string, stage: s
 export function taskDraftConversationOps(projectId: string, sessionId: string): StageConversationOps {
   return {
     getConversation: () => getTaskDraftConversation(projectId, sessionId),
-    postMessage: (content, model, executor, onEvent, signal) =>
+    postMessage: (content, model, executor, _effort, onEvent, signal) =>
       postTaskDraftMessage(projectId, sessionId, content, model, executor, onEvent, signal),
-    startConversation: (model, executor, onEvent, signal) =>
+    startConversation: (model, executor, _effort, onEvent, signal) =>
       startTaskDraftConversation(projectId, sessionId, model, executor, onEvent, signal),
     deleteMessage: (index) => deleteTaskDraftMessage(projectId, sessionId, index),
-    regenerateMessage: (index, content, model, executor, onEvent, signal) =>
+    regenerateMessage: (index, content, model, executor, _effort, onEvent, signal) =>
       regenerateTaskDraftMessage(projectId, sessionId, index, content, model, executor, onEvent, signal),
   }
 }

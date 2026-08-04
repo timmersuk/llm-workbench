@@ -6,7 +6,7 @@ import { MarkdownMessage } from './MarkdownMessage'
 import { ToolActivitySequence } from './ToolActivity'
 import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
 import type { ToolActivityBlock } from './toolActivityBlocks'
-import type { ChatStreamEvent, Conversation, ConversationMessage } from './types'
+import type { AgentSelection, ChatStreamEvent, Conversation, ConversationMessage } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
@@ -188,12 +188,14 @@ export interface StageConversationOps {
     content: string,
     model: string,
     executor: string,
+    effort: string,
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
   ) => Promise<void>
   startConversation: (
     model: string,
     executor: string,
+    effort: string,
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
   ) => Promise<void>
@@ -203,6 +205,7 @@ export interface StageConversationOps {
     content: string,
     model: string,
     executor: string,
+    effort: string,
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
   ) => Promise<void>
@@ -286,6 +289,7 @@ interface StageConversationPanelProps<D, S = never> {
   // secondaryDraft, if set, additionally tracks and renders a second Draft
   // tool independent of the main one — see SecondaryDraftConfig.
   secondaryDraft?: SecondaryDraftConfig<S>
+  defaultSelection?: AgentSelection
 }
 
 // localChatOption represents the local-LLM chat path (server-side, "" maps
@@ -294,13 +298,13 @@ interface StageConversationPanelProps<D, S = never> {
 // It is only ever added to executorOptions when listAgentExecutors reports
 // "local" itself as healthy — offering it unconditionally would let the
 // human pick an executor that's known not to be responding.
-const localChatOption = { value: '', label: 'Local LLM chat' }
+const localChatOption = { value: 'local', label: 'Local LLM chat' }
 
 // executorLabels maps an agent executor key (internal/agentrunner) to its
 // display label, for whichever keys listAgentExecutors currently reports
 // healthy — an executor that isn't live right now is never offered, so
 // selecting one can't 400.
-const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex CLI' }
+const executorLabels: Record<string, string> = { local: 'Local LLM chat', 'claude-code': 'Claude Code', codex: 'Codex CLI' }
 
 // StageConversationPanel is the mechanism shared by GrillMe, Planning Mode,
 // and Review (CONTEXT.md): a persisted Conversation transcript, a message
@@ -325,6 +329,7 @@ export function StageConversationPanel<D, S = never>({
   draftIsEditable = true,
   secondaryDraft,
   normalizeDraft,
+  defaultSelection,
 }: StageConversationPanelProps<D, S>) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -336,8 +341,9 @@ export function StageConversationPanel<D, S = never>({
   const [sending, setSending] = useState(false)
   const [models, setModels] = useState<string[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
-  const [selectedModel, setSelectedModel] = useState('')
-  const [executor, setExecutor] = useState('')
+  const [selectedModel, setSelectedModel] = useState(defaultSelection?.model ?? '')
+  const [executor, setExecutor] = useState(defaultSelection?.executor ?? '')
+  const [effort, setEffort] = useState(defaultSelection?.effort ?? 'medium')
   // executorOptions starts empty rather than defaulting to [localChatOption]
   // — until listAgentExecutors actually reports "local" healthy, offering it
   // would be the same silent-default bug this and executorsError below both
@@ -492,7 +498,7 @@ export function StageConversationPanel<D, S = never>({
 
       let resolvedModel = ''
       try {
-        const result = await listModels()
+        const result = await listModels(defaultSelection?.executor ?? 'local')
         if (!cancelled) {
           setModels(result.models)
           resolvedModel = result.models[0] ?? ''
@@ -687,7 +693,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await ops.postMessage(text, selectedModel, executor, handleStreamEvent, controller.signal)
+      await ops.postMessage(text, selectedModel, executor, effort, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         // A rejection here (as opposed to a mid-stream {error} SSE event,
@@ -737,7 +743,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await ops.startConversation(model, executorKey, handleStreamEvent, controller.signal)
+      await ops.startConversation(model, executorKey, effort, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
@@ -801,7 +807,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await ops.regenerateMessage(index, content, selectedModel, executor, handleStreamEvent, controller.signal)
+      await ops.regenerateMessage(index, content, selectedModel, executor, effort, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         // Same reasoning as sendMessage's catch: a rejection here means
@@ -1020,7 +1026,7 @@ export function StageConversationPanel<D, S = never>({
               ))}
             </select>
 
-            {executorOptions.length > 0 && executor !== 'claude-code' && (
+            {executorOptions.length > 0 && models.length > 0 && (
               <>
                 <label htmlFor={`stage-model-${conversationKey}`}>Model</label>
                 <select id={`stage-model-${conversationKey}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
@@ -1033,6 +1039,10 @@ export function StageConversationPanel<D, S = never>({
                 </select>
               </>
             )}
+            <label htmlFor={`stage-effort-${conversationKey}`}>Effort</label>
+            <select id={`stage-effort-${conversationKey}`} value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>
+              <option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+            </select>
           </div>
 
           {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}

@@ -23,6 +23,7 @@ export interface Task {
   assumptions: string[]
   success_criteria: string[]
   references: TaskReferences
+  agent_defaults?: AgentDefaults
   pull_request?: PullRequest
   // draft_session_id mirrors task.Task.DraftSessionID (internal/task/task.go)
   // — set at creation time when this task came from the chat-driven "New
@@ -31,6 +32,17 @@ export interface Task {
   // created before this mechanism existed. TaskDetailPanel only shows its
   // "View pre-creation conversation" nav link when this is set.
   draft_session_id?: string
+}
+
+export type ReasoningEffort = 'low' | 'medium' | 'high'
+export interface AgentSelection { executor: string; model: string; effort: ReasoningEffort }
+export interface AgentDefaults { stage_conversation: AgentSelection; execution: AgentSelection }
+export interface ExecutorCapability {
+  name: string
+  models: string[]
+  efforts: ReasoningEffort[]
+  default_model: string
+  default_effort: ReasoningEffort
 }
 
 export interface Project {
@@ -84,6 +96,7 @@ export interface UpdateTaskRequest {
   assumptions: string[]
   success_criteria: string[]
   references: TaskReferences
+  agent_defaults?: AgentDefaults
 }
 
 // CreateProjectRequest/UpdateProjectRequest have no id: project ids are
@@ -129,6 +142,8 @@ export interface ModelsListResult {
 export interface AgentExecutorsListResult {
   executors: string[]
 }
+
+export interface ExecutorCapabilitiesResult { executors: ExecutorCapability[] }
 
 // ChatCompletionRequestBody mirrors internal/api/chat.go's
 // chatCompletionRequest — the free-floating Chat tab's request shape.
@@ -186,6 +201,9 @@ export interface ChatStreamEvent {
   }
   usage?: { total_tokens: number }
   error?: string
+  executor?: string
+  model?: string
+  effort?: ReasoningEffort
 }
 
 // VerificationKind mirrors task.VerificationKind* (internal/task/context.go)
@@ -326,6 +344,8 @@ export interface Conversation {
 export interface ExecutionExecutor {
   type: string
   version: string
+  model?: string
+  effort?: ReasoningEffort
 }
 
 export interface ExecutionInput {

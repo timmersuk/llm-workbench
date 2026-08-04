@@ -38,8 +38,10 @@ type ChatClientRunner struct {
 	engine         *toolloop.Engine
 	knowledgeStore knowledgetool.Store
 
-	mu       sync.Mutex
-	sessions map[string][]chat.Message // per-SessionKey history: user/assistant turns, no system message
+	mu            sync.Mutex
+	sessions      map[string][]chat.Message // per-SessionKey history: user/assistant turns, no system message
+	defaultModel  string
+	defaultEffort ReasoningEffort
 }
 
 // NewChatClientRunner returns an AgentRunner backed by client.
@@ -47,13 +49,19 @@ type ChatClientRunner struct {
 // tools (docs/milestones/done/milestone9.md) on every turn regardless of stage
 // or workspace — a nil knowledgeStore (e.g. in tests that don't care about
 // this) just means those two tools are never advertised.
-func NewChatClientRunner(client chat.ChatClient, knowledgeStore knowledgetool.Store) *ChatClientRunner {
-	return &ChatClientRunner{
+func NewChatClientRunner(client chat.ChatClient, knowledgeStore knowledgetool.Store, defaults ...Selection) *ChatClientRunner {
+	r := &ChatClientRunner{
 		client:         client,
 		engine:         toolloop.New(client),
 		knowledgeStore: knowledgeStore,
 		sessions:       make(map[string][]chat.Message),
+		defaultEffort:  EffortMedium,
 	}
+	if len(defaults) > 0 {
+		r.defaultModel = defaults[0].Model
+		r.defaultEffort = defaults[0].Effort
+	}
+	return r
 }
 
 // Run implements AgentRunner. It builds the message list (system prompt +
@@ -87,11 +95,12 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	msgs = append(msgs, chat.Message{Role: "user", Content: in.UserMessage})
 
 	cfg := toolloop.Config{
-		Model:     in.Model,
-		Workspace: in.Workspace,
-		Tools:     r.loopTools(in.Workspace, in.EnableBashTool),
-		MaxTurns:  in.MaxTurns,
-		MaxTokens: chatClientMaxResponseTokens,
+		Model:           in.Model,
+		ReasoningEffort: string(in.ReasoningEffort),
+		Workspace:       in.Workspace,
+		Tools:           r.loopTools(in.Workspace, in.EnableBashTool),
+		MaxTurns:        in.MaxTurns,
+		MaxTokens:       chatClientMaxResponseTokens,
 	}
 	if len(in.Tools) > 0 {
 		cfg.StopTools = in.Tools
@@ -191,11 +200,12 @@ func (r *ChatClientRunner) Execute(ctx context.Context, in ExecuteInput, onEvent
 	msgs = append(msgs, chat.Message{Role: "user", Content: executionKickoffMessage})
 
 	cfg := toolloop.Config{
-		Model:     in.Model,
-		Workspace: in.Workspace,
-		Tools:     toolloop.ExecutionTools(),
-		MaxTurns:  in.MaxTurns,
-		MaxTokens: chatClientMaxResponseTokens,
+		Model:           in.Model,
+		ReasoningEffort: string(in.ReasoningEffort),
+		Workspace:       in.Workspace,
+		Tools:           toolloop.ExecutionTools(),
+		MaxTurns:        in.MaxTurns,
+		MaxTokens:       chatClientMaxResponseTokens,
 	}
 	var onDelta func(chat.Delta) error
 	if onEvent != nil {
@@ -238,6 +248,21 @@ func (r *ChatClientRunner) CheckHealth(ctx context.Context) error {
 // ListModels implements AgentRunner.
 func (r *ChatClientRunner) ListModels(ctx context.Context) ([]string, error) {
 	return r.client.ListModels(ctx)
+}
+
+func (r *ChatClientRunner) Capabilities(ctx context.Context) (ExecutorCapabilities, error) {
+	models, err := r.client.ListModels(ctx)
+	if err != nil {
+		if r.defaultModel == "" {
+			return ExecutorCapabilities{}, err
+		}
+		models = []string{r.defaultModel}
+	}
+	defaultModel := r.defaultModel
+	if defaultModel == "" && len(models) > 0 {
+		defaultModel = models[0]
+	}
+	return ExecutorCapabilities{Name: "local", Models: models, Efforts: []ReasoningEffort{EffortLow, EffortMedium, EffortHigh}, DefaultModel: defaultModel, DefaultEffort: r.defaultEffort}, nil
 }
 
 // CloseSession implements AgentRunner, discarding this runner's held history

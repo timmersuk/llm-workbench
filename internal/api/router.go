@@ -124,15 +124,17 @@ type KnowledgeStore interface {
 // each time. Package-internal by design: NewRouter is still the only public
 // entrypoint (docs/adr/0016-api-handlers-become-methods-on-an-internal-server-struct.md).
 type Server struct {
-	Projects              ProjectStore
-	Tasks                 TaskStore
-	KnowledgeStore        KnowledgeStore
-	AgentRunners          map[string]agentrunner.AgentRunner
-	ReposRoot             string
-	PRClient              agentrunner.GitHubPRClient
-	DefaultBranchResolver agentrunner.DefaultBranchResolver
-	FrontendFS            fs.FS
-	BuildId               string
+	Projects                      ProjectStore
+	Tasks                         TaskStore
+	KnowledgeStore                KnowledgeStore
+	AgentRunners                  map[string]agentrunner.AgentRunner
+	ReposRoot                     string
+	PRClient                      agentrunner.GitHubPRClient
+	DefaultBranchResolver         agentrunner.DefaultBranchResolver
+	FrontendFS                    fs.FS
+	BuildId                       string
+	StageConversationSeedExecutor string
+	ExecutionSeedExecutor         string
 }
 
 // NewRouter builds the full HTTP handler: the JSON API plus the embedded
@@ -155,16 +157,26 @@ type Server struct {
 // agentrunner.NewDefaultBranchResolver() in production, a fake in tests
 // (docs/milestones/done/milestone8a.md).
 func NewRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeStore, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId string) http.Handler {
+	return newRouter(projects, tasks, knowledgeStore, agentRunners, reposRoot, prClient, defaultBranchResolver, frontendFS, buildId, "local", "claude-code")
+}
+
+func NewRouterWithSeeds(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeStore, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId, stageSeed, executionSeed string) http.Handler {
+	return newRouter(projects, tasks, knowledgeStore, agentRunners, reposRoot, prClient, defaultBranchResolver, frontendFS, buildId, stageSeed, executionSeed)
+}
+
+func newRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeStore, agentRunners map[string]agentrunner.AgentRunner, reposRoot string, prClient agentrunner.GitHubPRClient, defaultBranchResolver agentrunner.DefaultBranchResolver, frontendFS fs.FS, buildId, stageSeed, executionSeed string) http.Handler {
 	s := &Server{
-		Projects:              projects,
-		Tasks:                 tasks,
-		KnowledgeStore:        knowledgeStore,
-		AgentRunners:          agentRunners,
-		ReposRoot:             reposRoot,
-		PRClient:              prClient,
-		DefaultBranchResolver: defaultBranchResolver,
-		FrontendFS:            frontendFS,
-		BuildId:               buildId,
+		Projects:                      projects,
+		Tasks:                         tasks,
+		KnowledgeStore:                knowledgeStore,
+		AgentRunners:                  agentRunners,
+		ReposRoot:                     reposRoot,
+		PRClient:                      prClient,
+		DefaultBranchResolver:         defaultBranchResolver,
+		FrontendFS:                    frontendFS,
+		BuildId:                       buildId,
+		StageConversationSeedExecutor: stageSeed,
+		ExecutionSeedExecutor:         executionSeed,
 	}
 
 	mux := http.NewServeMux()
@@ -214,7 +226,6 @@ func NewRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 
 	mux.HandleFunc("POST /api/v1/chat/completions", s.handleChatCompletions())
 	mux.HandleFunc("POST /api/v1/chat/sessions/close", s.handleCloseChatSession())
-	mux.HandleFunc("GET /api/v1/chat/models", s.handleListModels())
 	mux.HandleFunc("GET /api/v1/agent-executors", s.handleListAgentExecutors())
 
 	mux.Handle("GET /", newFrontendHandler(s.FrontendFS))

@@ -125,6 +125,40 @@ func (r *CodexRunner) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
+func (r *CodexRunner) Capabilities(ctx context.Context) (ExecutorCapabilities, error) {
+	client, err := newCodexClient(ctx, nil)
+	if err != nil {
+		return ExecutorCapabilities{}, err
+	}
+	defer func() { _ = client.Close() }()
+	result, err := client.ListModels(ctx, codex.ListModelsOptions{})
+	if err != nil {
+		return ExecutorCapabilities{}, err
+	}
+	capability := ExecutorCapabilities{Name: "codex", Efforts: []ReasoningEffort{EffortLow, EffortMedium, EffortHigh}}
+	for _, model := range result.Data {
+		if model.Hidden || model.ID == "" {
+			continue
+		}
+		capability.Models = append(capability.Models, model.ID)
+		if model.IsDefault {
+			capability.DefaultModel = model.ID
+			capability.DefaultEffort = ReasoningEffort(model.DefaultReasoningEffort)
+		}
+	}
+	if capability.DefaultModel == "" && len(capability.Models) > 0 {
+		capability.DefaultModel = capability.Models[0]
+	}
+	if capability.DefaultEffort != EffortLow && capability.DefaultEffort != EffortMedium && capability.DefaultEffort != EffortHigh {
+		capability.DefaultEffort = EffortMedium
+	}
+	return capability, nil
+}
+
+func codexEffortOverride(effort ReasoningEffort) string {
+	return "reasoning.effort=" + tomlQuote(string(effort))
+}
+
 // CloseSession implements AgentRunner. CodexRunner never caches a session
 // across calls (see the type doc comment), so there is nothing to
 // discard — safe to call for any key.
@@ -164,6 +198,7 @@ func (r *CodexRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.De
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("starting codex MCP endpoint: %w", err)
 	}
+	configOverrides = append(configOverrides, codexEffortOverride(in.ReasoningEffort))
 	client, err := newCodexClient(runCtx, configOverrides)
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("creating codex client for %s: %w", key, err)
@@ -270,6 +305,7 @@ func (r *CodexRunner) Execute(ctx context.Context, in ExecuteInput, onEvent func
 	if err != nil {
 		return ExecuteOutput{}, fmt.Errorf("starting codex MCP endpoint: %w", err)
 	}
+	configOverrides = append(configOverrides, codexEffortOverride(in.ReasoningEffort))
 	if gitDir, err := worktreeGitDir(runCtx, in.Workspace); err == nil {
 		configOverrides = append(configOverrides, "sandbox_workspace_write.writable_roots=["+tomlQuote(gitDir)+"]")
 	} else {

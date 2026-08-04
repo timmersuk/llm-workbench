@@ -56,3 +56,16 @@ inventing a new one.
 - `docs/engineering conventions.md` — "Interface-based dependency injection", "Chat / LLM provider integration"
 - `docs/knowledge schema v0.md` §6 — the knowledge store's future provider shape
 - `docs/project_summary.md` §7 (Executors), §9.3 (Providers Are Replaceable)
+# Executor selection capabilities
+
+`GET /api/v1/agent-executors` is the single capability-discovery surface. It
+returns each configured executor's `name`, `models`, `efforts`,
+`default_model`, and `default_effort`, without transient health filtering;
+`/healthcheck` remains the operational availability surface. The former
+local-only `/api/v1/chat/models` route has been retired.
+
+The task/runner boundary uses complete executor/model/effort selections and
+the provider-neutral low/medium/high effort enum. Claude maps these to
+`WithModel`/`WithEffort`; Codex uses per-process ephemeral configuration
+overrides (never disk config); local transports `reasoning_effort` in the
+OpenAI-compatible request. No runtime dependency was added.
