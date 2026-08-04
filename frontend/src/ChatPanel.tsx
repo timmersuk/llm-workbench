@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { closeChatSession, isAbortError, listAgentExecutors, listModels, streamChatCompletion } from './api'
+import { ChatInputArea } from './ChatInputArea'
 import { MarkdownMessage } from './MarkdownMessage'
-import type { ChatHistoryEntry, ChatStreamEvent } from './types'
+import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
+import type { ChatHistoryEntry, ChatStreamEvent, ReasoningEffort } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
 
 interface DisplayMessage {
@@ -26,6 +28,12 @@ export function ChatPanel() {
   const [models, setModels] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState('')
   const [modelsError, setModelsError] = useState<string | null>(null)
+  const [effort, setEffort] = useState<ReasoningEffort>('medium')
+  // efforts mirrors models above: the currently-selected executor's
+  // advertised effort choices, re-derived on every executor change instead
+  // of offering a static low/medium/high list regardless of what that
+  // executor actually supports — see reasoningEffort.ts.
+  const [efforts, setEfforts] = useState<ReasoningEffort[]>(ALL_REASONING_EFFORTS)
   const [executor, setExecutor] = useState('')
   const [executorOptions, setExecutorOptions] = useState<Array<{ value: string; label: string }>>([])
   // executorsError mirrors modelsError above, for listAgentExecutors — set
@@ -50,12 +58,6 @@ export function ChatPanel() {
   const liveTurnStatus = useLiveTurnStatus(sending, streamedChars, finalTokens)
 
   useEffect(() => {
-    listModels()
-      .then((result) => {
-        setModels(result.models)
-        setSelectedModel((current) => current || result.models[0] || '')
-      })
-      .catch((err) => setModelsError(err instanceof Error ? err.message : String(err)))
     listAgentExecutors()
       .then((result) => {
         const options = result.executors.map((key) => ({ value: key, label: executorLabels[key] ?? key }))
@@ -64,6 +66,41 @@ export function ChatPanel() {
       })
       .catch((err) => setExecutorsError(err instanceof Error ? err.message : String(err)))
   }, [])
+
+  // Re-derives models/efforts whenever the selected executor changes,
+  // including the very first time it's resolved (either from the initial
+  // fetch above or a user's own pick) — a fetch keyed on the actual executor
+  // rather than a fixed default, so "local"'s models never briefly show
+  // under a different executor before a user-driven change corrects it (see
+  // ExecutePanel's identical pattern).
+  useEffect(() => {
+    let cancelled = false
+    setModelsError(null)
+    if (!executor) {
+      return () => {
+        cancelled = true
+      }
+    }
+    listModels(executor)
+      .then((result) => {
+        if (cancelled) {
+          return
+        }
+        setModels(result.models)
+        setSelectedModel((current) => (result.models.includes(current) ? current : (result.models[0] ?? '')))
+        const availableEfforts = result.efforts ?? ALL_REASONING_EFFORTS
+        setEfforts(availableEfforts)
+        setEffort((current) => resolveEffort(current, availableEfforts, result.default_effort))
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setModelsError(err instanceof Error ? err.message : String(err))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [executor])
 
   function updateLastMessage(update: (msg: DisplayMessage) => DisplayMessage) {
     setMessages((prev) => {
@@ -144,7 +181,7 @@ export function ChatPanel() {
     abortControllerRef.current = controller
 
     try {
-      await streamChatCompletion(trimmedText, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend, controller.signal)
+      await streamChatCompletion(trimmedText, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend, controller.signal, effort)
     } catch (err) {
       if (!isAbortError(err)) {
         updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
@@ -214,7 +251,7 @@ export function ChatPanel() {
     }
 
     try {
-      await streamChatCompletion(content, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend, controller.signal)
+      await streamChatCompletion(content, selectedModel, executor, sessionKey, handleStreamEvent, historyForResend, controller.signal, effort)
     } catch (err) {
       if (!isAbortError(err)) {
         updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
@@ -291,18 +328,7 @@ export function ChatPanel() {
         <select
           id="chat-executor-select"
           value={executor}
-          onChange={(e) => {
-            const nextExecutor = e.target.value
-            setExecutor(nextExecutor)
-            setSelectedModel('')
-            setModelsError(null)
-            listModels(nextExecutor)
-              .then((result) => {
-                setModels(result.models)
-                setSelectedModel(result.models[0] ?? '')
-              })
-              .catch((err) => setModelsError(err instanceof Error ? err.message : String(err)))
-          }}
+          onChange={(e) => setExecutor(e.target.value)}
           disabled={executorOptions.length === 0}
         >
           {executorOptions.length === 0 && <option value="">No executors available</option>}
@@ -313,7 +339,7 @@ export function ChatPanel() {
           ))}
         </select>
 
-        {executor !== 'claude-code' && (
+        {models.length > 0 && (
           <>
             <label htmlFor="chat-model-select">Model</label>
             <select
@@ -332,12 +358,27 @@ export function ChatPanel() {
           </>
         )}
 
+        <label htmlFor="chat-effort-select">Effort</label>
+        <select
+          id="chat-effort-select"
+          value={effort}
+          onChange={(e) => setEffort(e.target.value as ReasoningEffort)}
+          disabled={efforts.length === 0}
+        >
+          {!efforts.includes(effort) && <option value={effort}>{effort}</option>}
+          {efforts.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+
         <button type="button" onClick={handleNewChat} disabled={sending}>
           New chat
         </button>
       </div>
       {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
-      {modelsError && executor === 'local' && <p className="error">Could not load models: {modelsError}</p>}
+      {modelsError && <p className="error">Could not load models: {modelsError}</p>}
       <div className="chat-history">
         {messages.map((message, index) => (
           <div key={index} className={`chat-message chat-message-${message.role}`}>
@@ -400,45 +441,18 @@ export function ChatPanel() {
           </div>
         ))}
       </div>
-      <div className="chat-input">
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder={editingIndex !== null ? 'Editing message...' : 'Message the local LLM...'}
-          rows={3}
-          disabled={sending}
-        />
-        {editingIndex !== null ? (
-          <div className="chat-input-edit-controls">
-            <button type="button" className="action-btn-cancel" onClick={handleCancelEdit} disabled={sending}>
-              Cancel
-            </button>
-            <button type="button" onClick={handleSend} disabled={sending || !draft.trim() || !executor}>
-              {sending ? 'Saving...' : 'Save'}
-            </button>
-          </div>
-        ) : sending ? (
-          <button type="button" className="action-btn-stop" onClick={handleStop}>
-            Stop
-          </button>
-        ) : (
-          <button onClick={handleSend} disabled={!draft.trim() || !executor}>
-            Send
-          </button>
-        )}
-      </div>
-      {sending && (
-        <p className="turn-status" aria-live="polite">
-          <span className="turn-status-spinner" aria-hidden="true" />
-          {liveTurnStatus.elapsedSeconds}s
-          {liveTurnStatus.tokens > 0 && (
-            <>
-              {' '}&middot; {liveTurnStatus.isEstimate ? '~' : ''}
-              {liveTurnStatus.tokens} tokens
-            </>
-          )}
-        </p>
-      )}
+      <ChatInputArea
+        draft={draft}
+        onDraftChange={setDraft}
+        onSend={handleSend}
+        onStop={handleStop}
+        onCancelEdit={handleCancelEdit}
+        sending={sending}
+        editingIndex={editingIndex}
+        canSend={!!executor}
+        placeholder="Message the local LLM..."
+        liveTurnStatus={liveTurnStatus}
+      />
     </div>
   )
 }

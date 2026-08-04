@@ -30,20 +30,67 @@ describe('ChatPanel — executor and model selection', () => {
     expect(screen.getByRole('option', { name: 'model-b' })).toBeInTheDocument()
   })
 
-  it('hides the model select when a non-"local" executor is selected', async () => {
+  it('hides the model select for an executor whose capabilities report no models', async () => {
     vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
-    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] })
     render(<ChatPanel />)
 
     await waitFor(() => expect(screen.getByLabelText('Executor')).toHaveValue('claude-code'))
     expect(screen.queryByLabelText('Model')).not.toBeInTheDocument()
   })
 
-  it('shows an inline error when listModels rejects, only while "local" is selected', async () => {
+  it('shows the model select for claude-code when its capabilities report models', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['sonnet', 'opus', 'haiku'] })
+    render(<ChatPanel />)
+
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('sonnet'))
+    expect(screen.getByRole('option', { name: 'opus' })).toBeInTheDocument()
+  })
+
+  it('populates the effort select from capabilities and resets it on executor change', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local', 'claude-code'] })
+    // Non-overlapping single-entry effort lists (neither containing the
+    // 'medium' initial default) so a value change here can only come from
+    // resolveEffort actually re-deriving from the newly-fetched capability,
+    // not from the prior selection happening to still be valid.
+    vi.mocked(api.listModels).mockImplementation((executor) =>
+      executor === 'claude-code'
+        ? Promise.resolve({ models: ['sonnet'], efforts: ['high'], default_effort: 'high' })
+        : Promise.resolve({ models: ['model-a'], efforts: ['low'], default_effort: 'low' }),
+    )
+    const user = userEvent.setup()
+    render(<ChatPanel />)
+
+    await waitFor(() => expect(screen.getByLabelText('Effort')).toHaveValue('low'))
+    await user.selectOptions(screen.getByLabelText('Executor'), 'claude-code')
+    await waitFor(() => expect(screen.getByLabelText('Effort')).toHaveValue('high'))
+  })
+
+  it('shows an inline error when listModels rejects', async () => {
     vi.mocked(api.listModels).mockRejectedValue(new Error('boom'))
     render(<ChatPanel />)
 
     expect(await screen.findByText('Could not load models: boom')).toBeInTheDocument()
+  })
+
+  it('sends the selected effort alongside every turn', async () => {
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'], efforts: ['low', 'medium', 'high'], default_effort: 'medium' })
+    vi.mocked(api.streamChatCompletion).mockImplementation((_content, _model, _executor, _sessionKey, onEvent) => {
+      onEvent({ content: 'ok' })
+      return Promise.resolve()
+    })
+    const user = userEvent.setup()
+    render(<ChatPanel />)
+
+    await waitFor(() => expect(screen.getByLabelText('Effort')).toHaveValue('medium'))
+    await user.selectOptions(screen.getByLabelText('Effort'), 'high')
+    await user.type(screen.getByPlaceholderText('Message the local LLM...'), 'hello')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(api.streamChatCompletion).toHaveBeenCalled())
+    const call = vi.mocked(api.streamChatCompletion).mock.calls.at(-1)!
+    expect(call[7]).toBe('high')
   })
 })
 
@@ -141,6 +188,64 @@ describe('ChatPanel — message actions', () => {
     expect(screen.queryByText(/hi back$/)).not.toBeInTheDocument()
   })
 
+})
+
+describe('ChatPanel — keyboard input', () => {
+  it('sends on Enter without needing the Send button', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.streamChatCompletion).mockResolvedValue()
+
+    render(<ChatPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('model-a'))
+
+    await user.type(screen.getByPlaceholderText('Message the local LLM...'), 'Hello there{Enter}')
+
+    expect(api.streamChatCompletion).toHaveBeenCalled()
+    const call = vi.mocked(api.streamChatCompletion).mock.calls.at(-1)!
+    expect(call[0]).toBe('Hello there')
+    expect(screen.getByPlaceholderText('Message the local LLM...')).toHaveValue('')
+  })
+
+  it('Alt+Enter inserts a newline instead of sending', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+
+    render(<ChatPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('model-a'))
+
+    const textarea = screen.getByPlaceholderText('Message the local LLM...')
+    await user.type(textarea, 'line one{Alt>}{Enter}{/Alt}line two')
+
+    expect(textarea).toHaveValue('line one\nline two')
+    expect(api.streamChatCompletion).not.toHaveBeenCalled()
+  })
+
+  it('while a reply is still streaming, Enter has no effect', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    let finishFirstSend!: () => void
+    vi.mocked(api.streamChatCompletion).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishFirstSend = resolve
+        }),
+    )
+
+    render(<ChatPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('model-a'))
+
+    const textarea = screen.getByPlaceholderText('Message the local LLM...')
+    await user.type(textarea, 'first message{Enter}')
+    expect(api.streamChatCompletion).toHaveBeenCalledTimes(1)
+    expect(textarea).toBeDisabled()
+
+    await user.type(textarea, 'typed while busy{Enter}more text')
+    expect(textarea).toHaveValue('')
+    expect(api.streamChatCompletion).toHaveBeenCalledTimes(1)
+
+    await act(async () => finishFirstSend())
+  })
 })
 
 describe('ChatPanel — streaming', () => {

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { isAbortError, listAgentExecutors, listModels } from './api'
+import { ChatInputArea } from './ChatInputArea'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
 import { ToolActivitySequence } from './ToolActivity'
@@ -898,32 +899,6 @@ export function StageConversationPanel<D, S = never>({
     void sendMessage(option)
   }
 
-  // Enter sends the reply, matching most chat UIs; Alt+Enter inserts a
-  // newline instead, for the rare multi-line reply. The newline is spliced
-  // in at the cursor explicitly (rather than left to the textarea's
-  // default handling) so the cursor lands in the right place regardless of
-  // modifier keys, since a plain, unmodified Enter is the one case a
-  // browser textarea inserts a newline for by default — Alt+Enter isn't.
-  // The textarea is disabled while sending, so this never fires mid-stream.
-  function handleDraftKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key !== 'Enter') {
-      return
-    }
-    if (e.altKey) {
-      e.preventDefault()
-      const el = e.currentTarget
-      const start = el.selectionStart ?? draft.length
-      const end = el.selectionEnd ?? draft.length
-      const next = draft.slice(0, start) + '\n' + draft.slice(end)
-      el.value = next
-      el.selectionStart = el.selectionEnd = start + 1
-      setDraft(next)
-      return
-    }
-    e.preventDefault()
-    void handleSend()
-  }
-
   // handleRequestChanges's behavior depends on draftIsEditable (see its doc
   // comment). Editable: sends the human's edited draft back to the model as
   // a single message — the comment plus the current (edited) draft as a
@@ -1211,48 +1186,18 @@ export function StageConversationPanel<D, S = never>({
       {needsCycleKickoff && (
         <p className="cycle-boundary-notice">Nothing&apos;s been said about this attempt yet — reply below to have the agent take a look.</p>
       )}
-      <div className="chat-input">
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleDraftKeyDown}
-          placeholder={editingIndex !== null ? 'Editing message...' : 'Reply...'}
-          rows={3}
-          disabled={sending}
-        />
-        {editingIndex !== null ? (
-          <div className="chat-input-edit-controls">
-            <button type="button" className="action-btn-cancel" onClick={handleCancelEdit} disabled={sending}>
-              Cancel
-            </button>
-            <button type="button" onClick={handleSend} disabled={sending || !draft.trim()}>
-              {sending ? 'Saving...' : 'Save'}
-            </button>
-          </div>
-        ) : sending ? (
-          <button type="button" className="action-btn-stop" onClick={handleStop}>
-            Stop
-          </button>
-        ) : (
-          <button type="button" onClick={handleSend} disabled={!draft.trim()}>
-            Send
-          </button>
-        )}
-      </div>
-      {sending ? (
-        <p className="turn-status" aria-live="polite">
-          <span className="turn-status-spinner" aria-hidden="true" />
-          {liveTurnStatus.elapsedSeconds}s
-          {liveTurnStatus.tokens > 0 && (
-            <>
-              {' '}&middot; {liveTurnStatus.isEstimate ? '~' : ''}
-              {liveTurnStatus.tokens} tokens
-            </>
-          )}
-        </p>
-      ) : (
-        <p className="chat-input-hint">Enter to send &middot; Alt+Enter for a new line</p>
-      )}
+      <ChatInputArea
+        draft={draft}
+        onDraftChange={setDraft}
+        onSend={handleSend}
+        onStop={handleStop}
+        onCancelEdit={handleCancelEdit}
+        sending={sending}
+        editingIndex={editingIndex}
+        canSend={true}
+        placeholder="Reply..."
+        liveTurnStatus={liveTurnStatus}
+      />
       </>
       )}
 

@@ -17,6 +17,7 @@ import type {
   ModelsListResult,
   Project,
   ProjectListResult,
+  ReasoningEffort,
   RequirementsDraft,
   ReviewDiffResult,
   ReviewDraft,
@@ -326,10 +327,11 @@ async function streamSSE<T>(res: Response, onEvent: (event: T) => void): Promise
 // lifetime of one ChatPanel mount) — unlike postStageMessage's stage
 // conversations, the client never resends prior turns. executor selects
 // which registered agentRunners entry produces the reply (e.g. "local",
-// "claude-code" — see AgentExecutorsListResult); model is only honored by
-// model-selectable executors. Rejects if the request itself fails to start
-// (bad status, no body); once streaming begins, upstream failures surface
-// as a final event with `error` set (see ChatStreamEvent), not a rejection.
+// "claude-code" — see AgentExecutorsListResult); model/effort are only
+// honored by executors that advertise them (ExecutorCapability.models/
+// efforts). Rejects if the request itself fails to start (bad status, no
+// body); once streaming begins, upstream failures surface as a final event
+// with `error` set (see ChatStreamEvent), not a rejection.
 export async function streamChatCompletion(
   content: string,
   model: string,
@@ -338,8 +340,9 @@ export async function streamChatCompletion(
   onEvent: (event: ChatStreamEvent) => void,
   history?: ChatHistoryEntry[],
   signal?: AbortSignal,
+  effort?: ReasoningEffort,
 ): Promise<void> {
-  const body: ChatCompletionRequestBody = { content, model, executor, session_key: sessionKey, history }
+  const body: ChatCompletionRequestBody = { content, model, executor, session_key: sessionKey, history, effort }
   const res = await fetch('/api/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

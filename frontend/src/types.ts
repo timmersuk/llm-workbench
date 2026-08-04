@@ -173,6 +173,7 @@ export interface ChatCompletionRequestBody {
   // sending it right after an eviction is what makes the correction stick,
   // since the server has no other durable copy of free chat's history.
   history?: ChatHistoryEntry[]
+  effort?: ReasoningEffort
 }
 
 // ChatHistoryEntry is the minimal wire shape internal/api/chat.go's
