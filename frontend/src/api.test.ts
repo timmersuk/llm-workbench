@@ -23,6 +23,7 @@ import {
   regenerateTaskDraftMessage,
   reviseRequirements,
   revisePlan,
+  startExecution,
   startTaskDraftConversation,
   streamChatCompletion,
   updateProject,
@@ -366,6 +367,17 @@ describe('streaming (via streamChatCompletion)', () => {
 })
 
 describe('streamChatCompletion / postStageMessage request shape', () => {
+  it('startExecution POSTs the selected model with the executor', async () => {
+    const fetchMock = stubFetch(sseResponse(['data: {"type":"done"}\n\n']))
+    await startExecution('demo project', 'task one', 'codex', vi.fn(), undefined, undefined, 'gpt-5.4')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/demo%20project/tasks/task%20one/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ executor: 'codex', model: 'gpt-5.4', continue_from_execution_id: undefined }),
+      signal: undefined,
+    })
+  })
+
   it('streamChatCompletion POSTs content+model+executor+session_key to /api/v1/chat/completions', async () => {
     const fetchMock = stubFetch(sseResponse(['data: {"content":"hi"}\n\n']))
     await streamChatCompletion('hello', 'my-model', 'local', 'sess-1', vi.fn())

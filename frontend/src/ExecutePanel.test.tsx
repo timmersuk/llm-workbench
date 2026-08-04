@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ExecutePanel } from './ExecutePanel'
 import * as api from './api'
@@ -45,6 +45,7 @@ function makeReview(overrides: Partial<Review> = {}): Review {
 beforeEach(() => {
   vi.mocked(api.listExecutions).mockResolvedValue({ executions: [] })
   vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
+  vi.mocked(api.listModels).mockResolvedValue({ models: [] })
   vi.mocked(api.getContinuableExecution).mockResolvedValue({ execution_id: '' })
   vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
 })
@@ -77,6 +78,59 @@ describe('ExecutePanel — past executions', () => {
 })
 
 describe('ExecutePanel — running an execution', () => {
+  it('handles a null model list without crashing the task page', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['codex'] })
+    vi.mocked(api.listModels).mockResolvedValue({ models: null } as never)
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByLabelText('Executor')).toHaveValue('codex')
+    await act(async () => undefined)
+    expect(screen.queryByLabelText('Model')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run Execution' })).toBeDisabled()
+    expect(consoleError).not.toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
+  it('does not allow Codex execution until model discovery supplies a selection', async () => {
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['codex'] })
+    vi.mocked(api.listModels).mockImplementation(() => new Promise(() => undefined))
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByLabelText('Executor')).toHaveValue('codex')
+    expect(screen.getByRole('button', { name: 'Run Execution' })).toBeDisabled()
+  })
+
+  it('offers the models supported by the selected Codex executor', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['codex'] })
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['gpt-5.3-codex', 'gpt-5.4'] })
+    vi.mocked(api.startExecution).mockResolvedValue()
+
+    render(<ExecutePanel projectId={projectId} taskId={taskId} onExecuted={vi.fn()} />)
+
+    expect(await screen.findByLabelText('Executor')).toHaveValue('codex')
+    const modelSelect = await screen.findByLabelText('Model')
+    expect(modelSelect).toHaveValue('gpt-5.3-codex')
+    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeInTheDocument()
+    await user.selectOptions(modelSelect, 'gpt-5.4')
+    await user.click(screen.getByRole('button', { name: 'Run Execution' }))
+
+    await waitFor(() =>
+      expect(api.startExecution).toHaveBeenCalledWith(
+        projectId,
+        taskId,
+        'codex',
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        'gpt-5.4',
+      ),
+    )
+  })
+
   it('streams text, tool_call, and tool_result events into the trace', async () => {
     const user = userEvent.setup()
     vi.mocked(api.startExecution).mockImplementation(async (_projectId, _taskId, _executor, onEvent) => {

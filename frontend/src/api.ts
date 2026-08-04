@@ -264,7 +264,9 @@ export async function getHealthStatus(): Promise<HealthStatus> {
 }
 
 export function listModels(executor = 'local'): Promise<ModelsListResult> {
-	return getJSON<ModelsListResult>(`/api/v1/chat/models?executor=${encodeURIComponent(executor)}`)
+	return getJSON<ModelsListResult>(`/api/v1/chat/models?executor=${encodeURIComponent(executor)}`).then((result) => ({
+		models: result.models ?? [],
+	}))
 }
 
 // listAgentExecutors reports which registered agentRunners entries
@@ -545,9 +547,9 @@ export async function regenerateTaskDraftMessage(
 // tool_result activity via onEvent (internal/api/execution.go). The final
 // event has type "done" and carries the recorded Execution outcome — the
 // caller should reload the task afterward, since a successful run
-// auto-advances task.stage to "review" server-side. executor is currently
-// only meaningfully "claude-code" — no picker is offered client-side (see
-// ExecutePanel). continueFromExecutionId is the human's choice to continue
+// auto-advances task.stage to "review" server-side. model is the selected
+// model for model-selectable executors such as Codex. continueFromExecutionId
+// is the human's choice to continue
 // from a prior failed/partial execution's branch (getContinuableExecution's
 // hint, echoed back) — omitted (undefined) for a normal fresh-from-main run.
 export async function startExecution(
@@ -557,11 +559,12 @@ export async function startExecution(
   onEvent: (event: ExecuteStreamEvent) => void,
   signal?: AbortSignal,
   continueFromExecutionId?: string,
+  model?: string,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ executor, continue_from_execution_id: continueFromExecutionId || undefined }),
+    body: JSON.stringify({ executor, model, continue_from_execution_id: continueFromExecutionId || undefined }),
     signal,
   })
   await streamSSE<ExecuteStreamEvent>(res, onEvent)

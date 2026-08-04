@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, listReviews, startExecution } from './api'
+import { getContinuableExecution, isAbortError, listAgentExecutors, listExecutions, listModels, listReviews, startExecution } from './api'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ToolActivitySequence } from './ToolActivity'
@@ -38,6 +38,9 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   const [runError, setRunError] = useState<string | null>(null)
   const [executor, setExecutor] = useState('')
   const [executorOptions, setExecutorOptions] = useState<string[]>([])
+  const [models, setModels] = useState<string[]>([])
+  const [selectedModel, setSelectedModel] = useState('')
+  const [modelsError, setModelsError] = useState<string | null>(null)
   // executorsError is set when listAgentExecutors itself fails (server
   // unreachable, 500, etc.) — distinct from a successful response reporting
   // zero healthy executors, which is a legitimate state and leaves this
@@ -115,6 +118,34 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
     }
   }, [projectId, taskId])
 
+  useEffect(() => {
+    let cancelled = false
+    setModels([])
+    setSelectedModel('')
+    setModelsError(null)
+    if (!executor) {
+      return () => {
+        cancelled = true
+      }
+    }
+    listModels(executor)
+      .then((result) => {
+        if (!cancelled) {
+          const availableModels = result.models ?? []
+          setModels(availableModels)
+          setSelectedModel(availableModels[0] ?? '')
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setModelsError(err instanceof Error ? err.message : String(err))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [executor])
+
   function handleStreamEvent(event: ExecuteStreamEvent) {
     switch (event.type) {
       case 'text':
@@ -157,7 +188,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
   }
 
   async function handleRun() {
-    if (running || !executor) {
+    if (running || !executor || (executor === 'codex' && !selectedModel)) {
       return
     }
     setTrace([])
@@ -168,7 +199,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
 
     try {
       const continueFrom = continuableExecutionId && continueChoice === 'continue' ? continuableExecutionId : undefined
-      await startExecution(projectId, taskId, executor, handleStreamEvent, controller.signal, continueFrom)
+      await startExecution(projectId, taskId, executor, handleStreamEvent, controller.signal, continueFrom, selectedModel)
     } catch (err) {
       if (!isAbortError(err)) {
         setRunError(err instanceof Error ? err.message : String(err))
@@ -227,9 +258,23 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
             </option>
           ))}
         </select>
+
+        {models.length > 0 && (
+          <>
+            <label htmlFor="execute-model">Model</label>
+            <select id="execute-model" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={running}>
+              {models.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
       </div>
 
       {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
+      {modelsError && <p className="error">Could not load models for {executorLabels[executor] ?? executor}: {modelsError}</p>}
 
       <ExecutionHistoryList projectId={projectId} taskId={taskId} executions={pastExecutions} />
 
@@ -288,7 +333,7 @@ export function ExecutePanel({ projectId, taskId, onExecuted }: ExecutePanelProp
             Stop
           </button>
         ) : (
-          <button type="button" onClick={handleRun} disabled={!executor}>
+          <button type="button" onClick={handleRun} disabled={!executor || (executor === 'codex' && !selectedModel)}>
             {isReviewContinuation ? 'Continue from Review Feedback' : 'Run Execution'}
           </button>
         )}
