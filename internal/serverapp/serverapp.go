@@ -9,6 +9,7 @@ package serverapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -49,7 +50,6 @@ type Config struct {
 	LogFormat                     string
 	LLMBaseURL                    string
 	LLMAPIKey                     string
-	LLMModel                      string
 	LLMDefaultEffort              agentrunner.ReasoningEffort
 	StageConversationSeedExecutor string
 	ExecutionSeedExecutor         string
@@ -114,7 +114,6 @@ func LoadConfig() Config {
 		LogFormat:                     utils.GetEnvDefault("LOG_FORMAT", "json"),
 		LLMBaseURL:                    utils.GetEnvDefault("LLM_BASE_URL", "http://localhost:11434/v1"),
 		LLMAPIKey:                     utils.GetEnvDefault("LLM_API_KEY", ""),
-		LLMModel:                      utils.GetEnvDefault("LLM_MODEL", "llama3"),
 		LLMDefaultEffort:              agentrunner.ReasoningEffort(utils.GetEnvDefault("LLM_DEFAULT_EFFORT", "medium")),
 		StageConversationSeedExecutor: utils.GetEnvDefault("STAGE_CONVERSATION_SEED_EXECUTOR", "local"),
 		ExecutionSeedExecutor:         utils.GetEnvDefault("EXECUTION_SEED_EXECUTOR", "claude-code"),
@@ -254,8 +253,7 @@ func Run(ctx context.Context, cfg Config) error {
 		"codex":       agentrunner.NewCodexRunner(cfg.AgentTimeout, cfg.AgentExecutionTimeout, cfg.ReposRoot, knowledgeStore),
 		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
 			client: chat.NewOpenAIClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMTimeout),
-			model:  cfg.LLMModel,
-		}, knowledgeStore, agentrunner.Selection{Executor: "local", Model: cfg.LLMModel, Effort: cfg.LLMDefaultEffort}),
+		}, knowledgeStore, agentrunner.Selection{Executor: "local", Effort: cfg.LLMDefaultEffort}),
 	}
 	if cfg.StageConversationSeedExecutor == "" {
 		cfg.StageConversationSeedExecutor = "local"
@@ -291,7 +289,6 @@ func Run(ctx context.Context, cfg Config) error {
 		"workspaceRoot": cfg.WorkspaceRoot,
 		"dataRepoURL":   cfg.DataRepoURL,
 		"llmBaseURL":    cfg.LLMBaseURL,
-		"llmModel":      cfg.LLMModel,
 		"buildID":       cfg.BuildID,
 	}).Info("starting llm-workbench server")
 
@@ -355,26 +352,45 @@ func configureLogging(level, format string) {
 	}
 }
 
-// defaultModelCompleter fills in the configured default model for requests
-// that don't specify one, since M1 targets a single configured provider.
+// defaultModelCompleter fills in a default model for requests that don't
+// specify one, by asking the wrapped client which models it actually serves
+// (client.ListModels) and using the first one — there is no separately
+// configured "default model" to drift out of sync with the live endpoint.
 // It holds chat.ChatClient (the interface), never the concrete
 // implementation, so it works regardless of which ChatClient is configured.
 type defaultModelCompleter struct {
 	client chat.ChatClient
-	model  string
+}
+
+func (c defaultModelCompleter) resolveModel(ctx context.Context, model string) (string, error) {
+	if model != "" {
+		return model, nil
+	}
+	models, err := c.client.ListModels(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolving default model: %w", err)
+	}
+	if len(models) == 0 {
+		return "", errors.New("resolving default model: LLM endpoint reports no available models")
+	}
+	return models[0], nil
 }
 
 func (c defaultModelCompleter) CreateChatCompletion(ctx context.Context, req chat.CompletionRequest) (chat.CompletionResponse, error) {
-	if req.Model == "" {
-		req.Model = c.model
+	model, err := c.resolveModel(ctx, req.Model)
+	if err != nil {
+		return chat.CompletionResponse{}, err
 	}
+	req.Model = model
 	return c.client.CreateChatCompletion(ctx, req)
 }
 
 func (c defaultModelCompleter) StreamChatCompletion(ctx context.Context, req chat.CompletionRequest, onDelta func(chat.Delta) error) error {
-	if req.Model == "" {
-		req.Model = c.model
+	model, err := c.resolveModel(ctx, req.Model)
+	if err != nil {
+		return err
 	}
+	req.Model = model
 	return c.client.StreamChatCompletion(ctx, req, onDelta)
 }
 

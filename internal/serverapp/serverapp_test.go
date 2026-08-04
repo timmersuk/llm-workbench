@@ -35,7 +35,6 @@ func testConfig(t *testing.T) Config {
 		LogLevel:                      "error",
 		LogFormat:                     "text",
 		LLMBaseURL:                    "http://127.0.0.1:1",
-		LLMModel:                      "test-model",
 		LLMTimeout:                    time.Second,
 		AgentTimeout:                  time.Second,
 		AgentExecutionTimeout:         time.Second,

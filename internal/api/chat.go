@@ -108,6 +108,7 @@ type chatCompletionRequest struct {
 	Executor   string         `json:"executor,omitempty"`
 	SessionKey string         `json:"session_key"`
 	History    []chat.Message `json:"history,omitempty"`
+	Effort     string         `json:"effort,omitempty"`
 }
 
 func (s *Server) handleChatCompletions() http.HandlerFunc {
@@ -156,11 +157,12 @@ func (s *Server) handleChatCompletions() http.HandlerFunc {
 		// directory rather than one specific repo. ChatClientRunner
 		// ignores this field entirely.
 		_, err := runner.Run(r.Context(), agentrunner.RunInput{
-			SessionKey:  req.SessionKey,
-			Workspace:   s.ReposRoot,
-			UserMessage: req.Content,
-			Model:       req.Model,
-			History:     req.History,
+			SessionKey:      req.SessionKey,
+			Workspace:       s.ReposRoot,
+			UserMessage:     req.Content,
+			Model:           req.Model,
+			History:         req.History,
+			ReasoningEffort: agentrunner.ReasoningEffort(req.Effort),
 		}, func(d chat.Delta) error {
 			writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent, Usage: usageEvent(d.Usage)})
 			return nil

@@ -22,7 +22,7 @@ func main() {
 func run(ctx context.Context) error {
 	cfg := serverapp.LoadConfig()
 	runners := map[string]agentrunner.AgentRunner{
-		"local":       agentrunner.NewChatClientRunner(chat.NewOpenAIClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMTimeout), nil, agentrunner.Selection{Executor: "local", Model: cfg.LLMModel, Effort: cfg.LLMDefaultEffort}),
+		"local":       agentrunner.NewChatClientRunner(chat.NewOpenAIClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMTimeout), nil, agentrunner.Selection{Executor: "local", Effort: cfg.LLMDefaultEffort}),
 		"claude-code": agentrunner.NewClaudeRunner(cfg.AgentTimeout, cfg.AgentExecutionTimeout, cfg.ReposRoot, nil),
 		"codex":       agentrunner.NewCodexRunner(cfg.AgentTimeout, cfg.AgentExecutionTimeout, cfg.ReposRoot, nil),
 	}
