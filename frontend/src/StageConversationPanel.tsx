@@ -332,11 +332,6 @@ export function StageConversationPanel<D, S = never>({
   // conversation (and models/executors) — gates the explicit-start button so
   // it can't flash before we know whether the conversation is actually empty.
   const [initializing, setInitializing] = useState(true)
-  // resolvedStart holds the model/executor the mount effect settled on, so a
-  // later Start click fires with the same values auto-start would have used
-  // (reading selectedModel/executor state is fine post-init, but this keeps
-  // the manual and automatic paths identical).
-  const resolvedStart = useRef({ model: '', executor: '' })
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [models, setModels] = useState<string[]>([])
@@ -549,7 +544,6 @@ export function StageConversationPanel<D, S = never>({
       if (cancelled) {
         return
       }
-      resolvedStart.current = { model: resolvedModel, executor: resolvedExecutor }
       setInitializing(false)
 
       // A brand-new conversation has nothing for the human to reply to —
@@ -754,14 +748,15 @@ export function StageConversationPanel<D, S = never>({
     }
   }
 
-  // handleStart fires the opening turn for an autoStart=false panel (Review),
-  // using the model/executor the mount effect resolved — the explicit analog
-  // of the automatic startConversation call GrillMe/Planning make on mount.
+  // handleStart fires the opening turn for an autoStart=false panel using the
+  // values currently shown in the selectors. The human may have changed them
+  // after initialization, and that explicit choice must win over the initial
+  // defaults the mount effect resolved.
   async function handleStart() {
     if (sending) {
       return
     }
-    await startConversation(resolvedStart.current.model, resolvedStart.current.executor)
+    await startConversation(selectedModel, executor)
   }
 
   async function handleSend() {

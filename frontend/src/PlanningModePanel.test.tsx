@@ -28,6 +28,33 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 }
 
 describe('PlanningModePanel', () => {
+  it('starts with the executor the user selected after initialization', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code', 'codex'] })
+    vi.mocked(api.getStageConversation).mockResolvedValue({ stage: 'planning', messages: [] })
+    vi.mocked(api.startStageConversation).mockResolvedValue()
+
+    render(<PlanningModePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    const executorSelect = await screen.findByLabelText('Executor')
+    await waitFor(() => expect(executorSelect).toHaveValue('claude-code'))
+    await user.selectOptions(executorSelect, 'codex')
+    await user.click(screen.getByRole('button', { name: 'Start Planning' }))
+
+    await waitFor(() =>
+      expect(api.startStageConversation).toHaveBeenCalledWith(
+        projectId,
+        taskId,
+        'planning',
+        'model-a',
+        'codex',
+        expect.anything(),
+        expect.anything(),
+      ),
+    )
+  })
+
   it('mounts and renders the model select and empty transcript, waiting for an explicit Start Planning', async () => {
     vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
     vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['local'] })
