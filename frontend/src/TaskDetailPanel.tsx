@@ -270,9 +270,11 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
         </CollapsibleSection>
       )}
 
-      <TimelinePanel projectId={projectId} taskId={task.id} />
+      <CollapsibleSection title="Defaults" defaultOpen={false}>
+        <AgentDefaultsEditor projectId={projectId} task={task} onSaved={setTask} />
+      </CollapsibleSection>
 
-      <AgentDefaultsEditor projectId={projectId} task={task} onSaved={setTask} />
+      <TimelinePanel projectId={projectId} taskId={task.id} />
 
       {reviseError && <p className="error">{reviseError}</p>}
 

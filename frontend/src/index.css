@@ -299,6 +299,59 @@ th {
   color: var(--text);
 }
 
+/* agent-defaults-editor (TaskDetailPanel's "Defaults" CollapsibleSection,
+   AgentDefaultsEditor.tsx) — two agent-default-group fieldsets (one per
+   stage_conversation/execution selection) plus a Save button, styled after
+   .continue-choice's fieldset/legend and .chat-model-row's select, the
+   established patterns for a labeled control group and a themed <select>
+   respectively, rather than left as unstyled native form controls. */
+.agent-defaults-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-default-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.agent-default-group legend {
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.agent-default-group select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.agent-defaults-editor button {
+  align-self: flex-start;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.agent-defaults-editor button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .continue-choice {
   display: flex;
   align-items: center;

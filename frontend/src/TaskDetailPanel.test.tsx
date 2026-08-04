@@ -102,11 +102,12 @@ function stubNoContextOrPlan() {
     repository_configured: false,
     status: { behind_origin: { known: false, behind: 0 }, dirty: { known: false, dirty: false } },
   })
-  // TaskDetailPanel's always-visible Defaults section (AgentDefaultsEditor)
-  // fetches executor capabilities on mount regardless of stage; default to
-  // one capability per seed executor so every existing test's stubbed task
-  // (whose agent_defaults reference "local"/"claude-code") renders a valid,
-  // non-stale Defaults section unless a test overrides this itself.
+  // TaskDetailPanel's Defaults section (AgentDefaultsEditor, collapsed by
+  // default but still mounted) fetches executor capabilities on mount
+  // regardless of stage; default to one capability per seed executor so
+  // every existing test's stubbed task (whose agent_defaults reference
+  // "local"/"claude-code") renders a valid, non-stale Defaults section
+  // unless a test overrides this itself.
   vi.mocked(api.listExecutorCapabilities).mockResolvedValue({
     executors: [
       { name: 'local', models: ['test-model'], efforts: ['low', 'medium', 'high'], default_model: 'test-model', default_effort: 'medium' },
@@ -392,10 +393,14 @@ describe('TaskDetailPanel — summary/interview zone separation', () => {
 
   it('omits the Requirements section entirely when there is nothing to summarize', async () => {
     stubNoContextOrPlan()
-    const { container } = render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('requirements')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByTestId('grillme-panel')
-    expect(container.querySelector('.task-section')).not.toBeInTheDocument()
+    // Requirements/Context/Plan are conditionally rendered only when there's
+    // content to summarize (unlike Defaults, which is always present) — so
+    // this checks specifically for the Requirements section's own summary
+    // text rather than any .task-section, which Defaults would also match.
+    expect(screen.queryByText('Requirements')).not.toBeInTheDocument()
   })
 })
 

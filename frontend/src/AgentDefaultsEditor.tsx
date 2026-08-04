@@ -34,15 +34,15 @@ export function AgentDefaultsEditor({ projectId, task, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null)
   useEffect(() => { listExecutorCapabilities().then((r) => setCapabilities(r.executors)).catch((e) => setError(String(e))) }, [])
   useEffect(() => setValue(task.agent_defaults), [task])
-  if (!value) return <section><h3>Defaults</h3><p className="error">This task has no agent defaults. Run the explicit migration or provide per-turn overrides.</p></section>
+  if (!value) return <p className="error">This task has no agent defaults. Run the explicit migration or provide per-turn overrides.</p>
   const valid = [value.stage_conversation, value.execution].every((selection) => {
     const c = capabilities.find((entry) => entry.name === selection.executor)
     return c && (c.models.length === 0 ? selection.model === '' : c.models.includes(selection.model)) && c.efforts.includes(selection.effort)
   })
-  return <section><h3>Defaults</h3>
+  return <div className="agent-defaults-editor">
     <SelectionEditor label="Stage conversations" value={value.stage_conversation} capabilities={capabilities} onChange={(stage_conversation) => setValue({ ...value, stage_conversation })} />
     <SelectionEditor label="Execute runs" value={value.execution} capabilities={capabilities} onChange={(execution) => setValue({ ...value, execution })} />
     <button disabled={!valid} onClick={() => updateProjectTask(projectId, task.id, { title: task.title, objective: task.objective, constraints: task.constraints, assumptions: task.assumptions, success_criteria: task.success_criteria, references: task.references, agent_defaults: value }).then(onSaved).catch((e) => setError(String(e)))}>Save defaults</button>
     {error && <p className="error">{error}</p>}
-  </section>
+  </div>
 }
