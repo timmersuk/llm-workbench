@@ -35,6 +35,12 @@ doesn't have to be re-derived or re-litigated later.
 
 ## Configuration
 
+* `STAGE_CONVERSATION_SEED_EXECUTOR` (default `local`) and
+  `EXECUTION_SEED_EXECUTOR` (default `claude-code`) independently seed new
+  tasks. `LLM_DEFAULT_EFFORT` (default `medium`) accompanies `LLM_MODEL` for
+  local capabilities. Seed capability/default triples are validated during
+  server construction; task reads never initialize missing defaults.
+
 * Env vars are read once, in `loadConfig() config`, called at the top of
   `main()` before any component is constructed (`cmd/server/main.go`).
   Names are `SCREAMING_SNAKE_CASE` with no prefix namespacing (`HTTP_ADDR`,

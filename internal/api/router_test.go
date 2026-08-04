@@ -24,6 +24,14 @@ func testFrontendFS() fstest.MapFS {
 	}
 }
 
+func TestRouter_RemovedChatModelsRouteReturns404(t *testing.T) {
+	router := NewRouter(new(mockProjectStore), new(mockTaskStore), nil, nil, "", nil, nil, testFrontendFS(), "test")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
 func TestRouter_Healthcheck(t *testing.T) {
 	runner := new(mockAgentRunner)
 	runner.On("CheckHealth", mock.Anything).Return(nil)

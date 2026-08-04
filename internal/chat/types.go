@@ -55,9 +55,10 @@ type ToolCallFunction struct {
 // empty, this is exactly the request shape that existed before tool-calling
 // support was added.
 type CompletionRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Tools    []Tool    `json:"tools,omitempty"`
+	Model           string    `json:"model"`
+	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+	Messages        []Message `json:"messages"`
+	Tools           []Tool    `json:"tools,omitempty"`
 	// MaxTokens caps the tokens generated per response. Zero omits the field
 	// (provider default). The tool loop sets it so a misbehaving local model
 	// — one that spirals or emits the same tool call unbounded — cannot

@@ -3,10 +3,11 @@ import type { KeyboardEvent, ReactNode } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { isAbortError, listAgentExecutors, listModels } from './api'
 import { MarkdownMessage } from './MarkdownMessage'
+import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
 import { ToolActivitySequence } from './ToolActivity'
 import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
 import type { ToolActivityBlock } from './toolActivityBlocks'
-import type { ChatStreamEvent, Conversation, ConversationMessage } from './types'
+import type { AgentSelection, ChatStreamEvent, Conversation, ConversationMessage, ReasoningEffort } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
@@ -188,12 +189,14 @@ export interface StageConversationOps {
     content: string,
     model: string,
     executor: string,
+    effort: string,
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
   ) => Promise<void>
   startConversation: (
     model: string,
     executor: string,
+    effort: string,
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
   ) => Promise<void>
@@ -203,6 +206,7 @@ export interface StageConversationOps {
     content: string,
     model: string,
     executor: string,
+    effort: string,
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
   ) => Promise<void>
@@ -286,21 +290,23 @@ interface StageConversationPanelProps<D, S = never> {
   // secondaryDraft, if set, additionally tracks and renders a second Draft
   // tool independent of the main one — see SecondaryDraftConfig.
   secondaryDraft?: SecondaryDraftConfig<S>
+  defaultSelection?: AgentSelection
 }
 
-// localChatOption represents the local-LLM chat path (server-side, "" maps
-// to the same health-checked "local" AgentRunner every other executor goes
-// through — resolveStageStreamTarget, internal/api/stage_conversation.go).
-// It is only ever added to executorOptions when listAgentExecutors reports
+// localChatOption represents the local-LLM chat path — submitted and
+// persisted as the explicit executor key "local" (task-scoped selection has
+// no empty-string sentinel; resolveSelection, internal/api/selection.go,
+// treats a submitted executor of "" as "no override," not "local"). It is
+// only ever added to executorOptions when listAgentExecutors reports
 // "local" itself as healthy — offering it unconditionally would let the
 // human pick an executor that's known not to be responding.
-const localChatOption = { value: '', label: 'Local LLM chat' }
+const localChatOption = { value: 'local', label: 'Local LLM chat' }
 
 // executorLabels maps an agent executor key (internal/agentrunner) to its
 // display label, for whichever keys listAgentExecutors currently reports
 // healthy — an executor that isn't live right now is never offered, so
 // selecting one can't 400.
-const executorLabels: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex CLI' }
+const executorLabels: Record<string, string> = { local: 'Local LLM chat', 'claude-code': 'Claude Code', codex: 'Codex CLI' }
 
 // StageConversationPanel is the mechanism shared by GrillMe, Planning Mode,
 // and Review (CONTEXT.md): a persisted Conversation transcript, a message
@@ -325,6 +331,7 @@ export function StageConversationPanel<D, S = never>({
   draftIsEditable = true,
   secondaryDraft,
   normalizeDraft,
+  defaultSelection,
 }: StageConversationPanelProps<D, S>) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -336,8 +343,24 @@ export function StageConversationPanel<D, S = never>({
   const [sending, setSending] = useState(false)
   const [models, setModels] = useState<string[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
-  const [selectedModel, setSelectedModel] = useState('')
-  const [executor, setExecutor] = useState('')
+  const [selectedModel, setSelectedModel] = useState(defaultSelection?.model ?? '')
+  // Without a defaultSelection (no persisted task default to initialize
+  // from — see the mount effect below), executor starts genuinely unset
+  // ("") so the falsy check there can still auto-prefer "claude-code" once
+  // it's reported healthy; the submitted/displayed value only ever becomes
+  // the real "local" key once something (that auto-preference, an explicit
+  // defaultSelection, or the human) actually sets it.
+  const [executor, setExecutor] = useState(defaultSelection?.executor ?? '')
+  const [effort, setEffort] = useState<ReasoningEffort>(defaultSelection?.effort ?? 'medium')
+  // efforts mirrors models: the currently-selected executor's advertised
+  // effort choices (ModelsListResult.efforts, ultimately
+  // agentrunner.ExecutorCapabilities.Efforts), narrowed on every executor
+  // change the same way models is. Starts as the full low/medium/high set
+  // before capability data has loaded, or when a resolved executor's
+  // capability entry doesn't carry `efforts` at all (an older/mocked
+  // ModelsListResult) — never empty, so the effort select is never left
+  // with nothing to offer.
+  const [efforts, setEfforts] = useState<ReasoningEffort[]>(ALL_REASONING_EFFORTS)
   // executorOptions starts empty rather than defaulting to [localChatOption]
   // — until listAgentExecutors actually reports "local" healthy, offering it
   // would be the same silent-default bug this and executorsError below both
@@ -492,11 +515,14 @@ export function StageConversationPanel<D, S = never>({
 
       let resolvedModel = ''
       try {
-        const result = await listModels()
+        const result = await listModels(defaultSelection?.executor ?? 'local')
         if (!cancelled) {
           setModels(result.models)
           resolvedModel = result.models[0] ?? ''
           setSelectedModel((current) => current || resolvedModel)
+          const resolvedEfforts = result.efforts ?? ALL_REASONING_EFFORTS
+          setEfforts(resolvedEfforts)
+          setEffort((current) => resolveEffort(current, resolvedEfforts, result.default_effort))
         }
       } catch (err) {
         if (!cancelled) {
@@ -508,13 +534,8 @@ export function StageConversationPanel<D, S = never>({
       try {
         const result = await listAgentExecutors()
         if (!cancelled) {
-          // "local" resolves server-side to the exact same health-checked
-          // AgentRunner as the "" (localChatOption) value — resolveStageStreamTarget
-          // maps "" to defaultChatExecutor ("local") before the lookup — so
-          // its presence here is the live signal for whether local chat is
-          // actually reachable right now. Split out (not just mapped
-          // alongside the rest) so it's represented by localChatOption's ""
-          // value instead of a second, redundant "local"-keyed entry.
+          // localChatOption already carries the real "local" key — no
+          // separate sentinel value to fold it out of the rest of the list.
           const localHealthy = result.executors.includes('local')
           const executors = result.executors.filter((key) => key !== 'local')
           setExecutorOptions([
@@ -522,10 +543,14 @@ export function StageConversationPanel<D, S = never>({
             ...executors.map((key) => ({ value: key, label: executorLabels[key] ?? key })),
           ])
           // claude-code can ground its questions in the actual repository
-          // (Read/Grep/Glob), unlike the local chat path, so it's preferred
-          // whenever it's healthy — the picker still lets the human switch
-          // to local chat when that's healthy too.
-          if (executors.includes('claude-code')) {
+          // (Read/Grep/Glob), unlike the local chat path, so it was
+          // preferred whenever it's healthy — but only as a standalone
+          // fallback (no defaultSelection prop at all, e.g. a caller that
+          // hasn't wired task.agent_defaults yet). Once a defaultSelection
+          // is supplied it's the explicit, persisted choice for this scope
+          // (docs/task schema v0.md's agent_defaults) and must not be
+          // silently overridden by a health-based guess.
+          if (!defaultSelection && executors.includes('claude-code')) {
             resolvedExecutor = 'claude-code'
             setExecutor((current) => current || 'claude-code')
           }
@@ -687,7 +712,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await ops.postMessage(text, selectedModel, executor, handleStreamEvent, controller.signal)
+      await ops.postMessage(text, selectedModel, executor, effort, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         // A rejection here (as opposed to a mid-stream {error} SSE event,
@@ -737,7 +762,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await ops.startConversation(model, executorKey, handleStreamEvent, controller.signal)
+      await ops.startConversation(model, executorKey, effort, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         updateLastMessage((msg) => ({ ...msg, error: err instanceof Error ? err.message : String(err) }))
@@ -801,7 +826,7 @@ export function StageConversationPanel<D, S = never>({
     abortControllerRef.current = controller
 
     try {
-      await ops.regenerateMessage(index, content, selectedModel, executor, handleStreamEvent, controller.signal)
+      await ops.regenerateMessage(index, content, selectedModel, executor, effort, handleStreamEvent, controller.signal)
     } catch (err) {
       if (!isAbortError(err)) {
         // Same reasoning as sendMessage's catch: a rejection here means
@@ -1007,6 +1032,9 @@ export function StageConversationPanel<D, S = never>({
                   .then((result) => {
                     setModels(result.models)
                     setSelectedModel(result.models[0] ?? '')
+                    const nextEfforts = result.efforts ?? ALL_REASONING_EFFORTS
+                    setEfforts(nextEfforts)
+                    setEffort((current) => resolveEffort(current, nextEfforts, result.default_effort))
                   })
                   .catch((err) => setModelsError(err instanceof Error ? err.message : String(err)))
               }}
@@ -1020,7 +1048,7 @@ export function StageConversationPanel<D, S = never>({
               ))}
             </select>
 
-            {executorOptions.length > 0 && executor !== 'claude-code' && (
+            {executorOptions.length > 0 && (
               <>
                 <label htmlFor={`stage-model-${conversationKey}`}>Model</label>
                 <select id={`stage-model-${conversationKey}`} value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={models.length === 0}>
@@ -1033,12 +1061,19 @@ export function StageConversationPanel<D, S = never>({
                 </select>
               </>
             )}
+            <label htmlFor={`stage-effort-${conversationKey}`}>Effort</label>
+            <select id={`stage-effort-${conversationKey}`} value={effort} onChange={(e) => setEffort(e.target.value as ReasoningEffort)}>
+              {!efforts.includes(effort) && <option value={effort}>{effort}</option>}
+              {efforts.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
           </div>
 
           {executorsError && <p className="error">Could not reach the server for agent executors: {executorsError}</p>}
-          {!executor && executorOptions.some((opt) => opt.value === '') && modelsError && (
-            <p className="error">Could not load models: {modelsError}</p>
-          )}
+          {executor === 'local' && modelsError && <p className="error">Could not load models: {modelsError}</p>}
         </>
       )}
 

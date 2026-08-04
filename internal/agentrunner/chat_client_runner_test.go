@@ -605,3 +605,12 @@ func TestChatClientRunner_ListModels_DelegatesToWrappedClient(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a", "b"}, models)
 }
+
+func TestChatClientRunner_Run_ForwardsReasoningEffort(t *testing.T) {
+	client := &fakeChatClient{streamContent: "done"}
+	runner := NewChatClientRunner(client, nil)
+	_, err := runner.Run(context.Background(), RunInput{SessionKey: "s", Model: "m", ReasoningEffort: EffortHigh, UserMessage: "go"}, nil)
+	require.NoError(t, err)
+	require.Len(t, client.gotRequests, 1)
+	assert.Equal(t, "high", client.gotRequests[0].ReasoningEffort)
+}

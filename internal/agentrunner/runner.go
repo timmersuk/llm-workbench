@@ -61,6 +61,10 @@ type RunInput struct {
 	// (ChatClientRunner); implementations that don't support model
 	// selection (ClaudeRunner) ignore it.
 	Model string
+	// ReasoningEffort is the provider-neutral effort requested for this
+	// invocation. Adapters translate low/medium/high to their native wire
+	// mechanism.
+	ReasoningEffort ReasoningEffort
 	// Tools are the Draft-proposing tool(s) the agent may call once a
 	// proposal is ready (stageTool in internal/api/stage_conversation.go) —
 	// the same tools the local-LLM chat path registers, so both paths
@@ -185,7 +189,8 @@ type ExecuteInput struct {
 	SystemPrompt string
 	// Model is honored only by AgentRunner implementations backed by a
 	// model-selectable provider, same convention as RunInput.Model.
-	Model string
+	Model           string
+	ReasoningEffort ReasoningEffort
 	// MaxTurns bounds tool-call round-trips for this execution, same
 	// contract as RunInput.MaxTurns: set explicitly by the caller, never
 	// defaulted inside an AgentRunner implementation. Zero means no
@@ -264,6 +269,11 @@ type AgentRunner interface {
 	// RunInput.Model, or (nil, nil) if this runner doesn't support
 	// per-request model selection at all (not an error).
 	ListModels(ctx context.Context) ([]string, error)
+
+	// Capabilities is stable selection metadata, independent of transient
+	// health. It is used both to render choices and validate persisted or
+	// submitted selections.
+	Capabilities(ctx context.Context) (ExecutorCapabilities, error)
 
 	// CloseSession discards any state this runner holds for sessionKey
 	// (cached subprocess connections, in-memory history, ...). Safe to

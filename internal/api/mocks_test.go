@@ -49,10 +49,26 @@ func (m *mockTaskStore) List(projectID string) (task.ListResult, error) {
 }
 
 func (m *mockTaskStore) Get(projectID, id string) (task.Task, error) {
+	hasExpectation := false
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "Get" {
+			hasExpectation = true
+			break
+		}
+	}
+	if !hasExpectation {
+		return task.Task{}, nil
+	}
 	args := m.Called(projectID, id)
 	var t task.Task
 	if v := args.Get(0); v != nil {
 		t = v.(task.Task)
+	}
+	if t.AgentDefaults == nil {
+		t.AgentDefaults = &task.AgentDefaults{
+			StageConversation: task.AgentSelection{Executor: "local", Effort: "medium"},
+			Execution:         task.AgentSelection{Executor: "claude-code", Effort: "medium"},
+		}
 	}
 	return t, args.Error(1)
 }
@@ -405,6 +421,10 @@ func (m *mockAgentRunner) ListModels(ctx context.Context) ([]string, error) {
 		models = v.([]string)
 	}
 	return models, args.Error(1)
+}
+
+func (m *mockAgentRunner) Capabilities(context.Context) (agentrunner.ExecutorCapabilities, error) {
+	return agentrunner.ExecutorCapabilities{Efforts: []agentrunner.ReasoningEffort{agentrunner.EffortLow, agentrunner.EffortMedium, agentrunner.EffortHigh}, DefaultEffort: agentrunner.EffortMedium}, nil
 }
 
 func (m *mockAgentRunner) CloseSession(sessionKey string) {

@@ -264,9 +264,10 @@ export async function getHealthStatus(): Promise<HealthStatus> {
 }
 
 export function listModels(executor = 'local'): Promise<ModelsListResult> {
-	return getJSON<ModelsListResult>(`/api/v1/chat/models?executor=${encodeURIComponent(executor)}`).then((result) => ({
-		models: result.models ?? [],
-	}))
+	return listExecutorCapabilities().then((result) => {
+		const capability = result.executors.find((entry) => entry.name === executor)
+		return { models: capability?.models ?? [], efforts: capability?.efforts, default_effort: capability?.default_effort }
+	})
 }
 
 // listAgentExecutors reports which registered agentRunners entries
@@ -274,7 +275,11 @@ export function listModels(executor = 'local'): Promise<ModelsListResult> {
 // executor choice the server will actually accept. Shared by both the
 // StageConversationPanel and ChatPanel pickers (see AgentExecutorsListResult).
 export function listAgentExecutors(): Promise<AgentExecutorsListResult> {
-  return getJSON<AgentExecutorsListResult>('/api/v1/agent-executors')
+  return listExecutorCapabilities().then((result) => ({ executors: result.executors.map((entry) => entry.name) }))
+}
+
+export function listExecutorCapabilities(): Promise<import('./types').ExecutorCapabilitiesResult> {
+  return getJSON<import('./types').ExecutorCapabilitiesResult>('/api/v1/agent-executors')
 }
 
 // streamSSE reads res's body as a "data: {...}\n\n"-per-line Server-Sent-
@@ -374,11 +379,12 @@ export async function postStageMessage(
   executor: string,
   onEvent: (event: ChatStreamEvent) => void,
   signal?: AbortSignal,
+  effort?: string,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, model, executor }),
+    body: JSON.stringify({ content, model, executor, effort }),
     signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
@@ -401,11 +407,12 @@ export async function startStageConversation(
   executor: string,
   onEvent: (event: ChatStreamEvent) => void,
   signal?: AbortSignal,
+  effort?: string,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, executor }),
+    body: JSON.stringify({ model, executor, effort }),
     signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
@@ -443,11 +450,12 @@ export async function regenerateStageMessage(
   executor: string,
   onEvent: (event: ChatStreamEvent) => void,
   signal?: AbortSignal,
+  effort?: string,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/messages/${index}/regenerate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, model, executor }),
+    body: JSON.stringify({ content, model, executor, effort }),
     signal,
   })
   await streamSSE<ChatStreamEvent>(res, onEvent)
@@ -560,11 +568,12 @@ export async function startExecution(
   signal?: AbortSignal,
   continueFromExecutionId?: string,
   model?: string,
+  effort?: string,
 ): Promise<void> {
   const res = await fetch(`${taskPath(projectId, taskId)}/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ executor, model, continue_from_execution_id: continueFromExecutionId || undefined }),
+    body: JSON.stringify({ executor, model, effort, continue_from_execution_id: continueFromExecutionId || undefined }),
     signal,
   })
   await streamSSE<ExecuteStreamEvent>(res, onEvent)

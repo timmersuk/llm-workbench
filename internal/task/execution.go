@@ -42,6 +42,8 @@ var ErrExecutionAlreadyExists = errors.New("execution already exists")
 type ExecutionExecutor struct {
 	Type    string `yaml:"type" json:"type"` // claude-code | codex | local | human
 	Version string `yaml:"version" json:"version"`
+	Model   string `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort  string `yaml:"effort,omitempty" json:"effort,omitempty"`
 }
 
 // ExecutionInput records what an Execution was given to work from.

@@ -36,7 +36,8 @@ func New(client completer) *Engine {
 // Config parameterizes one loop instantiation. Run and Execute differ only in
 // these values, per docs/adr/0009-shared-tool-loop-engine-for-run-and-execute.md.
 type Config struct {
-	Model string
+	Model           string
+	ReasoningEffort string
 	// Workspace is the resolved, confinement-checked root every tool operates
 	// within (ResolveWorkspace for Run, ResolveExecutionWorkspace for Execute).
 	Workspace string
@@ -132,10 +133,11 @@ turnLoop:
 		var calls []chat.ToolCall
 
 		err := e.client.StreamChatCompletion(ctx, chat.CompletionRequest{
-			Model:     cfg.Model,
-			Messages:  msgs,
-			Tools:     specs,
-			MaxTokens: cfg.MaxTokens,
+			Model:           cfg.Model,
+			ReasoningEffort: cfg.ReasoningEffort,
+			Messages:        msgs,
+			Tools:           specs,
+			MaxTokens:       cfg.MaxTokens,
 		}, func(d chat.Delta) error {
 			if d.Usage != nil {
 				totalTokens += d.Usage.TotalTokens

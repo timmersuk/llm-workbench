@@ -89,13 +89,14 @@ const knowledgeServerName = "knowledge"
 // claudecode.Client-scoped (fixed at connect time, not per-query), so a
 // client cannot be shared across keys with different workspaces/prompts.
 type ClaudeRunner struct {
-	mu             sync.Mutex
-	clients        map[string]claudecode.Client
-	inFlight       map[string]bool
-	timeout        time.Duration
-	executeTimeout time.Duration
-	reposRoot      string
-	knowledgeStore knowledgetool.Store
+	mu               sync.Mutex
+	clients          map[string]claudecode.Client
+	clientSelections map[string]Selection
+	inFlight         map[string]bool
+	timeout          time.Duration
+	executeTimeout   time.Duration
+	reposRoot        string
+	knowledgeStore   knowledgetool.Store
 	// newClient constructs a claudecode.Client from the given options —
 	// indirected (defaulting to claudecode.NewClient) purely so tests can
 	// substitute a fake client without spawning a real `claude` subprocess,
@@ -127,13 +128,14 @@ type ClaudeRunner struct {
 // tools are never registered (e.g. tests that don't care).
 func NewClaudeRunner(timeout, executeTimeout time.Duration, reposRoot string, knowledgeStore knowledgetool.Store) *ClaudeRunner {
 	return &ClaudeRunner{
-		clients:        make(map[string]claudecode.Client),
-		inFlight:       make(map[string]bool),
-		timeout:        timeout,
-		executeTimeout: executeTimeout,
-		reposRoot:      reposRoot,
-		knowledgeStore: knowledgeStore,
-		newClient:      claudecode.NewClient,
+		clients:          make(map[string]claudecode.Client),
+		clientSelections: make(map[string]Selection),
+		inFlight:         make(map[string]bool),
+		timeout:          timeout,
+		executeTimeout:   executeTimeout,
+		reposRoot:        reposRoot,
+		knowledgeStore:   knowledgeStore,
+		newClient:        claudecode.NewClient,
 	}
 }
 
@@ -169,7 +171,15 @@ func (r *ClaudeRunner) CheckHealth(_ context.Context) error {
 // models, which callers should treat as "model selection isn't offered by
 // this executor," not an error.
 func (r *ClaudeRunner) ListModels(_ context.Context) ([]string, error) {
-	return nil, nil
+	return []string{"sonnet", "opus", "haiku"}, nil
+}
+
+func (r *ClaudeRunner) Capabilities(_ context.Context) (ExecutorCapabilities, error) {
+	return ExecutorCapabilities{Name: "claude-code", Models: []string{"sonnet", "opus", "haiku"}, Efforts: []ReasoningEffort{EffortLow, EffortMedium, EffortHigh}, DefaultModel: "sonnet", DefaultEffort: EffortHigh}, nil
+}
+
+func claudeSelectionOptions(model string, effort ReasoningEffort) []claudecode.Option {
+	return []claudecode.Option{claudecode.WithModel(model), claudecode.WithEffort(claudecode.EffortLevel(effort))}
 }
 
 // CloseSession implements AgentRunner: disconnects and forgets the cached
@@ -179,6 +189,7 @@ func (r *ClaudeRunner) CloseSession(sessionKey string) {
 	client, ok := r.clients[sessionKey]
 	if ok {
 		delete(r.clients, sessionKey)
+		delete(r.clientSelections, sessionKey)
 	}
 	r.mu.Unlock()
 	if ok {
@@ -201,6 +212,7 @@ func (r *ClaudeRunner) CloseAll() {
 	r.mu.Lock()
 	clients := r.clients
 	r.clients = make(map[string]claudecode.Client)
+	r.clientSelections = make(map[string]Selection)
 	r.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -307,6 +319,7 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		claudecode.WithTools(executionTools...),
 		claudecode.WithAllowedTools(executionTools...),
 	}
+	opts = append(opts, claudeSelectionOptions(in.Model, in.ReasoningEffort)...)
 	// See clientFor's identical comment: omitting WithMaxTurns entirely
 	// (rather than passing 0) is what tells the underlying `claude` CLI not
 	// to cap turns at all.
@@ -377,7 +390,13 @@ func (r *ClaudeRunner) unlock(key string) {
 func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (claudecode.Client, error) {
 	r.mu.Lock()
 	client, ok := r.clients[key]
+	priorSelection, selectionKnown := r.clientSelections[key]
 	r.mu.Unlock()
+	currentSelection := Selection{Model: in.Model, Effort: in.ReasoningEffort}
+	if ok && selectionKnown && priorSelection != currentSelection {
+		r.CloseSession(key)
+		ok = false
+	}
 	if ok {
 		return client, nil
 	}
@@ -389,7 +408,7 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	if in.ResumeSessionID != "" {
 		client, err := r.buildAndConnectClient(ctx, in, in.ResumeSessionID)
 		if err == nil {
-			return r.cacheClient(key, client), nil
+			return r.cacheClient(key, client, currentSelection), nil
 		}
 		if !isSessionNotFoundError(err) {
 			return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
@@ -403,15 +422,16 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	if err != nil {
 		return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
 	}
-	return r.cacheClient(key, client), nil
+	return r.cacheClient(key, client, currentSelection), nil
 }
 
 // cacheClient records client as key's live session and returns it —
 // factored out of clientFor purely so both the resume and fallback connect
 // paths share the exact same lock/store sequence.
-func (r *ClaudeRunner) cacheClient(key string, client claudecode.Client) claudecode.Client {
+func (r *ClaudeRunner) cacheClient(key string, client claudecode.Client, selection Selection) claudecode.Client {
 	r.mu.Lock()
 	r.clients[key] = client
+	r.clientSelections[key] = selection
 	r.mu.Unlock()
 	return client
 }
@@ -439,6 +459,7 @@ func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, r
 		claudecode.WithSystemPrompt(systemPrompt),
 		claudecode.WithPartialStreaming(),
 	)
+	opts = append(opts, claudeSelectionOptions(in.Model, in.ReasoningEffort)...)
 	// WithMaxTurns is only added when the caller set a positive value —
 	// omitting it entirely (rather than passing 0) is how this SDK's
 	// underlying `claude` CLI is told not to cap turns at all (see
@@ -629,7 +650,7 @@ func isStaleClaudeConnectionError(err error) bool {
 func isSessionNotFoundError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	for _, substr := range []string{
-		"no conversation found",  // observed claude CLI wording for an unknown --resume id
+		"no conversation found", // observed claude CLI wording for an unknown --resume id
 		"session not found",
 		"session id not found",
 		"unknown session",

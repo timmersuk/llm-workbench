@@ -3,24 +3,30 @@ package api
 import (
 	"net/http"
 	"sort"
+
+	"github.com/timmersuk/llm-workbench/internal/agentrunner"
 )
 
-// handleListAgentExecutors reports which agentRunners entries
-// (internal/agentrunner) actually respond to a live CheckHealth probe
-// right now, mirroring handleListModels' shape. The frontend uses this to
-// only offer an executor the server will actually accept, rather than
-// letting the user pick one that 400s (stage_conversation.go's "unknown
-// executor" check) or silently fails.
+// handleListAgentExecutors reports every configured agentRunners entry's
+// (internal/agentrunner) capabilities — name, models, efforts, and defaults
+// — regardless of transient health; CheckHealth/the /healthcheck endpoint
+// remains the one place operational status is surfaced. This is the single
+// consolidated capability-discovery endpoint (GET /api/v1/chat/models was
+// retired in its favor): the frontend uses it both to populate per-turn
+// executor/model/effort pickers and to validate a persisted or submitted
+// task default against the executor's actually-advertised choices.
 func (s *Server) handleListAgentExecutors() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		executors := make([]string, 0, len(s.AgentRunners))
+		executors := make([]agentrunner.ExecutorCapabilities, 0, len(s.AgentRunners))
 		for name, runner := range s.AgentRunners {
-			if err := runner.CheckHealth(r.Context()); err != nil {
+			capability, err := runner.Capabilities(r.Context())
+			if err != nil {
 				continue
 			}
-			executors = append(executors, name)
+			capability.Name = name
+			executors = append(executors, capability)
 		}
-		sort.Strings(executors)
-		writeJSON(w, http.StatusOK, map[string][]string{"executors": executors})
+		sort.Slice(executors, func(i, j int) bool { return executors[i].Name < executors[j].Name })
+		writeJSON(w, http.StatusOK, map[string][]agentrunner.ExecutorCapabilities{"executors": executors})
 	}
 }

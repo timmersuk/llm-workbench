@@ -9,10 +9,10 @@ import (
 	"github.com/timmersuk/llm-workbench/internal/chat"
 )
 
-// defaultChatExecutor is the agentRunners key handleChatCompletions/
-// handleListModels fall back to when the request doesn't name one — the
-// OpenAI-compatible local-LLM path (internal/agentrunner.ChatClientRunner),
-// registered under this key in cmd/server/main.go.
+// defaultChatExecutor is the agentRunners key handleChatCompletions falls
+// back to when the request doesn't name one — the OpenAI-compatible
+// local-LLM path (internal/agentrunner.ChatClientRunner), registered under
+// this key in cmd/server/main.go.
 const defaultChatExecutor = "local"
 
 // chatStreamEvent is the shape re-emitted to the browser for each streamed
@@ -197,25 +197,5 @@ func (s *Server) handleCloseChatSession() http.HandlerFunc {
 		}
 		s.closeSessions(req.SessionKey)
 		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-func (s *Server) handleListModels() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		executor := r.URL.Query().Get("executor")
-		if executor == "" {
-			executor = defaultChatExecutor
-		}
-		runner, ok := s.AgentRunners[executor]
-		if !ok {
-			writeAPIError(w, http.StatusBadRequest, "unknown executor: "+executor)
-			return
-		}
-		models, err := runner.ListModels(r.Context())
-		if err != nil {
-			writeAPIError(w, http.StatusBadGateway, "listing models failed: "+err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string][]string{"models": models})
 	}
 }

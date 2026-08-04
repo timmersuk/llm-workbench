@@ -176,7 +176,7 @@ func TestHandlePostTaskDraftMessage_StreamsToolCallAsSSEEventAndPersists(t *test
 	proposeArgs := `{"id":"fix-login-bug","title":"Fix login bug","objective":"ship a fix"}`
 	runner := new(mockAgentRunner)
 	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).Return(nil, agentrunner.RunOutput{
-		Content: "Here's a draft.",
+		Content:  "Here's a draft.",
 		ToolCall: &chat.ToolCall{ID: "call-1", Function: chat.ToolCallFunction{Name: "propose_task", Arguments: proposeArgs}},
 	}, nil)
 

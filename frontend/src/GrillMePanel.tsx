@@ -2,7 +2,7 @@ import { finalizeRequirements } from './api'
 import { RequirementsDraftForm } from './RequirementsDraftForm'
 import { stageConversationOps } from './stageConversationOps'
 import { StageConversationPanel } from './StageConversationPanel'
-import type { ContextFile, RequirementsDraft, Task, TaskContext } from './types'
+import type { AgentSelection, ContextFile, RequirementsDraft, Task, TaskContext } from './types'
 
 const EMPTY_DRAFT: RequirementsDraft = {
   objective: '',
@@ -23,6 +23,7 @@ interface GrillMePanelProps {
   projectId: string
   taskId: string
   onFinalized: (task: Task, context: TaskContext) => void
+  defaultSelection?: AgentSelection
 }
 
 // normalizeRequirementsDraft upgrades context.files entries a model
@@ -44,7 +45,7 @@ function normalizeRequirementsDraft(draft: RequirementsDraft): RequirementsDraft
 // StageConversationPanel scoped to stage "requirements", proposing/editing
 // a RequirementsDraft, Finalizing into both task.yaml's requirements
 // fields and context.yaml.
-export function GrillMePanel({ projectId, taskId, onFinalized }: GrillMePanelProps) {
+export function GrillMePanel({ projectId, taskId, onFinalized, defaultSelection }: GrillMePanelProps) {
   return (
     <StageConversationPanel<RequirementsDraft>
       conversationKey={`${projectId}:${taskId}:requirements`}
@@ -56,6 +57,7 @@ export function GrillMePanel({ projectId, taskId, onFinalized }: GrillMePanelPro
       normalizeDraft={normalizeRequirementsDraft}
       autoStart={false}
       startLabel="Start GrillMe"
+      defaultSelection={defaultSelection}
       onFinalize={async (draft) => {
         const result = await finalizeRequirements(projectId, taskId, draft)
         onFinalized(result.task, result.context)

@@ -1147,11 +1147,11 @@ func TestClaudeRunner_KnowledgeGetHandler_MissingConceptSurfacesAsMcpError(t *te
 	assert.True(t, result.IsError)
 }
 
-func TestClaudeRunner_ListModels_ReturnsEmptyNotError(t *testing.T) {
+func TestClaudeRunner_ListModels_ReturnsAdvertisedModels(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	models, err := r.ListModels(context.Background())
 	assert.NoError(t, err)
-	assert.Nil(t, models)
+	assert.Equal(t, []string{"sonnet", "opus", "haiku"}, models)
 }
 
 func TestClaudeRunner_CloseSession_DisconnectsAndRemovesCachedClient(t *testing.T) {
@@ -1224,7 +1224,7 @@ func (f *fakeClaudeClient) ReceiveMessages(context.Context) <-chan claudecode.Me
 func (f *fakeClaudeClient) ReceiveResponse(context.Context) claudecode.MessageIterator {
 	return nil
 }
-func (f *fakeClaudeClient) Interrupt(context.Context) error { return nil }
+func (f *fakeClaudeClient) Interrupt(context.Context) error         { return nil }
 func (f *fakeClaudeClient) SetModel(context.Context, *string) error { return nil }
 func (f *fakeClaudeClient) SetPermissionMode(context.Context, claudecode.PermissionMode) error {
 	return nil

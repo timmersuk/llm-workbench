@@ -184,6 +184,7 @@ type stageMessageRequest struct {
 	Content  string `json:"content"`
 	Model    string `json:"model"`
 	Executor string `json:"executor,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // stageStartRequest is the request body for handleStartStageConversation —
@@ -192,6 +193,7 @@ type stageMessageRequest struct {
 type stageStartRequest struct {
 	Model    string `json:"model"`
 	Executor string `json:"executor,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // handleGetStageConversation returns a stage's persisted message history.
@@ -238,6 +240,7 @@ type stageStreamTarget struct {
 	store     TaskStore
 	projectId string
 	task      task.Task
+	selection agentrunner.Selection
 }
 
 // resolveStageStreamTarget selects the executor's runner (defaulting to
@@ -249,16 +252,13 @@ type stageStreamTarget struct {
 // request body first — the request types differ, so decode stays per-handler,
 // and validating the stage before touching the body preserves the order in
 // which those two 400s fire.
-func (s *Server) resolveStageStreamTarget(w http.ResponseWriter, executorKey, projectId, taskId string) (stageStreamTarget, bool) {
-	if executorKey == "" {
-		executorKey = defaultChatExecutor
+func (s *Server) resolveStageStreamTarget(ctx context.Context, w http.ResponseWriter, submitted agentrunner.Selection, projectId, taskId string) (stageStreamTarget, bool) {
+	if submitted.Executor != "" {
+		if _, ok := s.AgentRunners[submitted.Executor]; !ok {
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown executor %q", submitted.Executor))
+			return stageStreamTarget{}, false
+		}
 	}
-	runner, ok := s.AgentRunners[executorKey]
-	if !ok {
-		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown executor %q", executorKey))
-		return stageStreamTarget{}, false
-	}
-
 	proj, err := s.Projects.Get(projectId)
 	if err != nil {
 		writeGetError(w, err)
@@ -271,8 +271,13 @@ func (s *Server) resolveStageStreamTarget(w http.ResponseWriter, executorKey, pr
 		writeGetError(w, err)
 		return stageStreamTarget{}, false
 	}
+	selection, runner, err := s.resolveSelection(ctx, t, scopeStage, submitted)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return stageStreamTarget{}, false
+	}
 
-	return stageStreamTarget{runner: runner, executor: executorKey, proj: proj, store: store, projectId: projectId, task: t}, true
+	return stageStreamTarget{runner: runner, executor: selection.Executor, proj: proj, store: store, projectId: projectId, task: t, selection: selection}, true
 }
 
 // beginStageStream confirms the ResponseWriter can stream, writes the SSE
@@ -313,8 +318,8 @@ func beginStageStream(w http.ResponseWriter) (func(chatStreamEvent), bool) {
 // return values, passed straight through. All three streaming handlers build
 // this identically; they differ only in how they then pair or replace it in
 // the record.
-func stageAssistantMessage(content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, streamErr error) task.ConversationMessage {
-	msg := task.ConversationMessage{Role: "assistant", Content: content, ToolActivity: activity, Segments: segments}
+func stageAssistantMessage(content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, streamErr error, selection agentrunner.Selection) task.ConversationMessage {
+	msg := task.ConversationMessage{Role: "assistant", Content: content, ToolActivity: activity, Segments: segments, Executor: selection.Executor, Model: selection.Model, Effort: string(selection.Effort)}
 	if streamErr != nil {
 		msg.Error = streamErr.Error()
 	}
@@ -352,7 +357,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		}
 
 		taskId := r.PathValue("taskId")
-		target, ok := s.resolveStageStreamTarget(w, req.Executor, r.PathValue("projectId"), taskId)
+		target, ok := s.resolveStageStreamTarget(r.Context(), w, agentrunner.Selection{Executor: req.Executor, Model: req.Model, Effort: agentrunner.ReasoningEffort(req.Effort)}, r.PathValue("projectId"), taskId)
 		if !ok {
 			return
 		}
@@ -392,7 +397,8 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 				Workspace:       run.Workspace,
 				SystemPrompt:    run.SystemPrompt,
 				UserMessage:     req.Content,
-				Model:           req.Model,
+				Model:           target.selection.Model,
+				ReasoningEffort: target.selection.Effort,
 				Tools:           tools,
 				EnableBashTool:  run.EnableBash,
 				MaxTurns:        run.MaxTurns,
@@ -408,7 +414,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr, target.selection)
 
 		if _, err := target.store.AppendConversationMessages(target.projectId, taskId, stage,
 			task.ConversationMessage{Role: "user", Content: req.Content},
@@ -446,7 +452,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		}
 
 		taskId := r.PathValue("taskId")
-		target, ok := s.resolveStageStreamTarget(w, req.Executor, r.PathValue("projectId"), taskId)
+		target, ok := s.resolveStageStreamTarget(r.Context(), w, agentrunner.Selection{Executor: req.Executor, Model: req.Model, Effort: agentrunner.ReasoningEffort(req.Effort)}, r.PathValue("projectId"), taskId)
 		if !ok {
 			return
 		}
@@ -487,7 +493,8 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 				Workspace:       run.Workspace,
 				SystemPrompt:    run.SystemPrompt,
 				UserMessage:     kickoffUserMessageFor(stage),
-				Model:           req.Model,
+				Model:           target.selection.Model,
+				ReasoningEffort: target.selection.Effort,
 				Tools:           tools,
 				EnableBashTool:  run.EnableBash,
 				MaxTurns:        run.MaxTurns,
@@ -499,7 +506,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr, target.selection)
 
 		if _, err := target.store.AppendConversationMessages(target.projectId, taskId, stage, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "stage": stage}).Error("persisting stage conversation kickoff message")
@@ -574,6 +581,7 @@ type stageRegenerateRequest struct {
 	Content  string `json:"content"`
 	Model    string `json:"model"`
 	Executor string `json:"executor,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // handleRegenerateStageMessage resends the user turn at index — either
@@ -608,7 +616,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		}
 
 		taskId := r.PathValue("taskId")
-		target, ok := s.resolveStageStreamTarget(w, req.Executor, r.PathValue("projectId"), taskId)
+		target, ok := s.resolveStageStreamTarget(r.Context(), w, agentrunner.Selection{Executor: req.Executor, Model: req.Model, Effort: agentrunner.ReasoningEffort(req.Effort)}, r.PathValue("projectId"), taskId)
 		if !ok {
 			return
 		}
@@ -658,15 +666,16 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		} else {
 			var sessionID string
 			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
-				SessionKey:     sessionKey,
-				Workspace:      run.Workspace,
-				SystemPrompt:   run.SystemPrompt,
-				UserMessage:    req.Content,
-				Model:          req.Model,
-				Tools:          tools,
-				EnableBashTool: run.EnableBash,
-				MaxTurns:       run.MaxTurns,
-				History:        conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
+				SessionKey:      sessionKey,
+				Workspace:       run.Workspace,
+				SystemPrompt:    run.SystemPrompt,
+				UserMessage:     req.Content,
+				Model:           target.selection.Model,
+				ReasoningEffort: target.selection.Effort,
+				Tools:           tools,
+				EnableBashTool:  run.EnableBash,
+				MaxTurns:        run.MaxTurns,
+				History:         conversationHistoryToChatMessages(task.Conversation{Messages: historyPrefix}),
 				// ResumeSessionID is deliberately left empty: clearSessionIDs
 				// just cleared every executor's id above, so this turn always
 				// starts a fresh session/thread rather than resuming the one
@@ -678,7 +687,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr, target.selection)
 
 		now := time.Now().UTC()
 		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}

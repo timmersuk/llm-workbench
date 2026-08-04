@@ -28,20 +28,22 @@ func testConfig(t *testing.T) Config {
 	require.NoError(t, exec.Command("git", "init", "--bare", remote).Run())
 
 	return Config{
-		HTTPAddr:              "127.0.0.1:0",
-		WorkspaceRoot:         filepath.Join(t.TempDir(), "workspace"),
-		DataRepoURL:           remote,
-		PushInterval:          time.Hour,
-		LogLevel:              "error",
-		LogFormat:             "text",
-		LLMBaseURL:            "http://127.0.0.1:1",
-		LLMModel:              "test-model",
-		LLMTimeout:            time.Second,
-		AgentTimeout:          time.Second,
-		AgentExecutionTimeout: time.Second,
-		ReposRoot:             t.TempDir(),
-		ShutdownTimeout:       5 * time.Second,
-		BuildID:               "test",
+		HTTPAddr:                      "127.0.0.1:0",
+		WorkspaceRoot:                 filepath.Join(t.TempDir(), "workspace"),
+		DataRepoURL:                   remote,
+		PushInterval:                  time.Hour,
+		LogLevel:                      "error",
+		LogFormat:                     "text",
+		LLMBaseURL:                    "http://127.0.0.1:1",
+		LLMModel:                      "test-model",
+		LLMTimeout:                    time.Second,
+		AgentTimeout:                  time.Second,
+		AgentExecutionTimeout:         time.Second,
+		ReposRoot:                     t.TempDir(),
+		ShutdownTimeout:               5 * time.Second,
+		BuildID:                       "test",
+		StageConversationSeedExecutor: "claude-code",
+		ExecutionSeedExecutor:         "claude-code",
 	}
 }
 

@@ -165,6 +165,9 @@ type ConversationMessage struct {
 	// nothing; empty Content with Error set means the turn errored out
 	// before (or without) producing a reply. Never set on a "user" message.
 	Error     string    `yaml:"error,omitempty" json:"error,omitempty"`
+	Executor  string    `yaml:"executor,omitempty" json:"executor,omitempty"`
+	Model     string    `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort    string    `yaml:"effort,omitempty" json:"effort,omitempty"`
 	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
 }
 
@@ -189,8 +192,11 @@ func (m ConversationMessage) MarshalYAML() (interface{}, error) {
 		ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty"`
 		Segments     []ConversationSegment      `yaml:"segments,omitempty"`
 		Error        yamlutil.Quoted            `yaml:"error,omitempty"`
+		Executor     string                     `yaml:"executor,omitempty"`
+		Model        string                     `yaml:"model,omitempty"`
+		Effort       string                     `yaml:"effort,omitempty"`
 		CreatedAt    time.Time                  `yaml:"created_at"`
-	}{m.Role, yamlutil.Quoted(m.Content), m.ToolCall, m.ToolCallID, m.ToolActivity, m.Segments, yamlutil.Quoted(m.Error), m.CreatedAt}, nil
+	}{m.Role, yamlutil.Quoted(m.Content), m.ToolCall, m.ToolCallID, m.ToolActivity, m.Segments, yamlutil.Quoted(m.Error), m.Executor, m.Model, m.Effort, m.CreatedAt}, nil
 }
 
 // EffectiveSegments returns m.Segments when the turn was recorded with

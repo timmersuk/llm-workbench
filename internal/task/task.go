@@ -47,6 +47,8 @@ type Task struct {
 	Assumptions     []string `yaml:"assumptions" json:"assumptions"`
 	SuccessCriteria []string `yaml:"success_criteria" json:"success_criteria"`
 
+	AgentDefaults *AgentDefaults `yaml:"agent_defaults,omitempty" json:"agent_defaults,omitempty"`
+
 	References References `yaml:"references" json:"references"`
 
 	// DraftSessionID, when set, is the task-drafts session id (internal/api's
@@ -69,6 +71,17 @@ type Task struct {
 	// construction, so this is not an append-only store the way
 	// reviews/executions are.
 	PullRequest *PullRequest `yaml:"pull_request,omitempty" json:"pull_request,omitempty"`
+}
+
+type AgentSelection struct {
+	Executor string `yaml:"executor" json:"executor"`
+	Model    string `yaml:"model" json:"model"`
+	Effort   string `yaml:"effort" json:"effort"`
+}
+
+type AgentDefaults struct {
+	StageConversation AgentSelection `yaml:"stage_conversation" json:"stage_conversation"`
+	Execution         AgentSelection `yaml:"execution" json:"execution"`
 }
 
 // PullRequest records the GitHub PR opened for a task's approved execution,

@@ -40,20 +40,23 @@ import (
 // linker-stamped var (see cmd/server/main.go, cmd/tray/main.go), so each
 // caller sets it on the returned Config before calling Run.
 type Config struct {
-	HTTPAddr              string
-	ReposRoot             string
-	WorkspaceRoot         string
-	DataRepoURL           string
-	PushInterval          time.Duration
-	LogLevel              string
-	LogFormat             string
-	LLMBaseURL            string
-	LLMAPIKey             string
-	LLMModel              string
-	LLMTimeout            time.Duration
-	AgentTimeout          time.Duration
-	AgentExecutionTimeout time.Duration
-	ShutdownTimeout       time.Duration
+	HTTPAddr                      string
+	ReposRoot                     string
+	WorkspaceRoot                 string
+	DataRepoURL                   string
+	PushInterval                  time.Duration
+	LogLevel                      string
+	LogFormat                     string
+	LLMBaseURL                    string
+	LLMAPIKey                     string
+	LLMModel                      string
+	LLMDefaultEffort              agentrunner.ReasoningEffort
+	StageConversationSeedExecutor string
+	ExecutionSeedExecutor         string
+	LLMTimeout                    time.Duration
+	AgentTimeout                  time.Duration
+	AgentExecutionTimeout         time.Duration
+	ShutdownTimeout               time.Duration
 	// BuildID identifies the running binary (git rev-parse --short HEAD by
 	// convention, see each cmd/*/main.go's BuildID var). Not read from the
 	// environment — callers set it on the Config LoadConfig returns, before
@@ -106,12 +109,15 @@ func LoadConfig() Config {
 		DataRepoURL:   dataRepoURL,
 		// How often the background push worker (gitstore.Store.RunPushWorker)
 		// attempts to push accumulated local commits to DATA_REPO_URL.
-		PushInterval: utils.GetEnvDefault("PUSH_INTERVAL", 30*time.Second),
-		LogLevel:     utils.GetEnvDefault("LOG_LEVEL", "info"),
-		LogFormat:    utils.GetEnvDefault("LOG_FORMAT", "json"),
-		LLMBaseURL:   utils.GetEnvDefault("LLM_BASE_URL", "http://localhost:11434/v1"),
-		LLMAPIKey:    utils.GetEnvDefault("LLM_API_KEY", ""),
-		LLMModel:     utils.GetEnvDefault("LLM_MODEL", "llama3"),
+		PushInterval:                  utils.GetEnvDefault("PUSH_INTERVAL", 30*time.Second),
+		LogLevel:                      utils.GetEnvDefault("LOG_LEVEL", "info"),
+		LogFormat:                     utils.GetEnvDefault("LOG_FORMAT", "json"),
+		LLMBaseURL:                    utils.GetEnvDefault("LLM_BASE_URL", "http://localhost:11434/v1"),
+		LLMAPIKey:                     utils.GetEnvDefault("LLM_API_KEY", ""),
+		LLMModel:                      utils.GetEnvDefault("LLM_MODEL", "llama3"),
+		LLMDefaultEffort:              agentrunner.ReasoningEffort(utils.GetEnvDefault("LLM_DEFAULT_EFFORT", "medium")),
+		StageConversationSeedExecutor: utils.GetEnvDefault("STAGE_CONVERSATION_SEED_EXECUTOR", "local"),
+		ExecutionSeedExecutor:         utils.GetEnvDefault("EXECUTION_SEED_EXECUTOR", "claude-code"),
 		// Idle timeout between streamed chunks (resets on every chunk received);
 		// total-duration timeout for non-streaming calls.
 		LLMTimeout:   utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second),
@@ -249,7 +255,27 @@ func Run(ctx context.Context, cfg Config) error {
 		"local": agentrunner.NewChatClientRunner(defaultModelCompleter{
 			client: chat.NewOpenAIClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMTimeout),
 			model:  cfg.LLMModel,
-		}, knowledgeStore),
+		}, knowledgeStore, agentrunner.Selection{Executor: "local", Model: cfg.LLMModel, Effort: cfg.LLMDefaultEffort}),
+	}
+	if cfg.StageConversationSeedExecutor == "" {
+		cfg.StageConversationSeedExecutor = "local"
+	}
+	if cfg.ExecutionSeedExecutor == "" {
+		cfg.ExecutionSeedExecutor = "claude-code"
+	}
+	for _, seed := range []string{cfg.StageConversationSeedExecutor, cfg.ExecutionSeedExecutor} {
+		runner, ok := agentRunners[seed]
+		if !ok {
+			return fmt.Errorf("agent default seed executor %q is not configured", seed)
+		}
+		capability, err := runner.Capabilities(ctx)
+		if err != nil {
+			return fmt.Errorf("loading capabilities for seed executor %q: %w", seed, err)
+		}
+		capability.Name = seed
+		if err := agentrunner.ValidateSelection(capability.DefaultSelection(), capability); err != nil {
+			return fmt.Errorf("invalid defaults for seed executor %q: %w", seed, err)
+		}
 	}
 
 	frontendFS, err := fs.Sub(web.Files, "dist")
@@ -257,7 +283,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("mounting embedded frontend: %w", err)
 	}
 
-	router := api.NewRouter(store.Projects, store.Tasks, knowledgeStore, agentRunners, cfg.ReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, cfg.BuildID)
+	router := api.NewRouterWithSeeds(store.Projects, store.Tasks, knowledgeStore, agentRunners, cfg.ReposRoot, agentrunner.NewGitHubPRClient(), agentrunner.NewDefaultBranchResolver(), frontendFS, cfg.BuildID, cfg.StageConversationSeedExecutor, cfg.ExecutionSeedExecutor)
 
 	logrus.WithFields(logrus.Fields{
 		"addr":          cfg.HTTPAddr,

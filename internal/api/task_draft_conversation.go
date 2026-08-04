@@ -264,7 +264,7 @@ func (s *Server) handleStartTaskDraftConversation() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr, agentrunner.Selection{})
 
 		if _, err := target.store.AppendTaskDraftConversationMessages(projectId, sessionId, assistantMsg); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"project": projectId, "session": sessionId}).Error("persisting task draft conversation kickoff message")
@@ -329,7 +329,7 @@ func (s *Server) handlePostTaskDraftMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr, agentrunner.Selection{})
 
 		if _, err := target.store.AppendTaskDraftConversationMessages(projectId, sessionId,
 			task.ConversationMessage{Role: "user", Content: req.Content},
@@ -463,7 +463,7 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 			writeEvent(chatStreamEvent{Error: streamErr.Error()})
 		}
 
-		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr)
+		assistantMsg := stageAssistantMessage(assistantContent, proposed, activity, segments, streamErr, agentrunner.Selection{})
 
 		now := time.Now().UTC()
 		userMsg := task.ConversationMessage{Role: "user", Content: req.Content, CreatedAt: now}

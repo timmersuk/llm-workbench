@@ -313,3 +313,30 @@ This schema is intentionally minimal to:
 ## 8. One-Line Definition
 
 > A Task is a versioned intent object that moves through explicit, inspectable stages, with all executions recorded as structured, append-only transformations.
+# Agent defaults and invocation audit
+
+Every newly-created `task.yaml` contains two independent defaults:
+
+```yaml
+agent_defaults:
+  stage_conversation: { executor: local, model: llama3, effort: medium }
+  execution: { executor: claude-code, model: sonnet, effort: high }
+```
+
+Each triple is complete. `effort` is the provider-neutral `low`, `medium`,
+or `high` enum. A model is required when the executor advertises models and
+must be empty only for an executor advertising none. Existing tasks may omit
+the field until the explicit `cmd/migrate-agent-defaults` command is run;
+normal startup and reads never migrate data.
+
+Task-scoped calls resolve a complete, valid per-turn override first and the
+appropriate persisted default otherwise. Invalid or stale defaults remain
+visible and unchanged, block a run with HTTP 400, and can be bypassed by a
+valid complete override. Stage and Execute defaults never fall back to one
+another. Free-standing chat and `plan.yaml.recommended_executor` are outside
+this mechanism.
+
+Assistant conversation messages optionally record `executor`, `model`, and
+`effort`; user messages do not. `execution.yaml.executor` optionally records
+`model` and `effort` alongside `type` and `version`. Missing fields in legacy
+records remain valid.

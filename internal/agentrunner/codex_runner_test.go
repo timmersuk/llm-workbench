@@ -73,6 +73,10 @@ func TestCodexRunner_ListModels_ReturnsCodexModels(t *testing.T) {
 	assert.NotEmpty(t, models)
 }
 
+func TestCodexEffortOverride_IsEphemeralReasoningConfig(t *testing.T) {
+	assert.Equal(t, `reasoning.effort="high"`, codexEffortOverride(EffortHigh))
+}
+
 func TestCodexRunner_CloseSession_NoopSafeForUnknownKey(t *testing.T) {
 	r := NewCodexRunner(time.Minute, time.Minute, "/repos", nil)
 	r.CloseSession("never-existed")

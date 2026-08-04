@@ -35,3 +35,9 @@ Use existing protocols and libraries where they fit. Build only where the projec
 ## Store durable semantics
 
 Persist decisions, artifacts and metrics—not transient internal reasoning.
+
+Task-scoped agent selection is durable semantics: both independent task
+defaults and every invocation's actual executor/model/effort are persisted.
+Stale persisted selections are shown and blocked, never silently rewritten
+or substituted. Migration is an explicit one-shot operation, never startup
+or read behavior.

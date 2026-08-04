@@ -182,6 +182,33 @@ describe('GrillMePanel — initial load', () => {
     expect(screen.getByLabelText('Model')).toBeDisabled()
   })
 
+  it('filters the effort select to the selected executor\'s advertised efforts, and resets to its default when the previous choice is unsupported', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code', 'codex'] })
+    vi.mocked(api.listModels).mockImplementation((executor) =>
+      executor === 'codex'
+        ? Promise.resolve({ models: ['gpt-5.4'], efforts: ['low', 'medium'], default_effort: 'medium' })
+        : Promise.resolve({ models: ['model-a'], efforts: ['high'], default_effort: 'high' }),
+    )
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    // claude-code (the auto-preferred executor here) only advertises
+    // "high" — the effort select is narrowed to that single option.
+    await waitFor(() => expect(screen.getByLabelText('Executor')).toHaveValue('claude-code'))
+    await waitFor(() => expect(screen.getByLabelText('Effort')).toHaveValue('high'))
+    expect(screen.queryByRole('option', { name: 'low' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'medium' })).not.toBeInTheDocument()
+
+    // Switching to codex (low/medium only) drops the now-unsupported "high"
+    // selection and falls back to its declared default, "medium" — not
+    // silently left on a value the newly-selected executor never offered.
+    await user.selectOptions(screen.getByLabelText('Executor'), 'codex')
+    await waitFor(() => expect(screen.getByLabelText('Effort')).toHaveValue('medium'))
+    expect(screen.getByRole('option', { name: 'low' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'high' })).not.toBeInTheDocument()
+  })
+
   it('preselects Claude Code as the executor once the server reports it healthy', async () => {
     vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: ['claude-code'] })
 
@@ -196,7 +223,7 @@ describe('GrillMePanel — initial load', () => {
     render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
 
     await waitFor(() => expect(api.listAgentExecutors).toHaveBeenCalled())
-    expect(screen.getByLabelText('Executor')).toHaveValue('')
+    expect(screen.getByLabelText('Executor')).toHaveValue('local')
     expect(screen.getByRole('option', { name: 'Local LLM chat' })).toBeInTheDocument()
   })
 
@@ -277,6 +304,7 @@ describe('GrillMePanel — starting an empty conversation on demand', () => {
         'requirements',
         expect.anything(),
         'claude-code',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
       ),
@@ -426,6 +454,7 @@ describe('GrillMePanel — sending a message and streaming the reply', () => {
       taskId,
       'requirements',
       'Hello there',
+      expect.anything(),
       expect.anything(),
       expect.anything(),
       expect.anything(),
@@ -598,6 +627,7 @@ describe('GrillMePanel — message actions', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
+        expect.anything(),
       ),
     )
   })
@@ -652,6 +682,7 @@ describe('GrillMePanel — message actions', () => {
         'requirements',
         0,
         'first question',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
         expect.anything(),
@@ -849,6 +880,7 @@ describe('GrillMePanel — ask_question', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
+        expect.anything(),
       ),
     )
     expect(screen.queryByRole('button', { name: /No/ })).not.toBeInTheDocument()
@@ -872,6 +904,7 @@ describe('GrillMePanel — ask_question', () => {
         taskId,
         'requirements',
         'Actually, something else entirely',
+        expect.anything(),
         expect.anything(),
         expect.anything(),
         expect.anything(),

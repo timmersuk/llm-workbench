@@ -63,3 +63,5 @@ internal/web/dist/*
 # by a misconfigured REPOS_ROOT during local dev (should point at a
 # sibling directory, e.g. D:\projects, not land inside the repo itself).
 /projects/
+.gocache/
+.pnpm-store/
