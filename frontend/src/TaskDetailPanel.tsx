@@ -5,6 +5,7 @@ import { AgentDefaultsEditor } from './AgentDefaultsEditor'
 import { ExecutePanel } from './ExecutePanel'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { GrillMePanel } from './GrillMePanel'
+import { KnowledgeActivityList } from './KnowledgeActivityList'
 import { MarkdownMessage } from './MarkdownMessage'
 import { PlanningModePanel } from './PlanningModePanel'
 import { PRReviewPanel } from './PRReviewPanel'
@@ -273,6 +274,12 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
       <CollapsibleSection title="Defaults" defaultOpen={false}>
         <AgentDefaultsEditor projectId={projectId} task={task} onSaved={setTask} />
       </CollapsibleSection>
+
+      {task.knowledge_activity && task.knowledge_activity.length > 0 && (
+        <CollapsibleSection title="Knowledge" defaultOpen={false}>
+          <KnowledgeActivityList entries={task.knowledge_activity} />
+        </CollapsibleSection>
+      )}
 
       <TimelinePanel projectId={projectId} taskId={task.id} knowledgeActivity={task.knowledge_activity} />
 

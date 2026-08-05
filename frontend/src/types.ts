@@ -553,12 +553,16 @@ export interface KnowledgeConceptDraft {
 // this decision's entry already appended to knowledge_activity —
 // best-effort (absent if recording it failed server-side) — letting a
 // caller refresh its own copy of the task and show the new log entry
-// immediately, without a second GET.
+// immediately, without a second GET. note is the exact acknowledgment text
+// the server appended to the Review Conversation (also best-effort, empty
+// if that append failed) — letting a caller show the same note inline in
+// the live transcript without re-fetching it.
 export interface FinalizeKnowledgeResponse {
   concept_id: string
   decision: KnowledgeConceptDraftDecision
   concept?: { type: string; frontmatter?: Record<string, unknown>; body: string }
   task?: Task
+  note?: string
 }
 
 // ReviewsListResult mirrors handleListReviews' response — every verdict for a

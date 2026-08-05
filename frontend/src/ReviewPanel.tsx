@@ -166,12 +166,14 @@ export function ReviewPanel({ projectId, taskId, onFinalized, onKnowledgeActivit
               if (result.task) {
                 onKnowledgeActivity?.(result.task)
               }
+              return result.note
             },
             onReject: async (draft) => {
               const result = await finalizeKnowledge(projectId, taskId, draft, 'rejected')
               if (result.task) {
                 onKnowledgeActivity?.(result.task)
               }
+              return result.note
             },
           }}
         />

@@ -33,6 +33,7 @@ func newReviewStageServer(t *testing.T, knowledgeStore *mockKnowledgeStore) (*mo
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageReview}, nil)
 	tasks.On("AppendKnowledgeActivity", "demo-project", "TASK-0001", mock.Anything).Return(task.Task{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageReview, mock.Anything).Return(task.Conversation{}, nil)
 
 	return projects, tasks, &Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeStore}
 }
@@ -65,6 +66,10 @@ func TestHandleFinalizeKnowledge_Accepted_WritesConcept(t *testing.T) {
 		ConceptID: "coding-standards/logging", Type: "Coding Standard", Action: task.KnowledgeActivityCreated,
 	})
 	require.NotNil(t, got.Task, "the updated task (with the new log entry) is returned for the client to refresh from, no second GET required")
+	assert.Equal(t, `Accepted the knowledge concept "coding-standards/logging" — created.`, got.Note)
+	tasks.AssertCalled(t, "AppendConversationMessages", "demo-project", "TASK-0001", task.StageReview, []task.ConversationMessage{
+		{Role: "user", Content: `Accepted the knowledge concept "coding-standards/logging" — created.`},
+	})
 }
 
 // TestHandleFinalizeKnowledge_Accepted_ExistingConceptRecordsUpdated covers
@@ -109,6 +114,43 @@ func TestHandleFinalizeKnowledge_Rejected_NeverWrites(t *testing.T) {
 	tasks.AssertCalled(t, "AppendKnowledgeActivity", "demo-project", "TASK-0001", task.KnowledgeActivityEntry{
 		ConceptID: "coding-standards/logging", Type: "Coding Standard", Action: task.KnowledgeActivityRejected,
 	})
+	assert.Equal(t, `Rejected the proposed knowledge concept "coding-standards/logging".`, got.Note)
+	tasks.AssertCalled(t, "AppendConversationMessages", "demo-project", "TASK-0001", task.StageReview, []task.ConversationMessage{
+		{Role: "user", Content: `Rejected the proposed knowledge concept "coding-standards/logging".`},
+	})
+}
+
+// TestHandleFinalizeKnowledge_ConversationNoteFailure_StillSucceeds covers
+// appendKnowledgeDecisionNote's best-effort contract: a failure appending
+// the acknowledgment message to the Review Conversation must not turn an
+// otherwise-successful accept into a client-visible error — the response
+// simply omits Note.
+func TestHandleFinalizeKnowledge_ConversationNoteFailure_StillSucceeds(t *testing.T) {
+	knowledgeStore := new(mockKnowledgeStore)
+	concept := knowledge.Concept{Type: "Coding Standard", Body: "x"}
+	knowledgeStore.On("Get", "coding-standards/logging").Return(knowledge.Concept{}, os.ErrNotExist)
+	knowledgeStore.On("Put", "coding-standards/logging", concept).Return(nil)
+
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
+	tasks := new(mockTaskStore)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageReview}, nil)
+	tasks.On("AppendKnowledgeActivity", "demo-project", "TASK-0001", mock.Anything).Return(task.Task{}, nil)
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageReview, mock.Anything).
+		Return(task.Conversation{}, assert.AnError)
+	server := &Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeStore}
+
+	req := newFinalizeKnowledgeRequest(t, finalizeKnowledgeRequest{
+		ConceptID: "coding-standards/logging", Type: "Coding Standard", Body: "x", Decision: knowledgeDecisionAccepted,
+	})
+	w := httptest.NewRecorder()
+	server.handleFinalizeKnowledge()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got finalizeKnowledgeResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Empty(t, got.Note)
+	require.NotNil(t, got.Concept, "the primary accept (writing the concept) still succeeds")
 }
 
 func TestHandleFinalizeKnowledge_WrongStage(t *testing.T) {

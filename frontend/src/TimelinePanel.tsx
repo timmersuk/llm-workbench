@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getStageConversation, listReviews, listStageTransitions } from './api'
 import { CollapsibleSection } from './CollapsibleSection'
+import { knowledgeActivityLabel } from './knowledgeActivity'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { ConversationMessage, KnowledgeActivityEntry, Review, StageTransition } from './types'
 
@@ -19,21 +20,6 @@ type TimelineEntry =
   | { kind: 'transition'; key: string; created_at: string; transition: StageTransition }
   | { kind: 'review'; key: string; created_at: string; review: Review }
   | { kind: 'knowledge'; key: string; created_at: string; entry: KnowledgeActivityEntry }
-
-// knowledgeActivityLabel renders one KnowledgeActivityEntry's action as a
-// short, human-readable phrase for the timeline line.
-function knowledgeActivityLabel(entry: KnowledgeActivityEntry): string {
-  switch (entry.action) {
-    case 'created':
-      return `knowledge concept created: ${entry.concept_id}`
-    case 'updated':
-      return `knowledge concept updated: ${entry.concept_id}`
-    case 'rejected':
-      return `knowledge concept proposal rejected: ${entry.concept_id}`
-    default:
-      return `knowledge concept ${entry.action}: ${entry.concept_id}`
-  }
-}
 
 // conversationStages are the Stage values with a persisted Conversation
 // (task.validateConversationStage, internal/task/conversation.go) — the

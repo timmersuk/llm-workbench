@@ -264,6 +264,39 @@ describe('ReviewPanel', () => {
     await waitFor(() => expect(onKnowledgeActivity).toHaveBeenCalledWith(refreshedTask))
   })
 
+  it('appends the server-returned note to the transcript immediately after Accept, so the human can see the decision took effect without a reload', async () => {
+    const user = userEvent.setup()
+    stubConversation()
+    vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
+    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: '' })
+    vi.mocked(api.finalizeKnowledge).mockResolvedValue({
+      concept_id: 'coding-standards/logging',
+      decision: 'accepted',
+      note: 'Accepted the knowledge concept "coding-standards/logging" — created.',
+    })
+
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.startStageConversation).mockImplementation((_p, _t, _s, _m, _e, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<ReviewPanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Start Review' }))
+    act(() =>
+      deliver({
+        tool_call: {
+          name: 'propose_knowledge',
+          arguments: JSON.stringify({ concept_id: 'coding-standards/logging', type: 'Coding Standard', body: 'Use structured logging.' }),
+        },
+      }),
+    )
+    await user.click(await screen.findByRole('button', { name: 'Accept' }))
+
+    expect(await screen.findByText('Accepted the knowledge concept "coding-standards/logging" — created.')).toBeInTheDocument()
+  })
+
   it('a review verdict and a knowledge proposal can be pending at the same time, decided independently', async () => {
     const user = userEvent.setup()
     stubConversation()

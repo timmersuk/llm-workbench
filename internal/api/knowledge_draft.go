@@ -41,12 +41,17 @@ type finalizeKnowledgeRequest struct {
 // failed, logged server-side rather than failing the request, since the
 // primary accept/reject decision has already taken effect by then) — so a
 // client can refresh its own copy of the task and show the new log entry
-// immediately, without a second GET or a page reload.
+// immediately, without a second GET or a page reload. Note mirrors the
+// exact text appended to the Review Conversation (see
+// appendKnowledgeDecisionNote) — best-effort the same way, empty if that
+// append failed — so a client can show the same acknowledgment inline in
+// the live transcript without re-fetching it.
 type finalizeKnowledgeResponse struct {
 	ConceptID string             `json:"concept_id"`
 	Decision  string             `json:"decision"`
 	Concept   *knowledge.Concept `json:"concept,omitempty"`
 	Task      *task.Task         `json:"task,omitempty"`
+	Note      string             `json:"note,omitempty"`
 }
 
 // handleFinalizeKnowledge is the human's accept/reject decision on a
@@ -120,10 +125,12 @@ func (s *Server) handleFinalizeKnowledge() http.HandlerFunc {
 				return
 			}
 			updated := s.recordKnowledgeActivity(store, projectId, taskId, req.ConceptID, req.Type, action)
-			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision, Concept: &concept, Task: updated})
+			note := s.appendKnowledgeDecisionNote(store, projectId, taskId, req.ConceptID, action)
+			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision, Concept: &concept, Task: updated, Note: note})
 		case knowledgeDecisionRejected:
 			updated := s.recordKnowledgeActivity(store, projectId, taskId, req.ConceptID, req.Type, task.KnowledgeActivityRejected)
-			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision, Task: updated})
+			note := s.appendKnowledgeDecisionNote(store, projectId, taskId, req.ConceptID, task.KnowledgeActivityRejected)
+			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision, Task: updated, Note: note})
 		default:
 			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid decision %q", req.Decision))
 		}
@@ -151,4 +158,45 @@ func (s *Server) recordKnowledgeActivity(store TaskStore, projectId, taskId, con
 		return nil
 	}
 	return &updated
+}
+
+// appendKnowledgeDecisionNote appends a "user"-role message to the task's
+// Review Conversation recording what a human just decided about a
+// propose_knowledge Draft — otherwise the transcript shows the proposal
+// (the assistant's propose_knowledge tool call) but never what became of
+// it. Plain Content, no ToolCall of its own: this isn't a real reply the
+// human typed, but it reads naturally as one, and is folded into the
+// model's context on a later turn (conversationHistoryToChatMessages,
+// stage_conversation.go) exactly like anything else a human said — a
+// deliberate choice so the executor can see its proposal was acted on
+// without the human having to say so themselves. Best-effort: a failure
+// here is logged, not surfaced as a request error, since the primary
+// accept/reject decision has already taken effect by the time this runs;
+// the returned string is "" on failure, so the caller's response simply
+// omits Note.
+func (s *Server) appendKnowledgeDecisionNote(store TaskStore, projectId, taskId, conceptID string, action task.KnowledgeActivityAction) string {
+	note := knowledgeDecisionNote(conceptID, action)
+	if _, err := store.AppendConversationMessages(projectId, taskId, task.StageReview, task.ConversationMessage{Role: "user", Content: note}); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "concept": conceptID, "action": action}).
+			Warn("appending knowledge decision note to review conversation")
+		return ""
+	}
+	return note
+}
+
+// knowledgeDecisionNote renders one accept/reject decision as the plain
+// sentence appendKnowledgeDecisionNote persists — split out so
+// knowledge_draft_test.go can assert on the exact wording without
+// duplicating it.
+func knowledgeDecisionNote(conceptID string, action task.KnowledgeActivityAction) string {
+	switch action {
+	case task.KnowledgeActivityCreated:
+		return fmt.Sprintf("Accepted the knowledge concept %q — created.", conceptID)
+	case task.KnowledgeActivityUpdated:
+		return fmt.Sprintf("Accepted the knowledge concept %q — updated.", conceptID)
+	case task.KnowledgeActivityRejected:
+		return fmt.Sprintf("Rejected the proposed knowledge concept %q.", conceptID)
+	default:
+		return fmt.Sprintf("Recorded knowledge concept %q (%s).", conceptID, action)
+	}
 }

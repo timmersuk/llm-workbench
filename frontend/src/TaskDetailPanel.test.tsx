@@ -507,3 +507,25 @@ describe('TaskDetailPanel — execution outcome notices', () => {
     expect(container.querySelector('.workspace-status-banner')).not.toBeInTheDocument()
   })
 })
+
+describe('TaskDetailPanel — Knowledge section', () => {
+  it('shows a dedicated Knowledge section when the task has knowledge_activity entries', async () => {
+    stubNoContextOrPlan()
+    const task = makeTask('review', {
+      knowledge_activity: [{ concept_id: 'coding-standards/logging', type: 'Coding Standard', action: 'created', created_at: '2026-01-01T00:00:00Z' }],
+    })
+
+    render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+
+    expect(await screen.findByText('Knowledge')).toBeInTheDocument()
+    expect(screen.getByText(/knowledge concept created: coding-standards\/logging/)).toBeInTheDocument()
+  })
+
+  it('omits the Knowledge section when the task has no knowledge_activity', async () => {
+    stubNoContextOrPlan()
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('review')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+
+    await screen.findByTestId('review-panel')
+    expect(screen.queryByText('Knowledge')).not.toBeInTheDocument()
+  })
+})

@@ -185,8 +185,14 @@ export interface SecondaryDraftConfig<S> {
   emptyDraft: S
   heading: string
   renderDraft: (draft: S, onChange: (draft: S) => void) => ReactNode
-  onAccept: (draft: S) => Promise<void>
-  onReject: (draft: S) => Promise<void>
+  // onAccept/onReject may resolve to a note string — the server's own
+  // acknowledgment text (already persisted to the Conversation, e.g.
+  // finalizeKnowledgeResponse.note) — which gets appended as a plain
+  // display message onto the live transcript below, so the human sees
+  // "was this accepted?" answered in place without a reload. Resolving to
+  // void/undefined (or "") shows nothing extra.
+  onAccept: (draft: S) => Promise<string | void>
+  onReject: (draft: S) => Promise<string | void>
 }
 
 // StageConversationOps is the five conversation operations a
@@ -972,16 +978,26 @@ export function StageConversationPanel<D, S = never>({
   // handleSecondaryDecision drives both Accept and Reject for
   // secondaryDraft — same shape, differing only in which of
   // onAccept/onReject runs, mirroring how handleFinalize just runs
-  // onFinalize with whatever decision is already encoded in the draft.
-  async function handleSecondaryDecision(action: (draft: S) => Promise<void>) {
+  // onFinalize with whatever decision is already encoded in the draft. A
+  // resolved note (see SecondaryDraftConfig's doc comment) is appended as a
+  // new display message onto the live transcript, mirroring what the
+  // server just persisted, so the human sees the decision take effect in
+  // place — the same page a reload would show, without the reload.
+  async function handleSecondaryDecision(action: (draft: S) => Promise<string | void>) {
     if (!secondaryDraft || !pendingSecondaryDraft || secondaryFinalizing) {
       return
     }
     setSecondaryFinalizing(true)
     setSecondaryError(null)
     try {
-      await action(pendingSecondaryDraft)
+      const note = await action(pendingSecondaryDraft)
       setPendingSecondaryDraft(null)
+      if (note) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'user', content: note, reasoningContent: '', toolCallNames: [], segments: [{ kind: 'text', text: note }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+        ])
+      }
     } catch (err) {
       setSecondaryError(err instanceof Error ? err.message : String(err))
     } finally {
