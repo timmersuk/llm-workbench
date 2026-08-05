@@ -154,6 +154,30 @@ func TestProcessCodexSDKRunEvent_UsesThreadStartProtocolItems(t *testing.T) {
 	assert.JSONEq(t, `{"approach":"thread/start"}`, out.ToolCall.Function.Arguments)
 }
 
+// TestProcessCodexSDKRunEvent_CapturesEveryDraftToolCallInATurn is the
+// app-server-notification-shaped counterpart to
+// TestProcessCodexRunEvent_CapturesEveryDraftToolCallInATurn.
+func TestProcessCodexSDKRunEvent_CapturesEveryDraftToolCallInATurn(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	toolNames := []string{"propose_review", "propose_knowledge"}
+
+	_, err := processCodexSDKRunEvent(sdkNotification("item/completed", map[string]any{"item": map[string]any{
+		"type": "mcpToolCall", "id": "call-1", "tool": "propose_review", "arguments": map[string]any{"decision": "needs_changes"}, "status": "completed",
+	}}), toolNames, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	_, err = processCodexSDKRunEvent(sdkNotification("item/completed", map[string]any{"item": map[string]any{
+		"type": "mcpToolCall", "id": "call-2", "tool": "propose_knowledge", "arguments": map[string]any{"concept_id": "x"}, "status": "completed",
+	}}), toolNames, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+
+	require.Len(t, out.ToolCalls, 2)
+	assert.Equal(t, "propose_review", out.ToolCalls[0].Function.Name)
+	assert.Equal(t, "propose_knowledge", out.ToolCalls[1].Function.Name)
+	require.NotNil(t, out.ToolCall)
+	assert.Equal(t, "propose_review", out.ToolCall.Function.Name, "ToolCall stays the first, for single-draft callers")
+}
+
 func TestProcessCodexSDKExecuteEvent_ForwardsToolAndTokenUsage(t *testing.T) {
 	var content assistantText
 	var out ExecuteOutput
@@ -280,6 +304,29 @@ func TestProcessCodexRunEvent_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 	assert.False(t, done)
 	require.NotNil(t, out.ToolCall)
 	assert.Equal(t, "propose_knowledge", out.ToolCall.Function.Name)
+}
+
+// TestProcessCodexRunEvent_CapturesEveryDraftToolCallInATurn covers the same
+// bug fixed in claude_runner.go's processMessage: a turn calling more than
+// one offered Draft tool (Review's propose_review + propose_knowledge) must
+// not silently drop every call after the first.
+func TestProcessCodexRunEvent_CapturesEveryDraftToolCallInATurn(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	toolNames := []string{"propose_review", "propose_knowledge"}
+
+	first := &types.ItemCompleted{Item: &types.MCPToolCall{ID: "call-1", ToolName: "propose_review", Input: []byte(`{"decision":"needs_changes"}`)}}
+	_, err := processCodexRunEvent(first, toolNames, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+	second := &types.ItemCompleted{Item: &types.MCPToolCall{ID: "call-2", ToolName: "propose_knowledge", Input: []byte(`{"concept_id":"x"}`)}}
+	_, err = processCodexRunEvent(second, toolNames, &content, &out, nil, nil, nil)
+	require.NoError(t, err)
+
+	require.Len(t, out.ToolCalls, 2)
+	assert.Equal(t, "propose_review", out.ToolCalls[0].Function.Name)
+	assert.Equal(t, "propose_knowledge", out.ToolCalls[1].Function.Name)
+	require.NotNil(t, out.ToolCall)
+	assert.Equal(t, "propose_review", out.ToolCall.Function.Name, "ToolCall stays the first, for single-draft callers")
 }
 
 func TestProcessCodexRunEvent_IgnoresNonMatchingMCPToolCall(t *testing.T) {

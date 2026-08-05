@@ -2,16 +2,38 @@ import { useEffect, useState } from 'react'
 import { getStageConversation, listReviews, listStageTransitions } from './api'
 import { CollapsibleSection } from './CollapsibleSection'
 import { MarkdownMessage } from './MarkdownMessage'
-import type { ConversationMessage, Review, StageTransition } from './types'
+import type { ConversationMessage, KnowledgeActivityEntry, Review, StageTransition } from './types'
 
 interface TimelinePanelProps {
   projectId: string
   taskId: string
+  // knowledgeActivity is the task's own Task.knowledge_activity field
+  // (task.yaml, not a separate endpoint) — passed down rather than fetched
+  // here, so TaskDetailPanel's already-held task state (refreshed
+  // immediately after an accept/reject via ReviewPanel's
+  // onKnowledgeActivity) is reflected without an extra round trip.
+  knowledgeActivity?: KnowledgeActivityEntry[]
 }
 
 type TimelineEntry =
   | { kind: 'transition'; key: string; created_at: string; transition: StageTransition }
   | { kind: 'review'; key: string; created_at: string; review: Review }
+  | { kind: 'knowledge'; key: string; created_at: string; entry: KnowledgeActivityEntry }
+
+// knowledgeActivityLabel renders one KnowledgeActivityEntry's action as a
+// short, human-readable phrase for the timeline line.
+function knowledgeActivityLabel(entry: KnowledgeActivityEntry): string {
+  switch (entry.action) {
+    case 'created':
+      return `knowledge concept created: ${entry.concept_id}`
+    case 'updated':
+      return `knowledge concept updated: ${entry.concept_id}`
+    case 'rejected':
+      return `knowledge concept proposal rejected: ${entry.concept_id}`
+    default:
+      return `knowledge concept ${entry.action}: ${entry.concept_id}`
+  }
+}
 
 // conversationStages are the Stage values with a persisted Conversation
 // (task.validateConversationStage, internal/task/conversation.go) — the
@@ -62,15 +84,17 @@ type ConversationState =
   | { status: 'loaded'; messages: ConversationMessage[] }
   | { status: 'error'; message: string }
 
-// TimelinePanel merges every recorded stage transition with every recorded
-// review verdict into one chronological list, so a task's real path through
-// its lifecycle — including reversals — is visible, not just its current
-// stage. Expanding a transition whose destination stage has a Conversation
-// (requirements/planning/review) lazily loads that conversation, filtered to
-// messages recorded at or after this transition, showing what was actually
-// discussed during that particular pass rather than every pass merged
-// together in one file.
-export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
+// TimelinePanel merges every recorded stage transition, every recorded
+// review verdict, and every recorded knowledge-concept accept/reject
+// (Task.knowledge_activity, passed in via props rather than fetched — see
+// TimelinePanelProps) into one chronological list, so a task's real path
+// through its lifecycle — including reversals — is visible, not just its
+// current stage. Expanding a transition whose destination stage has a
+// Conversation (requirements/planning/review) lazily loads that
+// conversation, filtered to messages recorded at or after this transition,
+// showing what was actually discussed during that particular pass rather
+// than every pass merged together in one file.
+export function TimelinePanel({ projectId, taskId, knowledgeActivity }: TimelinePanelProps) {
   const [entries, setEntries] = useState<TimelineEntry[]>([])
   const [reviewsById, setReviewsById] = useState<Record<string, Review>>({})
   const [conversations, setConversations] = useState<Record<string, ConversationState>>({})
@@ -130,20 +154,44 @@ export function TimelinePanel({ projectId, taskId }: TimelinePanelProps) {
       })
   }
 
-  if (entries.length === 0) {
+  // allEntries folds knowledgeActivity in fresh on every render, rather than
+  // baking it into entries at fetch time — entries only ever comes from the
+  // one-time fetch above, but knowledgeActivity is a prop that can change
+  // (TaskDetailPanel refreshes its task, and this prop with it, right after
+  // an accept/reject via ReviewPanel's onKnowledgeActivity), so it must stay
+  // reactive rather than frozen at mount.
+  const allEntries: TimelineEntry[] = [
+    ...entries,
+    ...(knowledgeActivity ?? []).map((k, i) => ({
+      kind: 'knowledge' as const,
+      key: `knowledge-${i}-${k.created_at}`,
+      created_at: k.created_at,
+      entry: k,
+    })),
+  ].sort((a, b) => a.created_at.localeCompare(b.created_at))
+
+  if (allEntries.length === 0) {
     return null
   }
 
   return (
     <CollapsibleSection title="Timeline" defaultOpen={false}>
       <ul className="execution-history">
-        {entries.map((entry) => {
+        {allEntries.map((entry) => {
           if (entry.kind === 'review') {
             const r = entry.review
             return (
               <li key={entry.key} className="timeline-review">
                 review {r.review_id}: {r.decision}
                 {r.notes && <MarkdownMessage content={r.notes} />}
+              </li>
+            )
+          }
+
+          if (entry.kind === 'knowledge') {
+            return (
+              <li key={entry.key} className="timeline-knowledge">
+                {knowledgeActivityLabel(entry.entry)}
               </li>
             )
           }

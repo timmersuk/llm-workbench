@@ -274,7 +274,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
         <AgentDefaultsEditor projectId={projectId} task={task} onSaved={setTask} />
       </CollapsibleSection>
 
-      <TimelinePanel projectId={projectId} taskId={task.id} />
+      <TimelinePanel projectId={projectId} taskId={task.id} knowledgeActivity={task.knowledge_activity} />
 
       {reviseError && <p className="error">{reviseError}</p>}
 
@@ -357,6 +357,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
             // needs_changes→implementation, rejected→requirements);
             // re-rendering by the new stage is all the panel needs to do.
             onFinalized={(updatedTask) => setTask(updatedTask)}
+            onKnowledgeActivity={(updatedTask) => setTask(updatedTask)}
           />
         </div>
       )}

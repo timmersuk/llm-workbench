@@ -328,6 +328,40 @@ func TestProcessMessage_MatchesAnyOfSeveralOfferedTools(t *testing.T) {
 	assert.Equal(t, "propose_knowledge", out.ToolCall.Function.Name)
 }
 
+// TestProcessMessage_CapturesEveryDraftToolCallInATurn covers the bug this
+// fixes: previously only the first draft resolved in a turn survived into
+// RunOutput at all — a model calling both propose_review and
+// propose_knowledge in the same turn (Review offers both at once,
+// stageTool) silently lost the second one entirely, with no trace of it in
+// the persisted conversation. Now every accepted draft call in the turn is
+// captured, in order, into out.ToolCalls; out.ToolCall stays the first, for
+// every single-draft-per-turn caller (Requirements/Planning/TaskDraft).
+func TestProcessMessage_CapturesEveryDraftToolCallInATurn(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	hooks := &toolActivityHooks{pending: make(pendingToolCalls)}
+	toolNames := []string{"propose_review", "propose_knowledge"}
+
+	msg := &claudecode.AssistantMessage{
+		Content: []claudecode.ContentBlock{
+			&claudecode.ToolUseBlock{ToolUseID: "call-1", Name: "mcp__draft__propose_review", Input: map[string]any{"decision": "needs_changes"}},
+			&claudecode.ToolUseBlock{ToolUseID: "call-2", Name: "mcp__draft__propose_knowledge", Input: map[string]any{"concept_id": "x"}},
+		},
+	}
+	_, err := processMessage(msg, toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	_, err = processMessage(toolResultMessage("call-1", false), toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	_, err = processMessage(toolResultMessage("call-2", false), toolNames, &content, &out, nil, hooks)
+	require.NoError(t, err)
+
+	require.Len(t, out.ToolCalls, 2)
+	assert.Equal(t, "propose_review", out.ToolCalls[0].Function.Name)
+	assert.Equal(t, "propose_knowledge", out.ToolCalls[1].Function.Name)
+	require.NotNil(t, out.ToolCall)
+	assert.Equal(t, "propose_review", out.ToolCall.Function.Name, "ToolCall stays the first, for single-draft callers")
+}
+
 // TestProcessMessage_KeepsFirstValidToolCallOnly covers the same "keep
 // first" precedence as before, now expressed over accepted (not merely
 // seen) calls: a second Draft call's ToolResultBlock must not overwrite an

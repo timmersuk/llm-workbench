@@ -28,6 +28,15 @@ interface ReviewPanelProps {
   projectId: string
   taskId: string
   onFinalized: (task: Task, review: Review) => void
+  // onKnowledgeActivity, when supplied, is called with the refreshed task
+  // (its knowledge_activity now including this decision's entry) after
+  // every propose_knowledge accept/reject — best-effort, since
+  // finalizeKnowledge's task field is itself best-effort (omitted if
+  // recording the entry failed server-side, see finalizeKnowledgeResponse's
+  // doc comment). Lets a caller (TaskDetailPanel) keep its own copy of the
+  // task in sync so a Timeline showing knowledge_activity reflects a
+  // just-decided proposal immediately, without a page reload.
+  onKnowledgeActivity?: (task: Task) => void
   defaultSelection?: AgentSelection
 }
 
@@ -37,7 +46,7 @@ interface ReviewPanelProps {
 // autoStart is false — arriving here shows the diff and waits for an explicit
 // "Start Review", since the agent's first turn runs the real test suite in a
 // worktree, not just an opening question (docs/milestones/done/milestone6.md PR 3).
-export function ReviewPanel({ projectId, taskId, onFinalized, defaultSelection }: ReviewPanelProps) {
+export function ReviewPanel({ projectId, taskId, onFinalized, onKnowledgeActivity, defaultSelection }: ReviewPanelProps) {
   const [latest, setLatest] = useState<Execution | null>(null)
   const [patch, setPatch] = useState<string | null>(null)
   // cycleStartAt marks when this task most recently entered the review
@@ -153,10 +162,16 @@ export function ReviewPanel({ projectId, taskId, onFinalized, defaultSelection }
             heading: 'Proposed knowledge concept',
             renderDraft: (draft, onChange) => <KnowledgeDraftForm draft={draft} onChange={onChange} />,
             onAccept: async (draft) => {
-              await finalizeKnowledge(projectId, taskId, draft, 'accepted')
+              const result = await finalizeKnowledge(projectId, taskId, draft, 'accepted')
+              if (result.task) {
+                onKnowledgeActivity?.(result.task)
+              }
             },
             onReject: async (draft) => {
-              await finalizeKnowledge(projectId, taskId, draft, 'rejected')
+              const result = await finalizeKnowledge(projectId, taskId, draft, 'rejected')
+              if (result.task) {
+                onKnowledgeActivity?.(result.task)
+              }
             },
           }}
         />

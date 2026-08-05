@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,7 @@ func newReviewStageServer(t *testing.T, knowledgeStore *mockKnowledgeStore) (*mo
 
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageReview}, nil)
+	tasks.On("AppendKnowledgeActivity", "demo-project", "TASK-0001", mock.Anything).Return(task.Task{}, nil)
 
 	return projects, tasks, &Server{Projects: projects, Tasks: tasks, KnowledgeStore: knowledgeStore}
 }
@@ -38,9 +40,10 @@ func newReviewStageServer(t *testing.T, knowledgeStore *mockKnowledgeStore) (*mo
 func TestHandleFinalizeKnowledge_Accepted_WritesConcept(t *testing.T) {
 	knowledgeStore := new(mockKnowledgeStore)
 	concept := knowledge.Concept{Type: "Coding Standard", Frontmatter: map[string]any{"title": "Logging"}, Body: "Use structured logging.\n"}
+	knowledgeStore.On("Get", "coding-standards/logging").Return(knowledge.Concept{}, os.ErrNotExist)
 	knowledgeStore.On("Put", "coding-standards/logging", concept).Return(nil)
 
-	_, _, server := newReviewStageServer(t, knowledgeStore)
+	_, tasks, server := newReviewStageServer(t, knowledgeStore)
 
 	req := newFinalizeKnowledgeRequest(t, finalizeKnowledgeRequest{
 		ConceptID: "coding-standards/logging", Type: "Coding Standard",
@@ -58,11 +61,38 @@ func TestHandleFinalizeKnowledge_Accepted_WritesConcept(t *testing.T) {
 	require.NotNil(t, got.Concept)
 	assert.Equal(t, "Coding Standard", got.Concept.Type)
 	knowledgeStore.AssertCalled(t, "Put", "coding-standards/logging", concept)
+	tasks.AssertCalled(t, "AppendKnowledgeActivity", "demo-project", "TASK-0001", task.KnowledgeActivityEntry{
+		ConceptID: "coding-standards/logging", Type: "Coding Standard", Action: task.KnowledgeActivityCreated,
+	})
+	require.NotNil(t, got.Task, "the updated task (with the new log entry) is returned for the client to refresh from, no second GET required")
+}
+
+// TestHandleFinalizeKnowledge_Accepted_ExistingConceptRecordsUpdated covers
+// the "updated" half of KnowledgeActivityAction: a concept id that already
+// resolves via KnowledgeStore.Get is recorded as updated, not created.
+func TestHandleFinalizeKnowledge_Accepted_ExistingConceptRecordsUpdated(t *testing.T) {
+	knowledgeStore := new(mockKnowledgeStore)
+	concept := knowledge.Concept{Type: "Coding Standard", Body: "revised body"}
+	knowledgeStore.On("Get", "coding-standards/logging").Return(knowledge.Concept{Type: "Coding Standard", Body: "old body"}, nil)
+	knowledgeStore.On("Put", "coding-standards/logging", concept).Return(nil)
+
+	_, tasks, server := newReviewStageServer(t, knowledgeStore)
+
+	req := newFinalizeKnowledgeRequest(t, finalizeKnowledgeRequest{
+		ConceptID: "coding-standards/logging", Type: "Coding Standard", Body: "revised body", Decision: knowledgeDecisionAccepted,
+	})
+	w := httptest.NewRecorder()
+	server.handleFinalizeKnowledge()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	tasks.AssertCalled(t, "AppendKnowledgeActivity", "demo-project", "TASK-0001", task.KnowledgeActivityEntry{
+		ConceptID: "coding-standards/logging", Type: "Coding Standard", Action: task.KnowledgeActivityUpdated,
+	})
 }
 
 func TestHandleFinalizeKnowledge_Rejected_NeverWrites(t *testing.T) {
 	knowledgeStore := new(mockKnowledgeStore)
-	_, _, server := newReviewStageServer(t, knowledgeStore)
+	_, tasks, server := newReviewStageServer(t, knowledgeStore)
 
 	req := newFinalizeKnowledgeRequest(t, finalizeKnowledgeRequest{
 		ConceptID: "coding-standards/logging", Type: "Coding Standard", Decision: knowledgeDecisionRejected,
@@ -76,6 +106,9 @@ func TestHandleFinalizeKnowledge_Rejected_NeverWrites(t *testing.T) {
 	assert.Equal(t, knowledgeDecisionRejected, got.Decision)
 	assert.Nil(t, got.Concept)
 	knowledgeStore.AssertNotCalled(t, "Put", mock.Anything, mock.Anything)
+	tasks.AssertCalled(t, "AppendKnowledgeActivity", "demo-project", "TASK-0001", task.KnowledgeActivityEntry{
+		ConceptID: "coding-standards/logging", Type: "Coding Standard", Action: task.KnowledgeActivityRejected,
+	})
 }
 
 func TestHandleFinalizeKnowledge_WrongStage(t *testing.T) {
@@ -142,6 +175,7 @@ func TestHandleFinalizeKnowledge_InvalidDecision(t *testing.T) {
 
 func TestHandleFinalizeKnowledge_PutFailure_InvalidConceptID(t *testing.T) {
 	knowledgeStore := new(mockKnowledgeStore)
+	knowledgeStore.On("Get", "../escape").Return(knowledge.Concept{}, os.ErrNotExist)
 	knowledgeStore.On("Put", "../escape", knowledge.Concept{Type: "Reference", Body: "x"}).Return(knowledge.ErrInvalidConceptID)
 	_, _, server := newReviewStageServer(t, knowledgeStore)
 

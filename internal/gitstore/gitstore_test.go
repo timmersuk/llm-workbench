@@ -236,3 +236,39 @@ func TestStore_SetSessionID_EnqueuesPendingChangeAndPersists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "sess-123", id)
 }
+
+// TestStore_AppendKnowledgeActivity_EnqueuesPendingChangeAndPersists
+// exercises AppendKnowledgeActivity's withPending wiring — unlike
+// KnowledgeStore.Put's own raw filesystem write (internal/knowledge), this
+// task-side audit trail goes through the same commit/push path as every
+// other task mutation, so it's committed on the very next tick rather than
+// only via sweepOrphans' stale-dirty-file fallback.
+func TestStore_AppendKnowledgeActivity_EnqueuesPendingChangeAndPersists(t *testing.T) {
+	remote := newBareRemote(t)
+	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
+	store, err := Open(workspaceRoot, remote)
+	require.NoError(t, err)
+
+	p, err := store.Projects.Create(newProjectCreateInput("Demo Project"))
+	require.NoError(t, err)
+	_, err = store.Tasks.Create(p.ID, newTask("first-task"))
+	require.NoError(t, err)
+	require.NoError(t, store.core.commitPending(time.Hour))
+
+	updated, err := store.Tasks.AppendKnowledgeActivity(p.ID, "first-task", task.KnowledgeActivityEntry{
+		ConceptID: "coding-standards/logging", Type: "Coding Standard", Action: task.KnowledgeActivityCreated,
+	})
+	require.NoError(t, err)
+	require.Len(t, updated.KnowledgeActivity, 1)
+	assert.Len(t, logMessages(t, workspaceRoot), 1, "nothing should be committed before commitPending runs")
+
+	require.NoError(t, store.core.commitPending(time.Hour))
+	commits := logMessages(t, workspaceRoot)
+	require.Len(t, commits, 2)
+	assert.Equal(t, "Record knowledge activity for demo-project/first-task", commits[0])
+
+	fetched, err := store.Tasks.Get(p.ID, "first-task")
+	require.NoError(t, err)
+	require.Len(t, fetched.KnowledgeActivity, 1)
+	assert.Equal(t, "coding-standards/logging", fetched.KnowledgeActivity[0].ConceptID)
+}

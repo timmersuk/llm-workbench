@@ -8,7 +8,7 @@ import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
 import { ToolActivitySequence } from './ToolActivity'
 import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
 import type { ToolActivityBlock } from './toolActivityBlocks'
-import type { AgentSelection, ChatStreamEvent, Conversation, ConversationMessage, ReasoningEffort } from './types'
+import type { AgentSelection, ChatStreamEvent, Conversation, ConversationMessage, ConversationToolCall, ReasoningEffort } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
 import { useStickyAutoScroll } from './useStickyAutoScroll'
 
@@ -20,7 +20,12 @@ interface DisplayMessage {
   // segment structure) — segments is what's rendered.
   content: string
   reasoningContent: string
-  toolCallName: string | null
+  // toolCallNames is every Draft-proposing tool call name this turn made,
+  // in order — usually zero or one, but a stage offering more than one
+  // Draft tool at once (Review's propose_review + propose_knowledge) can
+  // have the model call more than one in the same turn; each gets its own
+  // chip below.
+  toolCallNames: string[]
   segments: ToolActivityBlock[]
   error: string | null
   thinkingCollapsed: boolean
@@ -138,12 +143,25 @@ function isMaxTurnsError(error: string): boolean {
   return /maximum number of turns/i.test(error)
 }
 
+// effectiveToolCalls mirrors internal/task/conversation.go's
+// ConversationMessage.EffectiveToolCalls: prefers m.tool_calls (the server
+// always populates it — see ConversationMessage.tool_calls' doc comment,
+// types.ts) and falls back to wrapping m.tool_call as a one-element array
+// only for a bare test fixture that constructs a ConversationMessage
+// literal without tool_calls.
+function effectiveToolCalls(m: ConversationMessage): ConversationToolCall[] {
+  if (m.tool_calls && m.tool_calls.length > 0) {
+    return m.tool_calls
+  }
+  return m.tool_call ? [m.tool_call] : []
+}
+
 function toDisplayMessage(m: ConversationMessage): DisplayMessage {
   return {
     role: m.role,
     content: m.content,
     reasoningContent: '',
-    toolCallName: m.tool_call?.name ?? null,
+    toolCallNames: effectiveToolCalls(m).map((c) => c.name),
     segments: toDisplaySegments(m),
     error: m.error ?? null,
     thinkingCollapsed: true,
@@ -454,19 +472,25 @@ export function StageConversationPanel<D, S = never>({
         let latestMainCall: { arguments: string } | undefined
         let latestSecondaryCall: { arguments: string } | undefined
         for (let i = rehydrationPool.length - 1; i >= 0; i--) {
-          const toolCall = rehydrationPool[i].tool_call
-          if (!toolCall || toolCall.name === askQuestionToolName) {
-            // ask_question is handled separately below (only resurfaced
-            // when it's the very last message) — skipped here so it's
-            // never mistaken for a RequirementsDraft/TaskPlan proposal by
-            // the "any non-secondary tool call is the main draft" fallback
-            // below.
-            continue
-          }
-          if (secondaryDraft && toolCall.name === secondaryDraft.toolName) {
-            latestSecondaryCall ??= toolCall
-          } else {
-            latestMainCall ??= toolCall
+          // A single turn can carry more than one Draft-proposing tool call
+          // (a stage offering more than one at once — Review's
+          // propose_review + propose_knowledge — and the model calling both
+          // in the same turn), so every call on this message is considered,
+          // not just its first/only one.
+          for (const toolCall of effectiveToolCalls(rehydrationPool[i])) {
+            if (toolCall.name === askQuestionToolName) {
+              // ask_question is handled separately below (only resurfaced
+              // when it's the very last message) — skipped here so it's
+              // never mistaken for a RequirementsDraft/TaskPlan proposal by
+              // the "any non-secondary tool call is the main draft"
+              // fallback below.
+              continue
+            }
+            if (secondaryDraft && toolCall.name === secondaryDraft.toolName) {
+              latestSecondaryCall ??= toolCall
+            } else {
+              latestMainCall ??= toolCall
+            }
           }
           if (latestMainCall && (!secondaryDraft || latestSecondaryCall)) {
             break
@@ -494,10 +518,11 @@ export function StageConversationPanel<D, S = never>({
         // resurfacing it here would offer stale, already-moot options. Also
         // restricted to rehydrationPool for the same reason as the Draft
         // proposals above.
-        const lastToolCall = rehydrationPool[rehydrationPool.length - 1]?.tool_call
-        if (lastToolCall?.name === askQuestionToolName) {
+        const lastMessage = rehydrationPool[rehydrationPool.length - 1]
+        const lastAskQuestion = lastMessage && effectiveToolCalls(lastMessage).find((c) => c.name === askQuestionToolName)
+        if (lastAskQuestion) {
           try {
-            setPendingQuestion(parseAskQuestionArgs(lastToolCall.arguments))
+            setPendingQuestion(parseAskQuestionArgs(lastAskQuestion.arguments))
           } catch {
             // Malformed arguments JSON — no buttons to rehydrate, the
             // human can just keep chatting.
@@ -633,7 +658,11 @@ export function StageConversationPanel<D, S = never>({
       return
     }
     if (event.tool_call) {
-      updateLastMessage((msg) => ({ ...msg, toolCallName: event.tool_call!.name }))
+      // Appended, not overwritten — a turn can stream more than one
+      // ToolCall event (a stage offering more than one Draft tool at once,
+      // Review's propose_review + propose_knowledge, and the model calling
+      // both), each its own chip below.
+      updateLastMessage((msg) => ({ ...msg, toolCallNames: [...msg.toolCallNames, event.tool_call!.name] }))
       if (event.tool_call.name === askQuestionToolName) {
         // Checked before the main/secondary draft bucketing below, so
         // ask_question is never misparsed as a RequirementsDraft/TaskPlan —
@@ -698,8 +727,8 @@ export function StageConversationPanel<D, S = never>({
 
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text, reasoningContent: '', toolCallName: null, segments: [{ kind: 'text', text }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
+      { role: 'user', content: text, reasoningContent: '', toolCallNames: [], segments: [{ kind: 'text', text }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallNames: [], segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -754,7 +783,7 @@ export function StageConversationPanel<D, S = never>({
   async function startConversation(model: string, executorKey: string) {
     setMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallNames: [], segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -815,8 +844,8 @@ export function StageConversationPanel<D, S = never>({
     const previousMessages = messages
     setMessages((prev) => [
       ...prev.slice(0, index),
-      { role: 'user', content, reasoningContent: '', toolCallName: null, segments: [{ kind: 'text', text: content }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
-      { role: 'assistant', content: '', reasoningContent: '', toolCallName: null, segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
+      { role: 'user', content, reasoningContent: '', toolCallNames: [], segments: [{ kind: 'text', text: content }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', toolCallNames: [], segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setPendingDraft(null)
     setPendingQuestion(null)
@@ -1083,10 +1112,14 @@ export function StageConversationPanel<D, S = never>({
                 )}
               </div>
             ))}
-            {message.toolCallName && message.toolCallName !== askQuestionToolName && (
-              <span className="tool-call-chip">Proposed a draft ({message.toolCallName})</span>
-            )}
-            {message.toolCallName === askQuestionToolName && <span className="tool-call-chip">Asked a question</span>}
+            {message.toolCallNames
+              .filter((name) => name !== askQuestionToolName)
+              .map((name) => (
+                <span key={name} className="tool-call-chip">
+                  Proposed a draft ({name})
+                </span>
+              ))}
+            {message.toolCallNames.includes(askQuestionToolName) && <span className="tool-call-chip">Asked a question</span>}
             {message.error &&
               (isMaxTurnsError(message.error) && !readOnly ? (
                 <div className="error max-turns-notice">

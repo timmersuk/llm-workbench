@@ -11,6 +11,22 @@ export interface PullRequest {
   branch: string
 }
 
+// KnowledgeActivityAction mirrors task.KnowledgeActivityAction*
+// (internal/task/task.go).
+export type KnowledgeActivityAction = 'created' | 'updated' | 'rejected'
+
+// KnowledgeActivityEntry mirrors task.KnowledgeActivityEntry — one row of
+// Task.knowledge_activity, appended whenever a human accepts or rejects a
+// Review-stage propose_knowledge Draft (handleFinalizeKnowledge,
+// internal/api/knowledge_draft.go). Purely an audit trail: it never
+// affects the task's stage.
+export interface KnowledgeActivityEntry {
+  concept_id: string
+  type?: string
+  action: KnowledgeActivityAction
+  created_at: string
+}
+
 export interface Task {
   id: string
   title: string
@@ -32,6 +48,11 @@ export interface Task {
   // created before this mechanism existed. TaskDetailPanel only shows its
   // "View pre-creation conversation" nav link when this is set.
   draft_session_id?: string
+  // knowledge_activity mirrors task.Task.KnowledgeActivity — every
+  // knowledge concept this task's Review conversation proposed and a human
+  // then accepted or rejected. Absent/empty for a task that has never had
+  // one proposed.
+  knowledge_activity?: KnowledgeActivityEntry[]
 }
 
 export type ReasoningEffort = 'low' | 'medium' | 'high'
@@ -329,7 +350,20 @@ export type ConversationSegment =
 export interface ConversationMessage {
   role: string
   content: string
+  // tool_call is tool_calls[0] when the turn proposed at least one Draft —
+  // kept for a caller that only ever expects one Draft-proposing tool call
+  // per turn. tool_calls carries every one a turn proposed, in order; a
+  // stage that offers more than one Draft-proposing tool at once (Review's
+  // propose_review + propose_knowledge, stageTool in
+  // internal/api/stage_conversation.go) can have the model call more than
+  // one in the same turn — tool_call alone used to silently lose every
+  // call after the first (internal/task/conversation.go's
+  // ConversationMessage.EffectiveToolCalls doc comment has the full
+  // story). Always populated by the server (synthesized from the legacy
+  // singular field for a message recorded before tool_calls existed), same
+  // guarantee as segments below.
   tool_call?: ConversationToolCall
+  tool_calls?: ConversationToolCall[]
   tool_call_id?: string
   tool_activity?: ConversationToolActivity[]
   segments?: ConversationSegment[]
@@ -515,11 +549,16 @@ export interface KnowledgeConceptDraft {
 }
 
 // FinalizeKnowledgeResponse mirrors internal/api finalizeKnowledgeResponse.
-// concept is only populated on an accepted decision.
+// concept is only populated on an accepted decision. task is the task with
+// this decision's entry already appended to knowledge_activity —
+// best-effort (absent if recording it failed server-side) — letting a
+// caller refresh its own copy of the task and show the new log entry
+// immediately, without a second GET.
 export interface FinalizeKnowledgeResponse {
   concept_id: string
   decision: KnowledgeConceptDraftDecision
   concept?: { type: string; frontmatter?: Record<string, unknown>; body: string }
+  task?: Task
 }
 
 // ReviewsListResult mirrors handleListReviews' response — every verdict for a

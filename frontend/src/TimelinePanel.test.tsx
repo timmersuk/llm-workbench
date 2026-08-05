@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TimelinePanel } from './TimelinePanel'
 import * as api from './api'
-import type { Conversation, Review, StageTransition } from './types'
+import type { Conversation, KnowledgeActivityEntry, Review, StageTransition } from './types'
 
 vi.mock('./api')
 
@@ -113,6 +113,38 @@ describe('TimelinePanel', () => {
     render(<TimelinePanel projectId={projectId} taskId={taskId} />)
 
     expect(await screen.findByText(/finalized review/)).toBeInTheDocument()
+  })
+
+  it('renders nothing when there are no transitions, reviews, or knowledge activity', async () => {
+    vi.mocked(api.listStageTransitions).mockResolvedValue({ stage_transitions: [] })
+    vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
+
+    const { container } = render(<TimelinePanel projectId={projectId} taskId={taskId} knowledgeActivity={[]} />)
+    await vi.waitFor(() => expect(api.listStageTransitions).toHaveBeenCalled())
+    expect(container.textContent).toBe('')
+  })
+
+  it('merges knowledge_activity entries into the chronological list, labeled by action', async () => {
+    vi.mocked(api.listStageTransitions).mockResolvedValue({
+      stage_transitions: [
+        { task_id: taskId, from_stage: 'review', to_stage: 'implementation', trigger: 'finalize_review', created_at: '2026-01-01T00:00:00Z' },
+      ],
+    })
+    vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
+    const knowledgeActivity: KnowledgeActivityEntry[] = [
+      { concept_id: 'process/replan-when-requirements-invalidate-spec', type: 'Operational Practice', action: 'created', created_at: '2026-01-02T00:00:00Z' },
+      { concept_id: 'coding-standards/logging', type: 'Coding Standard', action: 'updated', created_at: '2026-01-03T00:00:00Z' },
+      { concept_id: 'x', action: 'rejected', created_at: '2026-01-04T00:00:00Z' },
+    ]
+
+    render(<TimelinePanel projectId={projectId} taskId={taskId} knowledgeActivity={knowledgeActivity} />)
+    await screen.findByText(/finalized review/)
+
+    const items = document.querySelectorAll('.execution-history > li')
+    expect(items).toHaveLength(4)
+    expect(items[1].textContent).toContain('knowledge concept created: process/replan-when-requirements-invalidate-spec')
+    expect(items[2].textContent).toContain('knowledge concept updated: coding-standards/logging')
+    expect(items[3].textContent).toContain('knowledge concept proposal rejected: x')
   })
 
   it('does not offer a conversation view for a transition whose destination stage has no Conversation', async () => {

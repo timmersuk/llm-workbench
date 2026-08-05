@@ -237,7 +237,7 @@ func (s *Server) handleStartTaskDraftConversation() http.HandlerFunc {
 		}
 
 		var assistantContent string
-		var proposed *chat.ToolCall
+		var proposed []chat.ToolCall
 		var activity []task.ConversationToolActivity
 		var segments []task.ConversationSegment
 		var streamErr error
@@ -297,7 +297,7 @@ func (s *Server) handlePostTaskDraftMessage() http.HandlerFunc {
 		}
 
 		var assistantContent string
-		var proposed *chat.ToolCall
+		var proposed []chat.ToolCall
 		var activity []task.ConversationToolActivity
 		var segments []task.ConversationSegment
 		var streamErr error
@@ -435,7 +435,7 @@ func (s *Server) handleRegenerateTaskDraftMessage() http.HandlerFunc {
 		s.clearTaskDraftSessionIDs(projectId, sessionId)
 
 		var assistantContent string
-		var proposed *chat.ToolCall
+		var proposed []chat.ToolCall
 		var activity []task.ConversationToolActivity
 		var segments []task.ConversationSegment
 		var streamErr error

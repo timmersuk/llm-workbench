@@ -384,6 +384,32 @@ func (s *TaskStore) RecordPullRequest(projectID, id string, pr task.PullRequest)
 	return t, nil
 }
 
+// AppendKnowledgeActivity persists via the wrapped task.FileStore and
+// enqueues the result to be committed on the push worker's next tick —
+// deliberately going through the same commit/push path as every other task
+// mutation here, unlike the KnowledgeStore.Put write the concept file
+// itself gets (internal/api/knowledge_draft.go's handleFinalizeKnowledge),
+// which bypasses this queue entirely and only ever reaches git via
+// sweepOrphans' stale-dirty-file fallback (commit.go's own
+// commitPending/sweepOrphans doc comments) — the gap this method exists to
+// not repeat for the task-side audit trail.
+func (s *TaskStore) AppendKnowledgeActivity(projectID, id string, entry task.KnowledgeActivityEntry) (task.Task, error) {
+	var t task.Task
+	err := s.core.withPending(
+		fmt.Sprintf("Record knowledge activity for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.AppendKnowledgeActivity(projectID, id, entry)
+			return err
+		},
+	)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return t, nil
+}
+
 // ReviseToRequirements persists via the wrapped task.FileStore and enqueues
 // the result to be committed on the push worker's next tick.
 func (s *TaskStore) ReviseToRequirements(projectID, id, reason string) (task.Task, error) {

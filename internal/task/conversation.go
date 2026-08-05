@@ -144,10 +144,27 @@ func TruncateForPersistence(s string) string {
 // ConversationMessage is one message in a stage's persisted, append-only
 // history.
 type ConversationMessage struct {
-	Role       string                `yaml:"role" json:"role"` // "user" | "assistant" | "tool"
-	Content    string                `yaml:"content" json:"content"`
-	ToolCall   *ConversationToolCall `yaml:"tool_call,omitempty" json:"tool_call,omitempty"`
-	ToolCallID string                `yaml:"tool_call_id,omitempty" json:"tool_call_id,omitempty"`
+	Role     string `yaml:"role" json:"role"` // "user" | "assistant" | "tool"
+	Content  string `yaml:"content" json:"content"`
+	// ToolCall is ToolCalls[0] when the turn proposed at least one Draft,
+	// nil otherwise — kept for every reader that only ever expects one
+	// Draft-proposing tool per turn (Requirements/Planning/TaskDraft each
+	// offer exactly one, plus ask_question). A turn that proposes more
+	// than one Draft in the same turn (Review offers propose_review and
+	// propose_knowledge at once, stageTool in
+	// internal/api/stage_conversation.go) used to lose every call after
+	// this one — see ToolCalls.
+	ToolCall *ConversationToolCall `yaml:"tool_call,omitempty" json:"tool_call,omitempty"`
+	// ToolCalls carries every Draft-proposing tool call this turn made, in
+	// the order they were resolved — ToolCall above stays just the first,
+	// unchanged, so this is purely additive. Excluded from the default
+	// JSON marshaling (like Segments) since a message persisted before
+	// this field existed has it empty even though ToolCall is set;
+	// EffectiveToolCalls is how a caller gets an always-populated view
+	// regardless of which case this is. Marshaled to YAML as a plain list
+	// (its own MarshalYAML on ConversationToolCall applies automatically).
+	ToolCalls  []ConversationToolCall `yaml:"tool_calls,omitempty" json:"-"`
+	ToolCallID string                 `yaml:"tool_call_id,omitempty" json:"tool_call_id,omitempty"`
 	// ToolActivity is the ordered list of intermediate tool calls/results
 	// (CONTEXT.md's "Tool Activity") the agent made while producing this
 	// turn, bundled onto the assistant message that closes it out rather
@@ -188,6 +205,7 @@ func (m ConversationMessage) MarshalYAML() (interface{}, error) {
 		Role         string                     `yaml:"role"`
 		Content      yamlutil.Quoted            `yaml:"content"`
 		ToolCall     *ConversationToolCall      `yaml:"tool_call,omitempty"`
+		ToolCalls    []ConversationToolCall     `yaml:"tool_calls,omitempty"`
 		ToolCallID   string                     `yaml:"tool_call_id,omitempty"`
 		ToolActivity []ConversationToolActivity `yaml:"tool_activity,omitempty"`
 		Segments     []ConversationSegment      `yaml:"segments,omitempty"`
@@ -196,7 +214,24 @@ func (m ConversationMessage) MarshalYAML() (interface{}, error) {
 		Model        string                     `yaml:"model,omitempty"`
 		Effort       string                     `yaml:"effort,omitempty"`
 		CreatedAt    time.Time                  `yaml:"created_at"`
-	}{m.Role, yamlutil.Quoted(m.Content), m.ToolCall, m.ToolCallID, m.ToolActivity, m.Segments, yamlutil.Quoted(m.Error), m.Executor, m.Model, m.Effort, m.CreatedAt}, nil
+	}{m.Role, yamlutil.Quoted(m.Content), m.ToolCall, m.ToolCalls, m.ToolCallID, m.ToolActivity, m.Segments, yamlutil.Quoted(m.Error), m.Executor, m.Model, m.Effort, m.CreatedAt}, nil
+}
+
+// EffectiveToolCalls returns m.ToolCalls when the turn was recorded with
+// the full list, or — for a message persisted before ToolCalls existed, or
+// built by an older code path that only ever set the singular ToolCall —
+// wraps m.ToolCall as a one-element slice. Returns nil when neither is set.
+// This is the one place a caller should look to see every Draft a turn
+// proposed; m.ToolCall/m.ToolCalls themselves stay as recorded, exactly
+// like Segments/EffectiveSegments above.
+func (m ConversationMessage) EffectiveToolCalls() []ConversationToolCall {
+	if len(m.ToolCalls) > 0 {
+		return m.ToolCalls
+	}
+	if m.ToolCall != nil {
+		return []ConversationToolCall{*m.ToolCall}
+	}
+	return nil
 }
 
 // EffectiveSegments returns m.Segments when the turn was recorded with
@@ -233,8 +268,9 @@ type conversationMessageAlias ConversationMessage
 func (m ConversationMessage) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		conversationMessageAlias
-		Segments []ConversationSegment `json:"segments,omitempty"`
-	}{conversationMessageAlias(m), m.EffectiveSegments()})
+		Segments  []ConversationSegment  `json:"segments,omitempty"`
+		ToolCalls []ConversationToolCall `json:"tool_calls,omitempty"`
+	}{conversationMessageAlias(m), m.EffectiveSegments(), m.EffectiveToolCalls()})
 }
 
 // Conversation is one stage's full, append-only message history, stored as

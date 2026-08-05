@@ -90,9 +90,17 @@ type Result struct {
 	// loop stopped on text, or the partial text of the turn that called
 	// StopTool / exhausted the turn budget).
 	Content string
-	// StopCall is the StopTool call the model made, if the loop stopped for
-	// that reason; nil otherwise.
+	// StopCall is StopCalls[0] when the loop stopped because the model
+	// called at least one StopTool, nil otherwise — kept alongside
+	// StopCalls for every caller that only ever configures one StopTool.
 	StopCall *chat.ToolCall
+	// StopCalls carries every StopTool call the model made in the turn that
+	// ended the loop, in cfg.StopTools' declared order — a caller
+	// configuring more than one StopTool (Review's propose_review +
+	// propose_knowledge, offered together) can have the model call more
+	// than one in the same turn; this is how the second one is no longer
+	// silently dropped.
+	StopCalls []chat.ToolCall
 	// Turns is how many model turns ran.
 	Turns int
 	// Exhausted is true when the loop hit MaxTurns without a natural stop.
@@ -166,8 +174,12 @@ turnLoop:
 		// A StopTool takes precedence: if the model proposed a Draft (or
 		// whatever stop tool is configured), that ends the loop even if it
 		// also called a read tool in the same turn. Checked in cfg.StopTools'
-		// order; a model that somehow calls more than one stop tool in the
-		// same turn resolves to whichever is listed first.
+		// order; every valid stop call found is collected into stopCalls
+		// (a model can call more than one StopTool in the same turn — e.g.
+		// Review's propose_review and propose_knowledge, offered together).
+		var stopCalls []chat.ToolCall
+		var invalidCall *chat.ToolCall
+		var invalidErr error
 		for _, stop := range cfg.StopTools {
 			sc := findCall(calls, stop.Function.Name)
 			if sc == nil {
@@ -180,11 +192,18 @@ turnLoop:
 			// the model retry, bounded by the same MaxTurns as everything
 			// else, rather than ending the loop with a malformed proposal.
 			if err := validateStopCall(stop, sc); err != nil {
-				msgs = append(msgs, chat.Message{Role: "assistant", Content: lastText, ToolCalls: []chat.ToolCall{*sc}})
-				msgs = append(msgs, chat.Message{Role: "tool", ToolCallID: sc.ID, Content: "error: " + err.Error()})
-				continue turnLoop
+				invalidCall, invalidErr = sc, err
+				continue
 			}
-			return Result{Content: lastText, StopCall: sc, Turns: turn, TokensUsed: totalTokens}, nil
+			stopCalls = append(stopCalls, *sc)
+		}
+		if invalidCall != nil {
+			msgs = append(msgs, chat.Message{Role: "assistant", Content: lastText, ToolCalls: []chat.ToolCall{*invalidCall}})
+			msgs = append(msgs, chat.Message{Role: "tool", ToolCallID: invalidCall.ID, Content: "error: " + invalidErr.Error()})
+			continue turnLoop
+		}
+		if len(stopCalls) > 0 {
+			return Result{Content: lastText, StopCall: &stopCalls[0], StopCalls: stopCalls, Turns: turn, TokensUsed: totalTokens}, nil
 		}
 
 		// Otherwise execute the tool calls and feed the results back. The

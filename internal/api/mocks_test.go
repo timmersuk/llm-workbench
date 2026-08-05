@@ -306,6 +306,15 @@ func (m *mockTaskStore) RecordPullRequest(projectID, id string, pr task.PullRequ
 	return t, args.Error(1)
 }
 
+func (m *mockTaskStore) AppendKnowledgeActivity(projectID, id string, entry task.KnowledgeActivityEntry) (task.Task, error) {
+	args := m.Called(projectID, id, entry)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
 type mockKnowledgeStore struct{ mock.Mock }
 
 func (m *mockKnowledgeStore) Get(conceptID string) (knowledge.Concept, error) {

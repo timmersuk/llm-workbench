@@ -127,7 +127,7 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	if err != nil {
 		// A failed turn is not persisted — the history stays at its
 		// pre-turn state so the next attempt rebuilds cleanly.
-		return RunOutput{Content: res.Content, ToolCall: res.StopCall}, err
+		return RunOutput{Content: res.Content, ToolCall: res.StopCall, ToolCalls: res.StopCalls}, err
 	}
 
 	content := res.Content
@@ -135,13 +135,14 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 		content += "\n\n[Note: reached the tool-exploration turn limit; this answer may be incomplete.]"
 	}
 
-	// Persist the human turn and the assistant's final text. A Draft proposal
-	// is folded into the assistant text (not a structured tool call), matching
-	// api.conversationHistoryToChatMessages so the live store and a rehydrated
-	// one are identical and no dangling tool_call is left for the next turn.
+	// Persist the human turn and the assistant's final text. Every Draft
+	// proposal is folded into the assistant text (not a structured tool
+	// call), matching api.conversationHistoryToChatMessages so the live
+	// store and a rehydrated one are identical and no dangling tool_call is
+	// left for the next turn.
 	assistantContent := content
-	if res.StopCall != nil {
-		assistantContent += fmt.Sprintf("\n(proposed a draft via %s: %s)", res.StopCall.Function.Name, res.StopCall.Function.Arguments)
+	for _, call := range res.StopCalls {
+		assistantContent += fmt.Sprintf("\n(proposed a draft via %s: %s)", call.Function.Name, call.Function.Arguments)
 	}
 	r.mu.Lock()
 	turns := append(r.sessions[in.SessionKey], chat.Message{Role: "user", Content: in.UserMessage})
@@ -149,7 +150,7 @@ func (r *ChatClientRunner) Run(ctx context.Context, in RunInput, onDelta func(ch
 	r.sessions[in.SessionKey] = turns
 	r.mu.Unlock()
 
-	return RunOutput{Content: content, ToolCall: res.StopCall}, nil
+	return RunOutput{Content: content, ToolCall: res.StopCall, ToolCalls: res.StopCalls}, nil
 }
 
 // loopTools returns the loop toolset for one turn: the always-available

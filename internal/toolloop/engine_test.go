@@ -144,6 +144,39 @@ func TestMultipleStopToolsEitherOneStops(t *testing.T) {
 	}
 }
 
+// TestMultipleStopToolsBothCalledCapturesBoth covers the bug fixed
+// alongside claude_runner.go's processMessage/codex_runner.go's equivalents:
+// a model calling more than one offered StopTool in the same turn (Review's
+// propose_review + propose_knowledge) previously resolved to only
+// "whichever is listed first" (this test's own prior name/doc comment) —
+// the other was silently dropped. Now both are captured, in cfg.StopTools'
+// declared order, into StopCalls.
+func TestMultipleStopToolsBothCalledCapturesBoth(t *testing.T) {
+	review := chat.Tool{Type: "function", Function: chat.ToolSchema{Name: "propose_review"}}
+	knowledgeTool := chat.Tool{Type: "function", Function: chat.ToolSchema{Name: "propose_knowledge"}}
+	f := &fakeClient{turns: []func(func(chat.Delta) error) error{
+		toolTurn(
+			call("c1", "propose_review", `{"decision":"needs_changes"}`),
+			call("c2", "propose_knowledge", `{"concept_id":"x"}`),
+		),
+	}}
+	res, err := New(f).Run(context.Background(), Config{
+		StopTools: []chat.Tool{review, knowledgeTool}, MaxTurns: 5,
+	}, baseMessages(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.StopCalls) != 2 {
+		t.Fatalf("expected both stop calls captured, got %+v", res.StopCalls)
+	}
+	if res.StopCalls[0].Function.Name != "propose_review" || res.StopCalls[1].Function.Name != "propose_knowledge" {
+		t.Fatalf("expected stop calls in StopTools' declared order, got %+v", res.StopCalls)
+	}
+	if res.StopCall == nil || res.StopCall.Function.Name != "propose_review" {
+		t.Fatalf("expected StopCall to stay the first (propose_review), got %+v", res.StopCall)
+	}
+}
+
 // planStopTool mirrors internal/drafttool's ProposePlan schema closely
 // enough to exercise validateStopCall: "steps" is required.
 func planStopTool() chat.Tool {

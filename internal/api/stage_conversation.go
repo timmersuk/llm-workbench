@@ -310,25 +310,30 @@ func beginStageStream(w http.ResponseWriter) (func(chatStreamEvent), bool) {
 // stageAssistantMessage assembles the assistant turn to persist once a stream
 // has ended: its accumulated content, the stream error stamped onto .Error
 // (already surfaced to the human as an SSE event, recorded here so the durable
-// transcript keeps it too), any Draft tool call the model proposed
-// (CONTEXT.md), flattened into the persisted ConversationToolCall shape, and
-// the turn's Tool Activity (docs/adr/0018), already capped by runStageTurn.
-// segments is the turn's real chronological order (docs/adr/0023) that
-// content/activity are themselves derived from; all three are runStageTurn's
-// return values, passed straight through. All three streaming handlers build
-// this identically; they differ only in how they then pair or replace it in
-// the record.
-func stageAssistantMessage(content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, streamErr error, selection agentrunner.Selection) task.ConversationMessage {
+// transcript keeps it too), every Draft tool call the model proposed
+// (CONTEXT.md — usually zero or one, but Review's propose_review and
+// propose_knowledge can both be called in the same turn), flattened into the
+// persisted ConversationToolCall shape, and the turn's Tool Activity
+// (docs/adr/0018), already capped by runStageTurn. segments is the turn's
+// real chronological order (docs/adr/0023) that content/activity are
+// themselves derived from; all three are runStageTurn's return values,
+// passed straight through. All three streaming handlers build this
+// identically; they differ only in how they then pair or replace it in the
+// record.
+func stageAssistantMessage(content string, proposed []chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, streamErr error, selection agentrunner.Selection) task.ConversationMessage {
 	msg := task.ConversationMessage{Role: "assistant", Content: content, ToolActivity: activity, Segments: segments, Executor: selection.Executor, Model: selection.Model, Effort: string(selection.Effort)}
 	if streamErr != nil {
 		msg.Error = streamErr.Error()
 	}
-	if proposed != nil {
-		msg.ToolCall = &task.ConversationToolCall{
-			ID:        proposed.ID,
-			Name:      proposed.Function.Name,
-			Arguments: proposed.Function.Arguments,
-		}
+	for _, p := range proposed {
+		msg.ToolCalls = append(msg.ToolCalls, task.ConversationToolCall{
+			ID:        p.ID,
+			Name:      p.Function.Name,
+			Arguments: p.Function.Arguments,
+		})
+	}
+	if len(msg.ToolCalls) > 0 {
+		msg.ToolCall = &msg.ToolCalls[0]
 	}
 	return msg
 }
@@ -372,7 +377,7 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		}
 
 		var assistantContent string
-		var proposed *chat.ToolCall
+		var proposed []chat.ToolCall
 		var activity []task.ConversationToolActivity
 		var segments []task.ConversationSegment
 		var streamErr error
@@ -477,7 +482,7 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		}
 
 		var assistantContent string
-		var proposed *chat.ToolCall
+		var proposed []chat.ToolCall
 		var activity []task.ConversationToolActivity
 		var segments []task.ConversationSegment
 		var streamErr error
@@ -655,7 +660,7 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 		s.clearSessionIDs(target.projectId, taskId, stage)
 
 		var assistantContent string
-		var proposed *chat.ToolCall
+		var proposed []chat.ToolCall
 		var activity []task.ConversationToolActivity
 		var segments []task.ConversationSegment
 		var streamErr error
@@ -703,15 +708,17 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 
 // runStageTurn runs one agent turn and streams its deltas via writeEvent
 // (the chatStreamEvent shape both stage-conversation endpoints share),
-// returning the assistant's accumulated content, any proposed Draft tool
-// call, the turn's Tool Activity (docs/adr/0018), its real chronological
-// segments (docs/adr/0023), and the turn's resulting session/thread id
+// returning the assistant's accumulated content, every proposed Draft tool
+// call (usually zero or one, but Review offers propose_review and
+// propose_knowledge at once and a model can call both in the same turn),
+// the turn's Tool Activity (docs/adr/0018), its real chronological segments
+// (docs/adr/0023), and the turn's resulting session/thread id
 // (agentrunner.RunOutput.SessionID — empty if the runner doesn't support
 // one, or the turn errored before producing one) for the caller to persist.
 // Shared by handlePostStageMessage and handleStartStageConversation — they
 // differ in what UserMessage/History/ResumeSessionID they supply and what
 // gets persisted afterward, not in how a turn is actually run and streamed.
-func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed *chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, sessionID string, err error) {
+func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentrunner.RunInput, writeEvent func(chatStreamEvent)) (content string, proposed []chat.ToolCall, activity []task.ConversationToolActivity, segments []task.ConversationSegment, sessionID string, err error) {
 	// segments is the turn's one real record of what happened, in the order
 	// it happened (docs/adr/0023) — content/activity below are both derived
 	// from it once the turn ends, rather than tracked in parallel, so
@@ -781,24 +788,37 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 	// returns its last round's text in out.Content, silently dropping
 	// earlier narration that was nonetheless streamed live and captured
 	// above.
-	toolCall := out.ToolCall
 	// A local OpenAI-compatible model can hallucinate a tool_calls delta for
 	// a tool it was never offered (e.g. one primed by the "explore the
 	// repo" instruction in the system prompt but never actually registered
 	// here) — only ever trust a call whose name matches one of the tools
 	// this turn actually offered, in.Tools (usually one; Review offers two
-	// at once), or a hallucination gets surfaced to the human as a real
-	// Draft proposal and persisted as one.
-	if toolCall != nil && !offersToolNamed(in.Tools, toolCall.Function.Name) {
-		logrus.WithFields(logrus.Fields{
-			"session_key": in.SessionKey, "expected_tools": toolNames(in.Tools), "got_tool": toolCall.Function.Name,
-		}).Warn("ignoring tool call that doesn't match any of the stage's registered tools")
-		toolCall = nil
+	// at once, and a model can call both in the same turn), or a
+	// hallucination gets surfaced to the human as a real Draft proposal and
+	// persisted as one. Every trusted call is streamed as its own SSE
+	// event, in the order agentrunner resolved them, so a turn that
+	// proposes two Drafts surfaces both instead of only the first.
+	//
+	// toolCalls falls back to the singular out.ToolCall when out.ToolCalls
+	// is empty — every real AgentRunner implementation sets both
+	// consistently (agentrunner.RunOutput's own doc comment), but this
+	// keeps any caller/mock that only ever populates the older singular
+	// field working unchanged.
+	toolCalls := out.ToolCalls
+	if len(toolCalls) == 0 && out.ToolCall != nil {
+		toolCalls = []chat.ToolCall{*out.ToolCall}
 	}
-	if toolCall != nil {
+	for _, call := range toolCalls {
+		if !offersToolNamed(in.Tools, call.Function.Name) {
+			logrus.WithFields(logrus.Fields{
+				"session_key": in.SessionKey, "expected_tools": toolNames(in.Tools), "got_tool": call.Function.Name,
+			}).Warn("ignoring tool call that doesn't match any of the stage's registered tools")
+			continue
+		}
+		proposed = append(proposed, call)
 		writeEvent(chatStreamEvent{ToolCall: &chatToolCallEvent{
-			Name:      toolCall.Function.Name,
-			Arguments: toolCall.Function.Arguments,
+			Name:      call.Function.Name,
+			Arguments: call.Function.Arguments,
 		}})
 	}
 
@@ -816,7 +836,7 @@ func runStageTurn(ctx context.Context, runner agentrunner.AgentRunner, in agentr
 	}
 	content = contentBuilder.String()
 
-	return content, toolCall, activity, segments, out.SessionID, runErr
+	return content, proposed, activity, segments, out.SessionID, runErr
 }
 
 // loadResumeSessionID returns the durable session/thread id previously
@@ -874,6 +894,16 @@ func (s *Server) clearSessionIDs(projectId, taskId, stage string) {
 func offersToolNamed(tools []chat.Tool, name string) bool {
 	for _, t := range tools {
 		if t.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// hasToolCallNamed reports whether calls contains one named name.
+func hasToolCallNamed(calls []task.ConversationToolCall, name string) bool {
+	for _, c := range calls {
+		if c.Name == name {
 			return true
 		}
 	}
@@ -997,8 +1027,8 @@ func conversationHistoryToChatMessages(conv task.Conversation) []chat.Message {
 		for _, line := range summarizeToolActivities(m.ToolActivity) {
 			content += fmt.Sprintf("\n(called %s)", line)
 		}
-		if m.ToolCall != nil {
-			content += fmt.Sprintf("\n(proposed a draft via %s: %s)", m.ToolCall.Name, m.ToolCall.Arguments)
+		for _, call := range m.EffectiveToolCalls() {
+			content += fmt.Sprintf("\n(proposed a draft via %s: %s)", call.Name, call.Arguments)
 		}
 		out = append(out, chat.Message{Role: m.Role, Content: content})
 	}
@@ -1020,7 +1050,7 @@ func conversationHistoryToChatMessages(conv task.Conversation) []chat.Message {
 func resolvedDecisionsSummary(conv task.Conversation) string {
 	var decisions []string
 	for i, m := range conv.Messages {
-		if m.Role != "assistant" || m.ToolCall == nil || m.ToolCall.Name != "ask_question" {
+		if m.Role != "assistant" || !hasToolCallNamed(m.EffectiveToolCalls(), askQuestionToolName) {
 			continue
 		}
 		if i+1 >= len(conv.Messages) || conv.Messages[i+1].Role != "user" {

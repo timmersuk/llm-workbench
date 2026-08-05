@@ -940,13 +940,15 @@ func isMessageStart(ev *claudecode.StreamEvent) bool {
 // tool this turn offered (RunInput.Tools) — a ToolUseBlock is only ever
 // treated as the turn's Draft proposal if its MCP-qualified name matches
 // one of them; a session with several offered tools (e.g. Review's
-// propose_review and propose_knowledge) surfaces whichever one the model
-// actually called. Every other ToolUseBlock/ToolResultBlock (Read/Grep/Glob,
-// bash, the knowledge-query tools) is intermediate tool activity, forwarded
-// through hooks rather than treated as a Draft. hooks may be nil, or have
-// either callback nil, for callers that don't care. Split out from Run's
-// loop so it's testable against hand-built claudecode.Message values
-// without a live subprocess.
+// propose_review and propose_knowledge) can have the model call more than
+// one in the same turn, and every one of them is captured, in order, into
+// out.ToolCalls (out.ToolCall stays the first, for single-draft callers).
+// Every other ToolUseBlock/ToolResultBlock (Read/Grep/Glob, bash, the
+// knowledge-query tools) is intermediate tool activity, forwarded through
+// hooks rather than treated as a Draft. hooks may be nil, or have either
+// callback nil, for callers that don't care. Split out from Run's loop so
+// it's testable against hand-built claudecode.Message values without a
+// live subprocess.
 func processMessage(msg claudecode.Message, toolNames []string, content *assistantText, out *RunOutput, onDelta func(chat.Delta) error, hooks *toolActivityHooks) (done bool, err error) {
 	switch m := msg.(type) {
 	case *claudecode.StreamEvent:
@@ -1020,8 +1022,12 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 			// (CONTEXT.md) — resolve it here instead of falling through to
 			// hooks.onResult below.
 			if call, ok := hooks.resolveDraft(b.ToolUseID); ok {
-				if !isError && out.ToolCall == nil {
-					out.ToolCall = &call
+				if !isError {
+					out.ToolCalls = append(out.ToolCalls, call)
+					if out.ToolCall == nil {
+						first := call
+						out.ToolCall = &first
+					}
 				}
 				continue
 			}

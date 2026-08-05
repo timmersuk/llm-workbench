@@ -92,6 +92,11 @@ type TaskStore interface {
 	ReviseToRequirements(projectID, id, reason string) (task.Task, error)
 	ReviseToPlanning(projectID, id, reason string) (task.Task, error)
 
+	// AppendKnowledgeActivity records one accept/reject decision from
+	// Review's propose_knowledge Draft onto the task's audit trail
+	// (handleFinalizeKnowledge, knowledge_draft.go) — never touches Stage.
+	AppendKnowledgeActivity(projectID, id string, entry task.KnowledgeActivityEntry) (task.Task, error)
+
 	NextExecutionID(projectID, id string) (string, error)
 	RecordExecution(projectID, id string, exec task.Execution) (task.Execution, error)
 	ListExecutions(projectID, id string) ([]task.Execution, error)

@@ -229,6 +229,41 @@ describe('ReviewPanel', () => {
     await waitFor(() => expect(screen.queryByText('Proposed knowledge concept')).not.toBeInTheDocument())
   })
 
+  it('calls onKnowledgeActivity with the refreshed task after an accept, so a caller can update its own task state immediately', async () => {
+    const user = userEvent.setup()
+    stubConversation()
+    vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
+    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: '' })
+    const refreshedTask = {
+      id: taskId,
+      stage: 'review',
+      knowledge_activity: [{ concept_id: 'coding-standards/logging', type: 'Coding Standard', action: 'created', created_at: '2026-01-01T00:00:00Z' }],
+    } as Task
+    vi.mocked(api.finalizeKnowledge).mockResolvedValue({ concept_id: 'coding-standards/logging', decision: 'accepted', task: refreshedTask })
+
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.startStageConversation).mockImplementation((_p, _t, _s, _m, _e, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    const onKnowledgeActivity = vi.fn()
+    render(<ReviewPanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} onKnowledgeActivity={onKnowledgeActivity} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Start Review' }))
+    act(() =>
+      deliver({
+        tool_call: {
+          name: 'propose_knowledge',
+          arguments: JSON.stringify({ concept_id: 'coding-standards/logging', type: 'Coding Standard', body: 'Use structured logging.' }),
+        },
+      }),
+    )
+    await user.click(await screen.findByRole('button', { name: 'Accept' }))
+
+    await waitFor(() => expect(onKnowledgeActivity).toHaveBeenCalledWith(refreshedTask))
+  })
+
   it('a review verdict and a knowledge proposal can be pending at the same time, decided independently', async () => {
     const user = userEvent.setup()
     stubConversation()
@@ -262,6 +297,44 @@ describe('ReviewPanel', () => {
     // Rejecting the knowledge draft must not touch the still-pending review verdict.
     expect(api.finalizeReview).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Finalize' })).toBeInTheDocument()
+  })
+
+  it('rehydrates both a pending review verdict and a pending knowledge proposal from one persisted message carrying both tool_calls', async () => {
+    // Regression coverage for a real bug: a turn that calls both
+    // propose_review and propose_knowledge persists as one assistant
+    // ConversationMessage with tool_calls: [review, knowledge] (see
+    // internal/task/conversation.go's ConversationMessage.ToolCalls). A
+    // page reload/reopen must rehydrate both as independently pending —
+    // previously only tool_call (the first) was ever persisted, so the
+    // second silently vanished with no trace across a reload.
+    vi.mocked(api.getStageConversation).mockResolvedValue({
+      stage: 'review',
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          tool_call: { id: 'call-1', name: 'propose_review', arguments: JSON.stringify({ decision: 'needs_changes', notes: 'fix the ordering bug' }) },
+          tool_calls: [
+            { id: 'call-1', name: 'propose_review', arguments: JSON.stringify({ decision: 'needs_changes', notes: 'fix the ordering bug' }) },
+            { id: 'call-2', name: 'propose_knowledge', arguments: JSON.stringify({ concept_id: 'x', type: 'Reference', body: 'y' }) },
+          ],
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    })
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+    vi.mocked(api.listAgentExecutors).mockResolvedValue({ executors: [] })
+    vi.mocked(api.listStageTransitions).mockResolvedValue({ stage_transitions: [] })
+    vi.mocked(api.listExecutions).mockResolvedValue({ executions: [makeExecution()] })
+    vi.mocked(api.getReviewDiff).mockResolvedValue({ patch: '' })
+
+    render(<ReviewPanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: 'Finalize' })).toBeInTheDocument()
+    expect(screen.getByText('Needs changes')).toBeInTheDocument()
+    expect(screen.getByText('fix the ordering bug')).toBeInTheDocument()
+    expect(screen.getByText('Proposed knowledge concept')).toBeInTheDocument()
+    expect(screen.getByLabelText('Concept ID')).toHaveValue('x')
   })
 
   it('does not rehydrate a stale propose_review draft left over from an earlier review round, and explains that this round has not started instead of resubmitting it', async () => {

@@ -143,11 +143,21 @@ type RunInput struct {
 }
 
 // RunOutput is the result of one AgentRunner.Run call: the assistant's
-// final text content, plus an optional decoded Draft tool call if the
-// agent proposed one during the turn.
+// final text content, plus every decoded Draft tool call the agent
+// proposed during the turn.
 type RunOutput struct {
-	Content  string
-	ToolCall *chat.ToolCall
+	Content string
+	// ToolCall is ToolCalls[0] when the turn proposed at least one Draft,
+	// nil otherwise — kept alongside ToolCalls so every existing
+	// single-draft-per-turn call site (Requirements/Planning/TaskDraft,
+	// none of which offer more than one Draft-proposing tool at once) can
+	// keep reading it unchanged. A turn that proposes more than one Draft
+	// (Review offers propose_review and propose_knowledge simultaneously —
+	// stageTool, internal/api/stage_conversation.go) previously lost every
+	// call after the first here; ToolCalls is the fix, carrying all of
+	// them in the order they were resolved.
+	ToolCall  *chat.ToolCall
+	ToolCalls []chat.ToolCall
 	// SessionID is this turn's resulting real session/thread id — the value
 	// a caller should persist and later feed back as this SessionKey's next
 	// RunInput.ResumeSessionID, so a subsequent turn with no live

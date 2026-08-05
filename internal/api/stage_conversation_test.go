@@ -634,6 +634,86 @@ func TestHandlePostStageMessage_StreamsToolCallAsSSEEventAndPersists(t *testing.
 	assert.Equal(t, `{"objective":"ship login"}`, persistedMsgs[1].ToolCall.Arguments)
 }
 
+// TestHandlePostStageMessage_StreamsAndPersistsBothDraftsFromOneTurn locks
+// in the fix for a real bug: a stage that offers more than one Draft-
+// proposing tool at once (Requirements offers propose_context +
+// ask_question; Review offers propose_review + propose_knowledge the same
+// way) can have the model call more than one of them in the same turn —
+// previously only the first ever survived past agentrunner into the
+// persisted conversation, the other silently vanishing with no trace
+// (confirmed against a real Review transcript where the assistant's own
+// text said "I've proposed needs_changes" but no propose_review tool_call
+// was ever recorded, because propose_knowledge had been resolved first).
+// Exercised here against Requirements — same stageTool/runStageTurn
+// machinery Review uses, without Review's git-worktree resolution — both
+// calls must be streamed as separate SSE ToolCall events and both
+// persisted on the one assistant message.
+func TestHandlePostStageMessage_StreamsAndPersistsBothDraftsFromOneTurn(t *testing.T) {
+	tasks := new(mockTaskStore)
+	stubSessionIDCalls(tasks)
+	tasks.On("Get", "demo-project", "TASK-0001").Return(task.Task{ID: "TASK-0001", Stage: task.StageRequirements}, nil)
+	tasks.On("GetConversation", "demo-project", "TASK-0001", task.StageRequirements).Return(task.Conversation{}, nil)
+
+	var persistedMsgs []task.ConversationMessage
+	tasks.On("AppendConversationMessages", "demo-project", "TASK-0001", task.StageRequirements, mock.MatchedBy(func(msgs []task.ConversationMessage) bool {
+		persistedMsgs = msgs
+		return true
+	})).Return(task.Conversation{}, nil)
+	tasks.On("ListReviews", "demo-project", "TASK-0001").Return(nil, nil)
+
+	knowledgeReader := new(mockKnowledgeStore)
+
+	runner := new(mockAgentRunner)
+	runner.On("Run", mock.Anything, mock.Anything, mock.Anything).Return([]chat.Delta{
+		{Content: "Here's my proposal, and a quick check: "},
+	}, agentrunner.RunOutput{
+		Content: "Here's my proposal, and a quick check: ",
+		ToolCall: &chat.ToolCall{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{
+			Name: proposeContextToolName, Arguments: `{"objective":"ship login"}`,
+		}},
+		ToolCalls: []chat.ToolCall{
+			{ID: "call-1", Type: "function", Function: chat.ToolCallFunction{
+				Name: proposeContextToolName, Arguments: `{"objective":"ship login"}`,
+			}},
+			{ID: "call-2", Type: "function", Function: chat.ToolCallFunction{
+				Name: askQuestionToolName, Arguments: `{"options":["yes","no"]}`,
+			}},
+		},
+	}, nil)
+
+	reposRoot, repositories := newStageMessageWorkspace(t)
+	projects, factory := newStageMessageServer(t, tasks, repositories)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/TASK-0001/stages/requirements/messages", stageMessageRequest{Content: "let's start"})
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "TASK-0001")
+	req.SetPathValue("stage", "requirements")
+	w := httptest.NewRecorder()
+	(&Server{Projects: projects, Tasks: factory, KnowledgeStore: knowledgeReader,
+		AgentRunners: map[string]agentrunner.AgentRunner{"local": runner}, ReposRoot: reposRoot}).handlePostStageMessage()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := parseSSEEvents(t, w.Body.String())
+	var toolCallEvents []chatToolCallEvent
+	for _, ev := range events {
+		if ev.ToolCall != nil {
+			toolCallEvents = append(toolCallEvents, *ev.ToolCall)
+		}
+	}
+	require.Len(t, toolCallEvents, 2, "both drafts must be streamed, not just the first")
+	assert.Equal(t, proposeContextToolName, toolCallEvents[0].Name)
+	assert.Equal(t, askQuestionToolName, toolCallEvents[1].Name)
+
+	require.Len(t, persistedMsgs, 2)
+	assistantMsg := persistedMsgs[1]
+	require.Len(t, assistantMsg.ToolCalls, 2, "both drafts must be persisted, not just the first")
+	assert.Equal(t, proposeContextToolName, assistantMsg.ToolCalls[0].Name)
+	assert.Equal(t, askQuestionToolName, assistantMsg.ToolCalls[1].Name)
+	require.NotNil(t, assistantMsg.ToolCall)
+	assert.Equal(t, proposeContextToolName, assistantMsg.ToolCall.Name, "singular ToolCall stays the first, for back-compat")
+}
+
 // TestHandlePostStageMessage_PersistsToolActivityOnAssistantMessage locks in
 // docs/adr/0018's persistence half: the turn's intermediate tool activity
 // (surfaced live as SSE ToolActivity events, same as

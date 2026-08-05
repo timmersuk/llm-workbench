@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/timmersuk/llm-workbench/internal/knowledge"
 	"github.com/timmersuk/llm-workbench/internal/task"
 )
@@ -34,11 +36,17 @@ type finalizeKnowledgeRequest struct {
 
 // finalizeKnowledgeResponse echoes back what was decided. Concept is only
 // populated on accept, letting a client confirm what was actually written
-// without a second GET.
+// without a second GET. Task is the task with this decision's entry
+// already appended to KnowledgeActivity — best-effort (nil if recording it
+// failed, logged server-side rather than failing the request, since the
+// primary accept/reject decision has already taken effect by then) — so a
+// client can refresh its own copy of the task and show the new log entry
+// immediately, without a second GET or a page reload.
 type finalizeKnowledgeResponse struct {
 	ConceptID string             `json:"concept_id"`
 	Decision  string             `json:"decision"`
 	Concept   *knowledge.Concept `json:"concept,omitempty"`
+	Task      *task.Task         `json:"task,omitempty"`
 }
 
 // handleFinalizeKnowledge is the human's accept/reject decision on a
@@ -95,16 +103,52 @@ func (s *Server) handleFinalizeKnowledge() http.HandlerFunc {
 				writeAPIError(w, http.StatusBadRequest, "type is required to accept a knowledge proposal")
 				return
 			}
+			// Determined before Put so it reflects whether the concept
+			// existed *prior* to this write, not after — Put unconditionally
+			// succeeds, so this is the only chance to tell "created" from
+			// "updated" apart. Any Get failure (missing file, unreadable,
+			// malformed) is treated as "didn't exist yet" — the same
+			// tolerant default buildStagePrompt uses for a concept id that
+			// fails to resolve.
+			action := task.KnowledgeActivityCreated
+			if _, getErr := s.KnowledgeStore.Get(req.ConceptID); getErr == nil {
+				action = task.KnowledgeActivityUpdated
+			}
 			concept := knowledge.Concept{Type: req.Type, Frontmatter: req.Frontmatter, Body: req.Body}
 			if err := s.KnowledgeStore.Put(req.ConceptID, concept); err != nil {
 				writeMutationError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision, Concept: &concept})
+			updated := s.recordKnowledgeActivity(store, projectId, taskId, req.ConceptID, req.Type, action)
+			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision, Concept: &concept, Task: updated})
 		case knowledgeDecisionRejected:
-			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision})
+			updated := s.recordKnowledgeActivity(store, projectId, taskId, req.ConceptID, req.Type, task.KnowledgeActivityRejected)
+			writeJSON(w, http.StatusOK, finalizeKnowledgeResponse{ConceptID: req.ConceptID, Decision: req.Decision, Task: updated})
 		default:
 			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("invalid decision %q", req.Decision))
 		}
 	}
+}
+
+// recordKnowledgeActivity appends one entry to the task's audit trail
+// (Task.KnowledgeActivity), returning the updated task on success or nil on
+// failure (logged, not surfaced to the human as a request error): this is
+// a secondary record of a decision that has already taken effect (the
+// concept file is already written, or there was nothing to write for a
+// reject), so a failure here must not turn an otherwise-successful
+// Finalize into a client-visible error — it just means the response's Task
+// field is omitted, and the next real GET of the task picks up whatever
+// did get written.
+func (s *Server) recordKnowledgeActivity(store TaskStore, projectId, taskId, conceptID, conceptType string, action task.KnowledgeActivityAction) *task.Task {
+	updated, err := store.AppendKnowledgeActivity(projectId, taskId, task.KnowledgeActivityEntry{
+		ConceptID: conceptID,
+		Type:      conceptType,
+		Action:    action,
+	})
+	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{"task": taskId, "concept": conceptID, "action": action}).
+			Warn("recording knowledge activity on task")
+		return nil
+	}
+	return &updated
 }

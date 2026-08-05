@@ -71,6 +71,34 @@ type Task struct {
 	// construction, so this is not an append-only store the way
 	// reviews/executions are.
 	PullRequest *PullRequest `yaml:"pull_request,omitempty" json:"pull_request,omitempty"`
+
+	// KnowledgeActivity is an append-only log of every knowledge concept
+	// this task's Review conversation proposed and a human then accepted or
+	// rejected (handleFinalizeKnowledge, internal/api/knowledge_draft.go) —
+	// the durable answer to "did this task's knowledge proposal actually
+	// happen," independent of KnowledgeStore's own concept files (which live
+	// in a workspace-wide store with no back-reference to the task that
+	// produced them). Never affects Stage or any other task field.
+	KnowledgeActivity []KnowledgeActivityEntry `yaml:"knowledge_activity,omitempty" json:"knowledge_activity,omitempty"`
+}
+
+// KnowledgeActivityAction is the fixed vocabulary of what a knowledge
+// Finalize decision (internal/api/knowledge_draft.go) resulted in.
+type KnowledgeActivityAction string
+
+const (
+	KnowledgeActivityCreated  KnowledgeActivityAction = "created"
+	KnowledgeActivityUpdated  KnowledgeActivityAction = "updated"
+	KnowledgeActivityRejected KnowledgeActivityAction = "rejected"
+)
+
+// KnowledgeActivityEntry is one row of Task.KnowledgeActivity, appended by
+// AppendKnowledgeActivity (knowledge_activity.go).
+type KnowledgeActivityEntry struct {
+	ConceptID string                  `yaml:"concept_id" json:"concept_id"`
+	Type      string                  `yaml:"type,omitempty" json:"type,omitempty"`
+	Action    KnowledgeActivityAction `yaml:"action" json:"action"`
+	CreatedAt time.Time               `yaml:"created_at" json:"created_at"`
 }
 
 type AgentSelection struct {
