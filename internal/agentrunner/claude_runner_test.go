@@ -399,6 +399,27 @@ func TestProcessMessage_ResultMessageReportsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "boom")
 }
 
+func TestProcessMessage_ResultMessageErrorFallsBackToResultWhenErrorsEmpty(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+	result := "max turns exceeded"
+
+	done, err := processMessage(&claudecode.ResultMessage{IsError: true, Result: &result}, []string{"propose_plan"}, &content, &out, nil, nil)
+	assert.True(t, done)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max turns exceeded")
+}
+
+func TestProcessMessage_ResultMessageErrorFallsBackToSubtypeWhenErrorsAndResultEmpty(t *testing.T) {
+	var content assistantText
+	var out RunOutput
+
+	done, err := processMessage(&claudecode.ResultMessage{IsError: true, Subtype: "error_max_turns"}, []string{"propose_plan"}, &content, &out, nil, nil)
+	assert.True(t, done)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "error_max_turns")
+}
+
 func TestProcessMessage_StreamDeltaInvokesOnDelta(t *testing.T) {
 	var content assistantText
 	var out RunOutput

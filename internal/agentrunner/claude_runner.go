@@ -1039,7 +1039,18 @@ func processMessage(msg claudecode.Message, toolNames []string, content *assista
 		// ResumeSessionID (see clientFor's doc comment).
 		out.SessionID = m.SessionID
 		if m.IsError {
-			return true, fmt.Errorf("claude code agent run failed: %s", strings.Join(m.Errors, "; "))
+			// Errors is sometimes left empty by the CLI even when is_error is
+			// true — the real diagnostic lands in Result or, failing that,
+			// Subtype instead. Fall back through them so this never surfaces
+			// a blank error.
+			detail := strings.Join(m.Errors, "; ")
+			if detail == "" && m.Result != nil {
+				detail = *m.Result
+			}
+			if detail == "" {
+				detail = m.Subtype
+			}
+			return true, fmt.Errorf("claude code agent run failed: %s", detail)
 		}
 		return true, nil
 	}
