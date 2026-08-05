@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { isAbortError, listAgentExecutors, listModels } from './api'
 import { ChatInputArea } from './ChatInputArea'
+import { formatMessageTimestamp } from './formatTimestamp'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
 import { ToolActivitySequence } from './ToolActivity'
@@ -1116,7 +1117,8 @@ export function StageConversationPanel<D, S = never>({
                 <div className="thinking-content">{message.reasoningContent}</div>
               </details>
             )}
-            <strong>{message.role}:</strong>
+            <strong>{message.role}:</strong>{' '}
+            <span className="message-timestamp">{formatMessageTimestamp(message.created_at)}</span>
             {message.segments.map((segment, segIndex) => (
               <div key={segIndex}>
                 {segment.kind === 'text' && <MarkdownMessage content={segment.text} />}

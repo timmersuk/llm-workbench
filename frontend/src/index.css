@@ -390,6 +390,12 @@ th {
   background: var(--bg-alt);
 }
 
+.message-timestamp {
+  font-size: 12px;
+  font-weight: normal;
+  color: var(--text-muted);
+}
+
 .markdown-message p:first-child {
   margin-top: 0;
 }

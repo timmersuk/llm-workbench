@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
 import { closeChatSession, isAbortError, listAgentExecutors, listModels, streamChatCompletion } from './api'
 import { ChatInputArea } from './ChatInputArea'
+import { formatMessageTimestamp } from './formatTimestamp'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
 import type { ChatHistoryEntry, ChatStreamEvent, ReasoningEffort } from './types'
@@ -13,6 +14,7 @@ interface DisplayMessage {
   reasoningContent: string
   error: string | null
   thinkingCollapsed: boolean
+  created_at: string
 }
 
 // executorLabels maps an agent executor key (internal/agentrunner) to its
@@ -171,8 +173,8 @@ export function ChatPanel() {
 
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: trimmedText, reasoningContent: '', error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
+      { role: 'user', content: trimmedText, reasoningContent: '', error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -233,8 +235,8 @@ export function ChatPanel() {
 
     setMessages((prev) => [
       ...prev.slice(0, index),
-      { role: 'user', content, reasoningContent: '', error: null, thinkingCollapsed: true },
-      { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false },
+      { role: 'user', content, reasoningContent: '', error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -397,7 +399,8 @@ export function ChatPanel() {
                 <div className="thinking-content">{message.reasoningContent}</div>
               </details>
             )}
-            <strong>{message.role}:</strong> <MarkdownMessage content={message.content} />
+            <strong>{message.role}:</strong> <span className="message-timestamp">{formatMessageTimestamp(message.created_at)}</span>{' '}
+            <MarkdownMessage content={message.content} />
             {message.error && <p className="error">{message.error}</p>}
             <div className="message-actions">
               <button type="button" className="action-btn" title="Copy" aria-label="Copy" onClick={() => handleCopyMessage(message.content)}>
