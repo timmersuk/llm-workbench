@@ -231,10 +231,22 @@ export function pushPR(projectId: string, taskId: string): Promise<Task> {
 }
 
 // markPRMerged is the "Mark as merged" action for pr_review: a human
-// assertion that the PR was merged on GitHub, advancing the task straight
-// to merged with no review-record write.
+// assertion that the PR was merged on GitHub, no review-record write. Lands
+// the task on stage 'cleanup' and runs the execution-worktree cleanup
+// routine synchronously (internal/api/pr.go's handleMarkPRMerged) — the
+// returned Task is already 'merged' if every worktree came back clean, or
+// still 'cleanup' (with a fresh cleanup_status report) otherwise.
 export function markPRMerged(projectId: string, taskId: string): Promise<Task> {
   return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/pr/merged`, {})
+}
+
+// runTaskCleanup is the Retry/Force action available while a task is parked
+// at stage 'cleanup': re-runs the same worktree-removal routine
+// markPRMerged ran automatically, optionally overriding its dirty/unpushed
+// safety checks (internal/api/pr.go's handleTaskCleanup). Returns the task
+// still at 'cleanup' (with an updated report) or advanced to 'merged'.
+export function runTaskCleanup(projectId: string, taskId: string, force?: boolean): Promise<Task> {
+  return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/cleanup`, { force: !!force })
 }
 
 // reviseRequirements/revisePlan take an optional, skippable reason — a

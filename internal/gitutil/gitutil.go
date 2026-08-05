@@ -146,6 +146,56 @@ func CommitAll(ctx context.Context, dir, message string) error {
 	return nil
 }
 
+// IsAncestor reports whether ancestorRef is an ancestor of (or identical to)
+// descendantRef in dir's repository (`git merge-base --is-ancestor`), used
+// by the execution-worktree cleanup routine (internal/agentrunner/worktree_cleanup.go)
+// to check whether a worktree's HEAD already made it into the branch that
+// was actually pushed, without ever diffing against a project's BaseBranch
+// (whose content a squash/rebase merge rewrites, unlike a real ancestor
+// relationship in the object database). `git merge-base --is-ancestor` exits
+// 1 (not an error condition) when the relationship doesn't hold — the same
+// "distinguish the plain negative from a real failure via *exec.ExitError"
+// shape BranchExists already uses.
+func IsAncestor(ctx context.Context, dir, ancestorRef, descendantRef string) (bool, error) {
+	if _, err := RunGit(ctx, dir, "merge-base", "--is-ancestor", ancestorRef, descendantRef); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking whether %s is an ancestor of %s in %s: %w", ancestorRef, descendantRef, dir, err)
+	}
+	return true, nil
+}
+
+// RemoteBranchTip resolves refs/remotes/origin/<branch>'s current commit sha
+// in dir. A plain `git push origin <branch>` (no `-u`) already updates this
+// remote-tracking ref opportunistically as a side effect (verified against
+// real git behavior, not assumed) — cheaper and more reliable than relying
+// on `@{upstream}` tracking configuration, which nothing in this codebase's
+// push path (agentrunner.PushAndOpenPR) ever sets up. If the ref isn't
+// already present, this falls back to one `git fetch origin <branch>` before
+// trying again — covering a fresh clone of the shared checkout, or a push
+// from some other invocation of git that didn't share this process's local
+// state. Returns ("", false), never a Go error, if the ref still can't be
+// resolved after that (e.g. the remote branch was deleted after merging, or
+// was never actually pushed) — callers use this the same "unknown as data"
+// way BehindOriginStatus/DirtyStatus already do, skipping whatever
+// comparison they meant to make rather than treating it as fatal.
+func RemoteBranchTip(ctx context.Context, dir, branch string) (string, bool) {
+	ref := "refs/remotes/origin/" + branch
+	if out, err := RunGit(ctx, dir, "rev-parse", ref); err == nil {
+		return strings.TrimSpace(out), true
+	}
+	if _, err := RunGit(ctx, dir, "fetch", "--quiet", "origin", branch); err != nil {
+		return "", false
+	}
+	out, err := RunGit(ctx, dir, "rev-parse", ref)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out), true
+}
+
 // EnsureGitExclude idempotently adds any of patterns not already present to
 // dir's local, uncommitted .git/info/exclude — the .gitignore equivalent
 // that never becomes part of the repository's own tracked content. Callers

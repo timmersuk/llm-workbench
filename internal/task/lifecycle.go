@@ -204,7 +204,14 @@ func (s *FileStore) FinalizeReview(projectID, id string, draft ReviewDraft) (Tas
 // (docs/milestones/done/milestone7.md): a human assertion that the PR was merged
 // on GitHub, with no polling and no review-record write — there's no
 // approved/rejected/needs_changes decision being made, the PR already got
-// its verdict externally. Moves Stage directly from "pr_review" to "merged".
+// its verdict externally. Moves Stage from "pr_review" to "cleanup", not
+// straight to "merged" (as of the execution-worktree-cleanup milestone): the
+// caller (internal/api's handleMarkPRMerged) runs the best-effort worktree-
+// removal routine synchronously right after this call and only calls
+// CompleteCleanup once every worktree is actually gone, so a task never
+// silently sits at "merged" while its execution worktrees are still
+// unaccounted for. The trigger stays "mark_pr_merged" — this is still the
+// same human action, just landing one stage earlier than it used to.
 // Requires PullRequest to already be set (populated by RecordPullRequest,
 // below): a task shouldn't be markable "merged" if the system never
 // recorded a PR against it. Both guards wrap ErrWrongStage (Milestone 7 PR 3)
@@ -224,7 +231,7 @@ func (s *FileStore) MarkPRMerged(projectID, id string) (Task, error) {
 	}
 
 	fromStage := t.Stage
-	t.Stage = StageMerged
+	t.Stage = StageCleanup
 	t.UpdatedAt = time.Now().UTC()
 	if err := s.AppendStageTransition(projectID, id, StageTransition{
 		FromStage: fromStage,
@@ -233,6 +240,59 @@ func (s *FileStore) MarkPRMerged(projectID, id string) (Task, error) {
 	}); err != nil {
 		return Task{}, err
 	}
+	if err := s.writeTask(projectID, t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// CompleteCleanup advances Stage from "cleanup" to "merged" once the caller
+// has confirmed every one of a task's execution worktrees was removed or
+// was already gone (internal/api/pr.go, cmd/sweep-merged-worktrees) — the
+// terminal step of the flow MarkPRMerged starts. Only valid from "cleanup";
+// a caller that hasn't actually driven the cleanup routine to a clean
+// result has no business calling this.
+func (s *FileStore) CompleteCleanup(projectID, id string) (Task, error) {
+	t, err := s.Get(projectID, id)
+	if err != nil {
+		return Task{}, err
+	}
+	if t.Stage != StageCleanup {
+		return Task{}, fmt.Errorf("completing cleanup for %s (stage %q): %w", id, t.Stage, ErrWrongStage)
+	}
+
+	fromStage := t.Stage
+	t.Stage = StageMerged
+	t.UpdatedAt = time.Now().UTC()
+	if err := s.AppendStageTransition(projectID, id, StageTransition{
+		FromStage: fromStage,
+		ToStage:   t.Stage,
+		Trigger:   TransitionTriggerCleanupComplete,
+	}); err != nil {
+		return Task{}, err
+	}
+	if err := s.writeTask(projectID, t); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// SetCleanupStatus persists status as the task's latest CleanupStatus
+// report, without touching Stage — the routine that ran cleanup (whether it
+// left the task parked at "cleanup" or is about to call CompleteCleanup)
+// always calls this first, mirroring RecordPullRequest's "persist first,
+// advance stage separately" shape. Deliberately not stage-guarded: the
+// one-off sweep CLI calls this against tasks already sitting at "merged"
+// (cleaning up worktrees orphaned before this mechanism existed), which
+// SetCleanupStatus itself has no reason to refuse.
+func (s *FileStore) SetCleanupStatus(projectID, id string, status []CleanupWorktreeStatus) (Task, error) {
+	t, err := s.Get(projectID, id)
+	if err != nil {
+		return Task{}, err
+	}
+
+	t.CleanupStatus = status
+	t.UpdatedAt = time.Now().UTC()
 	if err := s.writeTask(projectID, t); err != nil {
 		return Task{}, err
 	}

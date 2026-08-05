@@ -365,6 +365,44 @@ func (s *TaskStore) MarkPRMerged(projectID, id string) (task.Task, error) {
 	return t, nil
 }
 
+// CompleteCleanup persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
+func (s *TaskStore) CompleteCleanup(projectID, id string) (task.Task, error) {
+	var t task.Task
+	err := s.core.withPending(
+		fmt.Sprintf("Complete cleanup for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.CompleteCleanup(projectID, id)
+			return err
+		},
+	)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return t, nil
+}
+
+// SetCleanupStatus persists via the wrapped task.FileStore and enqueues the
+// result to be committed on the push worker's next tick.
+func (s *TaskStore) SetCleanupStatus(projectID, id string, status []task.CleanupWorktreeStatus) (task.Task, error) {
+	var t task.Task
+	err := s.core.withPending(
+		fmt.Sprintf("Set cleanup status for %s/%s", projectID, id),
+		func() string { return s.core.taskDir(projectID, id) },
+		func() error {
+			var err error
+			t, err = s.files.SetCleanupStatus(projectID, id, status)
+			return err
+		},
+	)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return t, nil
+}
+
 // RecordPullRequest persists via the wrapped task.FileStore and enqueues
 // the result to be committed on the push worker's next tick.
 func (s *TaskStore) RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error) {

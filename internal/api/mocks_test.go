@@ -297,6 +297,24 @@ func (m *mockTaskStore) MarkPRMerged(projectID, id string) (task.Task, error) {
 	return t, args.Error(1)
 }
 
+func (m *mockTaskStore) CompleteCleanup(projectID, id string) (task.Task, error) {
+	args := m.Called(projectID, id)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
+func (m *mockTaskStore) SetCleanupStatus(projectID, id string, status []task.CleanupWorktreeStatus) (task.Task, error) {
+	args := m.Called(projectID, id, status)
+	var t task.Task
+	if v := args.Get(0); v != nil {
+		t = v.(task.Task)
+	}
+	return t, args.Error(1)
+}
+
 func (m *mockTaskStore) RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error) {
 	args := m.Called(projectID, id, pr)
 	var t task.Task

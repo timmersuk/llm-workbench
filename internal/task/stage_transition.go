@@ -21,6 +21,10 @@ const (
 	TransitionTriggerMarkPRMerged         = "mark_pr_merged"
 	TransitionTriggerReviseRequirements   = "revise_requirements"
 	TransitionTriggerReviseToPlanning     = "revise_planning"
+	// TransitionTriggerCleanupComplete is CompleteCleanup's trigger: the
+	// StageCleanup -> StageMerged move once every one of a task's execution
+	// worktrees has been removed or was already gone.
+	TransitionTriggerCleanupComplete = "cleanup_complete"
 )
 
 // StageTransition is one Stage move, appended to

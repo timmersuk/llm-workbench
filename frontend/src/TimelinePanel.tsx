@@ -53,6 +53,8 @@ function triggerLabel(trigger: StageTransition['trigger'], review: Review | unde
       return 'execution succeeded'
     case 'mark_pr_merged':
       return 'marked PR merged'
+    case 'cleanup_complete':
+      return 'execution worktrees cleaned up'
     case 'revise_requirements':
       return 'revised back to requirements'
     case 'revise_planning':

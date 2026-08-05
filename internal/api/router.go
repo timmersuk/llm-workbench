@@ -88,6 +88,13 @@ type TaskStore interface {
 	FinalizePlan(projectID, id string, plan task.Plan) (task.Task, error)
 	FinalizeReview(projectID, id string, draft task.ReviewDraft) (task.Task, error)
 	MarkPRMerged(projectID, id string) (task.Task, error)
+	// CompleteCleanup/SetCleanupStatus back the execution-worktree cleanup
+	// flow MarkPRMerged now starts (task.StageCleanup): handleMarkPRMerged/
+	// handleTaskCleanup persist the latest cleanup pass's per-worktree
+	// report via SetCleanupStatus, then call CompleteCleanup once every
+	// worktree is confirmed removed or already gone.
+	CompleteCleanup(projectID, id string) (task.Task, error)
+	SetCleanupStatus(projectID, id string, status []task.CleanupWorktreeStatus) (task.Task, error)
 	RecordPullRequest(projectID, id string, pr task.PullRequest) (task.Task, error)
 	ReviseToRequirements(projectID, id, reason string) (task.Task, error)
 	ReviseToPlanning(projectID, id, reason string) (task.Task, error)
@@ -228,6 +235,7 @@ func newRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/review/diff", s.handleReviewDiff())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/push", s.handlePushPR())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/pr/merged", s.handleMarkPRMerged())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/cleanup", s.handleTaskCleanup())
 
 	mux.HandleFunc("POST /api/v1/chat/completions", s.handleChatCompletions())
 	mux.HandleFunc("POST /api/v1/chat/sessions/close", s.handleCloseChatSession())

@@ -3,7 +3,13 @@ export interface TaskReferences {
   repo: string[]
 }
 
-export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'pr_review' | 'merged'
+// 'cleanup' mirrors task.StageCleanup (internal/task/task.go): "Mark as
+// merged" now lands here first, not straight on 'merged' — the execution-
+// worktree cleanup routine runs synchronously and only advances the task
+// the rest of the way once every worktree is confirmed removed or already
+// gone. A task only "sticks" at 'cleanup' when CleanupWorktreeStatus records
+// at least one skipped/failed worktree (CleanupPanel.tsx).
+export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'pr_review' | 'cleanup' | 'merged'
 
 export interface PullRequest {
   url: string
@@ -27,6 +33,18 @@ export interface KnowledgeActivityEntry {
   created_at: string
 }
 
+// CleanupWorktreeOutcome mirrors task.CleanupOutcome* (internal/task/task.go).
+export type CleanupWorktreeOutcome = 'removed' | 'already-gone' | 'skipped' | 'failed'
+
+// CleanupWorktreeStatus mirrors task.CleanupWorktreeStatus
+// (internal/task/task.go) — one execution attempt's outcome from the most
+// recent cleanup pass, rendered by CleanupPanel.tsx.
+export interface CleanupWorktreeStatus {
+  execution_id: string
+  outcome: CleanupWorktreeOutcome
+  reason?: string
+}
+
 export interface Task {
   id: string
   title: string
@@ -41,6 +59,12 @@ export interface Task {
   references: TaskReferences
   agent_defaults?: AgentDefaults
   pull_request?: PullRequest
+  // cleanup_status mirrors task.Task.CleanupStatus (internal/task/task.go)
+  // — the latest execution-worktree cleanup pass's per-attempt report,
+  // absent until a task first reaches stage 'cleanup'. Overwritten
+  // wholesale by every subsequent pass (a retry/force re-run), not
+  // append-only.
+  cleanup_status?: CleanupWorktreeStatus[]
   // draft_session_id mirrors task.Task.DraftSessionID (internal/task/task.go)
   // — set at creation time when this task came from the chat-driven "New
   // Task" flow, pointing at the frozen pre-creation conversation
@@ -589,6 +613,7 @@ export type StageTransitionTrigger =
   | 'mark_pr_merged'
   | 'revise_requirements'
   | 'revise_planning'
+  | 'cleanup_complete'
 
 // StageTransition mirrors task.StageTransition (internal/task/stage_transition.go)
 // — one Stage move, appended to transitions.yaml. review_id/execution_id link
