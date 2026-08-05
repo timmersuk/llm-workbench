@@ -596,7 +596,12 @@ doesn't have to be re-derived or re-litigated later.
   `POST .../cleanup {force?: bool}` (`handleTaskCleanup`, 409 outside
   `cleanup`). A cleanup problem, however severe, never turns into an error
   response for either endpoint — `runCleanupPass` only ever returns the
-  best task state it could reach.
+  best task state it could reach. `handleMarkPRMerged` calls
+  `store.MarkPRMerged` first and unconditionally, before resolving the
+  project or running cleanup at all, so the human's merge assertion is
+  recorded even if project resolution itself fails — that failure is logged
+  and the task is simply returned as `MarkPRMerged` left it (parked at
+  `cleanup`, no report yet), still a 200.
 * `cmd/sweep-merged-worktrees` is a one-off CLI (mirroring
   `cmd/migrate-agent-defaults`'s shape) addressing worktrees orphaned by
   tasks merged before this mechanism shipped: it walks every project's

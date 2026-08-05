@@ -136,29 +136,37 @@ func prBody(t task.Task, reviewNotes string) string {
 // review-record write (task.MarkPRMerged). 409 if the task isn't at
 // pr_review, or if it has no pull_request recorded yet. As of the
 // execution-worktree-cleanup milestone, MarkPRMerged itself only lands the
-// task on task.StageCleanup — this handler immediately runs the same
-// best-effort worktree-removal routine handleTaskCleanup's retry action
+// task on task.StageCleanup — this handler then tries to immediately run the
+// same best-effort worktree-removal routine handleTaskCleanup's retry action
 // re-drives (runCleanupPass, below), advancing all the way to
-// task.StageMerged when every worktree came back clean. A cleanup problem
-// (a dirty/unpushed worktree, a git failure) never turns into an error
-// response here: it's logged and the task is simply returned still parked
-// at "cleanup" with a fresh CleanupStatus report for a human to act on via
-// POST .../cleanup.
+// task.StageMerged when every worktree came back clean.
+//
+// The human's merge assertion (store.MarkPRMerged) is recorded first and
+// unconditionally: nothing about resolving the project or running cleanup is
+// allowed to make that assertion disappear behind a 500. If proj resolution
+// itself fails, that's logged and the handler returns the task exactly as
+// MarkPRMerged left it — parked at "cleanup" with no report yet, still a
+// 200. Once proj is in hand, any further cleanup problem (a dirty/unpushed
+// worktree, a git failure) also never turns into an error response: it's
+// logged and the task is simply returned still parked at "cleanup" with a
+// fresh CleanupStatus report for a human to act on via POST .../cleanup.
 func (s *Server) handleMarkPRMerged() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectId := r.PathValue("projectId")
 		taskId := r.PathValue("taskId")
-
-		proj, err := s.Projects.Get(projectId)
-		if err != nil {
-			writeGetError(w, err)
-			return
-		}
 		store := s.Tasks
 
 		t, err := store.MarkPRMerged(projectId, taskId)
 		if err != nil {
 			writeMutationError(w, err)
+			return
+		}
+
+		proj, err := s.Projects.Get(projectId)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{"project": projectId, "task": taskId}).
+				Warn("resolving project for execution-worktree cleanup")
+			writeJSON(w, http.StatusOK, t)
 			return
 		}
 

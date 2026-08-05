@@ -205,6 +205,35 @@ func TestHandleMarkPRMerged_NoExecutionsAdvancesStraightToMerged(t *testing.T) {
 	tasks.AssertCalled(t, "CompleteCleanup", "demo-project", "task-a")
 }
 
+// TestHandleMarkPRMerged_ProjectResolutionFailureStillRecordsMerge asserts
+// the ordering fix: store.MarkPRMerged must run (and its result must be what
+// comes back, still 200) even when resolving the project for the cleanup
+// pass itself fails afterwards. Cleanup is best-effort with respect to the
+// HTTP response — it must never cost the human their "mark as merged"
+// assertion.
+func TestHandleMarkPRMerged_ProjectResolutionFailureStillRecordsMerge(t *testing.T) {
+	projects := new(mockProjectStore)
+	projects.On("Get", "demo-project").Return(project.Project{}, fmt.Errorf("boom"))
+
+	parked := task.Task{ID: "task-a", Stage: task.StageCleanup, PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7, Branch: "task-exec/task-a/exec-001"}}
+	tasks := new(mockTaskStore)
+	tasks.On("MarkPRMerged", "demo-project", "task-a").Return(parked, nil)
+
+	req := newProjectRequest(t, http.MethodPost, "/api/v1/projects/demo-project/tasks/task-a/pr/merged", nil)
+	req.SetPathValue("projectId", "demo-project")
+	req.SetPathValue("taskId", "task-a")
+	w := httptest.NewRecorder()
+	(&Server{Projects: projects, Tasks: tasks}).handleMarkPRMerged()(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "project resolution failing must never turn a recorded merge into an HTTP error")
+	tasks.AssertCalled(t, "MarkPRMerged", "demo-project", "task-a")
+	var got task.Task
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, task.StageCleanup, got.Stage)
+	tasks.AssertNotCalled(t, "ListExecutions", mock.Anything, mock.Anything)
+	tasks.AssertNotCalled(t, "SetCleanupStatus", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestHandleMarkPRMerged_WrongStageRejected(t *testing.T) {
 	projects := new(mockProjectStore)
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
