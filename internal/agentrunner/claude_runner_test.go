@@ -865,8 +865,8 @@ func TestClaudeRunner_ClientFor_ResumesRealSessionWhenIDSet(t *testing.T) {
 	assert.Same(t, fake, client)
 	require.NotNil(t, captured.Resume)
 	assert.Equal(t, "sess-123", *captured.Resume)
-	require.NotNil(t, captured.SystemPrompt)
-	assert.Equal(t, "base prompt", *captured.SystemPrompt, "a resumed session must not also get history rendered into its system prompt")
+	require.NotNil(t, captured.AppendSystemPrompt)
+	assert.Equal(t, "base prompt", *captured.AppendSystemPrompt, "a resumed session must not also get history rendered into its system prompt")
 }
 
 // TestClaudeRunner_ClientFor_FallsBackAfterSessionNotFound locks in the
@@ -900,8 +900,8 @@ func TestClaudeRunner_ClientFor_FallsBackAfterSessionNotFound(t *testing.T) {
 	assert.Same(t, fresh, client)
 	assert.Equal(t, 2, calls, "must attempt exactly one fallback connect, not loop")
 	assert.Nil(t, fallbackOpts.Resume, "the fallback connect must not itself pass WithResume")
-	require.NotNil(t, fallbackOpts.SystemPrompt)
-	assert.Contains(t, *fallbackOpts.SystemPrompt, "earlier turn", "the fallback connect must replay history into the system prompt")
+	require.NotNil(t, fallbackOpts.AppendSystemPrompt)
+	assert.Contains(t, *fallbackOpts.AppendSystemPrompt, "earlier turn", "the fallback connect must replay history into the system prompt")
 
 	r.mu.Lock()
 	cached := r.clients["task-a:requirements"]
@@ -955,8 +955,8 @@ func TestClaudeRunner_ClientFor_NoResumeIDUsesHistoryReplayDirectly(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls)
 	assert.Nil(t, captured.Resume)
-	require.NotNil(t, captured.SystemPrompt)
-	assert.Contains(t, *captured.SystemPrompt, "earlier turn")
+	require.NotNil(t, captured.AppendSystemPrompt)
+	assert.Contains(t, *captured.AppendSystemPrompt, "earlier turn")
 }
 
 func TestIsSessionNotFoundError_MatchesKnownPatterns(t *testing.T) {

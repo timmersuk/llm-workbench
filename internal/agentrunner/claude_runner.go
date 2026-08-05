@@ -309,7 +309,13 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 
 	opts := []claudecode.Option{
 		claudecode.WithCwd(in.Workspace),
-		claudecode.WithSystemPrompt(in.SystemPrompt),
+		// WithAppendSystemPrompt, not WithSystemPrompt: the latter replaces
+		// the CLI's entire default system prompt, which is what normally
+		// discloses the agent's own cwd to itself. Losing that disclosure let
+		// an execution's agent `cd` into the wrong repo when its workspace
+		// guess (via `git rev-parse --show-toplevel`) landed on a valid but
+		// wrong git root — see execution-worktree-cleanup/exec-001 postmortem.
+		claudecode.WithAppendSystemPrompt(in.SystemPrompt),
 		claudecode.WithPartialStreaming(),
 		// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
 		// (--allowed-tools) only auto-approves these without a permission
@@ -456,7 +462,9 @@ func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, r
 	}
 	opts = append(opts,
 		claudecode.WithCwd(in.Workspace),
-		claudecode.WithSystemPrompt(systemPrompt),
+		// See Execute's identical comment: append, don't replace, so the
+		// agent keeps the default prompt's cwd disclosure.
+		claudecode.WithAppendSystemPrompt(systemPrompt),
 		claudecode.WithPartialStreaming(),
 	)
 	opts = append(opts, claudeSelectionOptions(in.Model, in.ReasoningEffort)...)

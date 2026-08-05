@@ -94,6 +94,17 @@ type ExecutionOutput struct {
 	// execution — that path's dirty state is instead swept into a commit,
 	// never left dirty and merely flagged.
 	WorkspaceDirty bool `yaml:"workspace_dirty" json:"workspace_dirty"`
+	// SuspectMisplacedWork is true when the execution reported non-trivial
+	// token spend but CollectExecutionOutput found zero commits and zero
+	// changed files in the worktree — the signature left by
+	// execution-worktree-cleanup/exec-001 (postmortem: the agent lost track
+	// of its own cwd and wrote its actual output into the shared checkout
+	// instead of this execution's worktree, so the diff against the worktree
+	// came back empty despite $12.81/32M tokens of real work happening
+	// elsewhere). A human should check the shared checkout for stray
+	// uncommitted changes when this is true, rather than trusting the empty
+	// Commits/Artifacts at face value.
+	SuspectMisplacedWork bool `yaml:"suspect_misplaced_work,omitempty" json:"suspect_misplaced_work,omitempty"`
 }
 
 // ExecutionMetrics records measurements about an Execution's run.

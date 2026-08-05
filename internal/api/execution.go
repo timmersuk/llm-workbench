@@ -33,6 +33,15 @@ const defaultExecutionExecutor = "claude-code"
 // making this configurable per task instead of one fixed global value.
 const executionMaxTurns = 1000
 
+// suspectMisplacedWorkTokenThreshold is the TokensUsed floor above which a
+// zero-commits/zero-artifacts result stops looking like a legitimate no-op
+// (agent read the code, decided nothing needed to change) and starts looking
+// like exec-001's failure mode: real work happened, just not in this
+// worktree. Deliberately well above what an ordinary "investigated and
+// found nothing to do" turn costs, since the cost of a false positive here
+// is just one advisory banner (see SuspectMisplacedWork), not a blocked run.
+const suspectMisplacedWorkTokenThreshold = 500_000
+
 // executionStartRequest is the request body for handleStartExecution.
 type executionStartRequest struct {
 	Model    string `json:"model"`
@@ -388,11 +397,25 @@ func (s *Server) handleStartExecution() http.HandlerFunc {
 			durationSeconds = time.Since(start).Seconds()
 		}
 
+		suspectMisplacedWork := execErr == nil && len(commits) == 0 && len(artifacts) == 0 &&
+			out.TokensUsed > suspectMisplacedWorkTokenThreshold
+		if suspectMisplacedWork {
+			logrus.WithFields(logrus.Fields{"task": taskId, "execution": executionID, "tokens_used": out.TokensUsed}).
+				Warn("execution reported zero workspace changes despite non-trivial token spend — output may have landed outside its worktree")
+		}
+
 		exec := task.Execution{
 			ExecutionID: executionID,
 			Executor:    task.ExecutionExecutor{Type: executorKey, Model: selection.Model, Effort: string(selection.Effort)},
 			Input:       task.ExecutionInput{PlanRef: "plan.yaml", ReviewFeedback: reviewFeedback, ContinuedFromExecutionID: continuedFromExecutionID},
-			Output:      task.ExecutionOutput{Artifacts: artifacts, GitBranch: ws.Branch, Commits: commits, ForkedFromBranch: forkFrom, WorkspaceDirty: workspaceDirty},
+			Output: task.ExecutionOutput{
+				Artifacts:            artifacts,
+				GitBranch:            ws.Branch,
+				Commits:              commits,
+				ForkedFromBranch:     forkFrom,
+				WorkspaceDirty:       workspaceDirty,
+				SuspectMisplacedWork: suspectMisplacedWork,
+			},
 			Metrics: task.ExecutionMetrics{
 				DurationSeconds: durationSeconds,
 				TokensUsed:      out.TokensUsed,
