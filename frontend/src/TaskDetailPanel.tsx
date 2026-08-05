@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { getProjectTask, getTaskContext, getTaskPlan, getWorkspaceStatus, listExecutions, listReviews, reviseRequirements, revisePlan } from './api'
 import { CollapsibleSection } from './CollapsibleSection'
 import { AgentDefaultsEditor } from './AgentDefaultsEditor'
+import { CleanupPanel } from './CleanupPanel'
 import { ExecutePanel } from './ExecutePanel'
 import { ExecutionHistoryList } from './ExecutionHistoryList'
 import { GrillMePanel } from './GrillMePanel'
@@ -391,6 +392,12 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
             </button>
           </div>
         </>
+      )}
+
+      {task.stage === 'cleanup' && (
+        <div className="task-interview">
+          <CleanupPanel projectId={projectId} taskId={task.id} task={task} onUpdated={(updatedTask) => setTask(updatedTask)} />
+        </div>
       )}
 
       {task.stage === 'merged' && (

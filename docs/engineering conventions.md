@@ -556,6 +556,59 @@ doesn't have to be re-derived or re-litigated later.
   holds up on real usage data — see
   `data/knowledge/architecture/agentrunner-session-resume.md`.
 
+## Execution-worktree cleanup
+
+* `task.StageCleanup` ("cleanup") sits between `pr_review` and `merged`
+  (`internal/task/task.go`): `MarkPRMerged` (`internal/task/lifecycle.go`)
+  now lands a task here instead of straight on `merged`, keeping its
+  `mark_pr_merged` trigger — the human action is unchanged, it just lands
+  one stage earlier. `CompleteCleanup` (trigger `cleanup_complete`) is the
+  only way from `cleanup` to `merged`, and `SetCleanupStatus` persists a
+  task's latest per-worktree report (`Task.CleanupStatus`,
+  `[]CleanupWorktreeStatus`) independently of Stage — deliberately not
+  stage-guarded, since the sweep CLI below also calls it against tasks
+  already sitting at `merged`.
+* `agentrunner.CleanupTaskWorktrees` (`internal/agentrunner/worktree_cleanup.go`)
+  is the shared, synchronous, best-effort routine: given a task's execution
+  ids, it removes each `.worktrees/<repo>/<taskID>/<executionID>` via `git
+  worktree remove` and its `task-exec/<taskID>/<executionID>` branch via
+  `git branch -D` (mirroring `ResolveExecutionWorkspace`'s own stray-branch
+  handling), skipping (never force-discarding) a worktree that's dirty or
+  whose HEAD isn't an ancestor of the pushed branch's remote-tracking tip.
+  "Pushed" is judged via `gitutil.RemoteBranchTip` (`refs/remotes/origin/<branch>`,
+  updated locally by a plain `git push` even without `-u` — verified against
+  real git behavior) plus `gitutil.IsAncestor`, deliberately never by diffing
+  against the project's `BaseBranch`: a squash/rebase merge rewrites
+  `BaseBranch`'s history in a way that would otherwise make an
+  already-pushed worktree look permanently unmerged. `CleanupOptions.Force`
+  overrides both safety checks (reserved for an explicit human/operator
+  override); `CleanupOptions.Apply` gates whether anything is actually run
+  at all — `false` reports `CleanupOutcomeWouldRemove` instead, the sweep
+  CLI's dry-run default. The function itself never logs — callers log every
+  result via `logrus`, matching `CollectExecutionOutput`/
+  `CollectExecutionPatch`'s existing "agentrunner returns, the caller logs"
+  split.
+* `handleMarkPRMerged`/`handleTaskCleanup` (`internal/api/pr.go`) share one
+  `runCleanupPass` helper: run the routine, persist the report
+  (`SetCleanupStatus`), and advance to `merged` (`CompleteCleanup`) only
+  when every worktree came back `removed`/`already-gone` — otherwise the
+  task stays parked at `cleanup` with the report for a human to act on via
+  `POST .../cleanup {force?: bool}` (`handleTaskCleanup`, 409 outside
+  `cleanup`). A cleanup problem, however severe, never turns into an error
+  response for either endpoint — `runCleanupPass` only ever returns the
+  best task state it could reach. `handleMarkPRMerged` calls
+  `store.MarkPRMerged` first and unconditionally, before resolving the
+  project or running cleanup at all, so the human's merge assertion is
+  recorded even if project resolution itself fails — that failure is logged
+  and the task is simply returned as `MarkPRMerged` left it (parked at
+  `cleanup`, no report yet), still a 200.
+* `cmd/sweep-merged-worktrees` is a one-off CLI (mirroring
+  `cmd/migrate-agent-defaults`'s shape) addressing worktrees orphaned by
+  tasks merged before this mechanism shipped: it walks every project's
+  tasks at `merged` (and any parked at `cleanup`) and re-runs the same
+  routine. Dry-run by default; `-apply` performs the real removals,
+  `-force` overrides the safety checks (only meaningful with `-apply`).
+
 ## Build & single-binary packaging
 
 * The frontend builds to `internal/web/dist` (`vite.config.ts`:

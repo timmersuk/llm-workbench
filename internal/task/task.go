@@ -18,14 +18,52 @@ import "time"
 // path: FinalizeReview's approved branch still targets StageMerged until a
 // later PR retargets it alongside the "Push & Open PR" action and its
 // frontend.
+//
+// StageCleanup sits between StagePRReview and StageMerged: MarkPRMerged
+// (lifecycle.go) moves a task here instead of straight to StageMerged, and
+// the synchronous, best-effort worktree-removal routine
+// (agentrunner.CleanupTaskWorktrees) runs before CompleteCleanup advances it
+// the rest of the way. A task only ever "sticks" at StageCleanup when that
+// routine skipped or failed to remove at least one of its execution
+// worktrees (CleanupStatus records why) — the human-facing Retry/Force
+// action re-drives the same routine from here.
 const (
 	StageRequirements   = "requirements"
 	StagePlanning       = "planning"
 	StageImplementation = "implementation"
 	StageReview         = "review"
 	StagePRReview       = "pr_review"
+	StageCleanup        = "cleanup"
 	StageMerged         = "merged"
 )
+
+// Cleanup outcome values recorded per execution worktree on
+// Task.CleanupStatus by agentrunner.CleanupTaskWorktrees's caller
+// (internal/api/pr.go), mirroring agentrunner.WorktreeCleanupResult.Outcome
+// one-for-one (duplicated as a separate constant set there, not imported
+// from this package, to avoid a new agentrunner->task dependency).
+const (
+	CleanupOutcomeRemoved     = "removed"
+	CleanupOutcomeAlreadyGone = "already-gone"
+	CleanupOutcomeSkipped     = "skipped"
+	CleanupOutcomeFailed      = "failed"
+)
+
+// CleanupWorktreeStatus is one execution attempt's outcome from the most
+// recent cleanup pass, persisted on Task.CleanupStatus so a human (or the
+// frontend's CleanupPanel) can see exactly what happened without re-running
+// anything — the same "no hidden state" posture ExecutionOutput.WorkspaceDirty
+// already follows for a comparable best-effort, non-fatal signal.
+type CleanupWorktreeStatus struct {
+	ExecutionID string `yaml:"execution_id" json:"execution_id"`
+	// Outcome is one of the CleanupOutcome* constants above.
+	Outcome string `yaml:"outcome" json:"outcome"`
+	// Reason is a short, human-readable explanation — always set for
+	// "skipped"/"failed", empty for "removed"/"already-gone" unless a
+	// secondary step (e.g. the branch delete after a successful worktree
+	// remove) also hit a problem worth surfacing.
+	Reason string `yaml:"reason,omitempty" json:"reason,omitempty"`
+}
 
 // Task is a versioned intent object stored as <task root>/<id>/task.yaml
 // (e.g. data/projects/<projectId>/tasks/<id>/task.yaml with the default
@@ -80,6 +118,16 @@ type Task struct {
 	// in a workspace-wide store with no back-reference to the task that
 	// produced them). Never affects Stage or any other task field.
 	KnowledgeActivity []KnowledgeActivityEntry `yaml:"knowledge_activity,omitempty" json:"knowledge_activity,omitempty"`
+
+	// CleanupStatus is the most recent execution-worktree cleanup pass's
+	// per-attempt report (SetCleanupStatus, lifecycle.go), populated once a
+	// task first reaches StageCleanup. Overwritten wholesale by every
+	// subsequent pass (a retry/force re-run), not append-only like
+	// reviews/executions — only the latest pass's outcome is ever
+	// actionable. Absent (nil) for a task that has never reached
+	// StageCleanup, including every task merged before this mechanism
+	// existed.
+	CleanupStatus []CleanupWorktreeStatus `yaml:"cleanup_status,omitempty" json:"cleanup_status,omitempty"`
 }
 
 // KnowledgeActivityAction is the fixed vocabulary of what a knowledge

@@ -241,7 +241,7 @@ func TestFileStore_FinalizeReview_ApprovedFromPRReviewErrorsAndRecordsNothing(t 
 	assert.Empty(t, reviews, "no verdict recorded when approved is sent from pr_review")
 }
 
-func TestFileStore_MarkPRMerged_AdvancesToMerged(t *testing.T) {
+func TestFileStore_MarkPRMerged_AdvancesToCleanup(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 	tk := newPRReviewTask(t, store, "task-a")
@@ -250,7 +250,67 @@ func TestFileStore_MarkPRMerged_AdvancesToMerged(t *testing.T) {
 
 	got, err := store.MarkPRMerged("demo-project", "task-a")
 	require.NoError(t, err)
+	assert.Equal(t, StageCleanup, got.Stage, "mark-merged now lands on cleanup, not merged directly")
+
+	transitions, err := store.ListStageTransitions("demo-project", "task-a")
+	require.NoError(t, err)
+	last := transitions[len(transitions)-1]
+	assert.Equal(t, StagePRReview, last.FromStage)
+	assert.Equal(t, StageCleanup, last.ToStage)
+	assert.Equal(t, TransitionTriggerMarkPRMerged, last.Trigger)
+}
+
+func TestFileStore_CompleteCleanup_AdvancesToMerged(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	tk := newPRReviewTask(t, store, "task-a")
+	tk.PullRequest = &PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"}
+	require.NoError(t, store.writeTask("demo-project", tk))
+	_, err := store.MarkPRMerged("demo-project", "task-a")
+	require.NoError(t, err)
+
+	got, err := store.CompleteCleanup("demo-project", "task-a")
+	require.NoError(t, err)
 	assert.Equal(t, StageMerged, got.Stage)
+
+	transitions, err := store.ListStageTransitions("demo-project", "task-a")
+	require.NoError(t, err)
+	last := transitions[len(transitions)-1]
+	assert.Equal(t, StageCleanup, last.FromStage)
+	assert.Equal(t, StageMerged, last.ToStage)
+	assert.Equal(t, TransitionTriggerCleanupComplete, last.Trigger)
+}
+
+func TestFileStore_CompleteCleanup_WrongStageErrors(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	newPRReviewTask(t, store, "task-a") // still at pr_review, never marked merged
+
+	_, err := store.CompleteCleanup("demo-project", "task-a")
+	require.ErrorIs(t, err, ErrWrongStage)
+}
+
+func TestFileStore_SetCleanupStatus_PersistsWithoutChangingStage(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	tk := newPRReviewTask(t, store, "task-a")
+	tk.PullRequest = &PullRequest{URL: "https://github.com/org/repo/pull/1", Number: 1, Branch: "task-exec/task-a/exec-001"}
+	require.NoError(t, store.writeTask("demo-project", tk))
+	_, err := store.MarkPRMerged("demo-project", "task-a")
+	require.NoError(t, err)
+
+	status := []CleanupWorktreeStatus{
+		{ExecutionID: "exec-001", Outcome: CleanupOutcomeRemoved},
+		{ExecutionID: "exec-002", Outcome: CleanupOutcomeSkipped, Reason: "worktree has uncommitted changes"},
+	}
+	got, err := store.SetCleanupStatus("demo-project", "task-a", status)
+	require.NoError(t, err)
+	assert.Equal(t, StageCleanup, got.Stage, "not a stage transition")
+	assert.Equal(t, status, got.CleanupStatus)
+
+	reloaded, err := store.Get("demo-project", "task-a")
+	require.NoError(t, err)
+	assert.Equal(t, status, reloaded.CleanupStatus)
 }
 
 func TestFileStore_MarkPRMerged_WrongStageErrors(t *testing.T) {
