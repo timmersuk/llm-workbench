@@ -398,11 +398,23 @@ func (s *FileStore) AppendConversationMessages(projectID, id, stage string, msgs
 		// carry the same story for Draft fields).
 		m.Content = strings.TrimSpace(m.Content)
 
+		// yamlutil.Marshal's yaml.IndentSequence(true) option already
+		// indents this bare top-level []ConversationMessage{m}'s "- role:"
+		// list marker by one level (4 spaces) on its own — the exact depth
+		// a sibling of this file's `messages:` key needs. No further
+		// indentBlock shift is applied: doing so on top would double it to
+		// 8 spaces, which (once entries at both depths exist in the same
+		// file, e.g. across a process restart with a different marshal
+		// baseline) breaks YAML's sibling-indentation requirement — a
+		// deeper-indented entry parses as nested content of the previous
+		// one instead of a new messages: list item, and GetConversation
+		// silently stops returning anything past that point. See
+		// TestFileStore_AppendConversationMessages_ListItemsIndentFourSpaces.
 		data, err := yamlutil.Marshal([]ConversationMessage{m})
 		if err != nil {
 			return Conversation{}, fmt.Errorf("encoding conversation message for %s/%s: %w", id, stage, err)
 		}
-		if _, err := f.Write(indentBlock(data, "    ")); err != nil {
+		if _, err := f.Write(data); err != nil {
 			return Conversation{}, fmt.Errorf("appending to conversation %s: %w", path, err)
 		}
 	}

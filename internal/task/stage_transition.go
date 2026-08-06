@@ -111,11 +111,13 @@ func (s *FileStore) AppendStageTransition(projectID, id string, transition Stage
 	transition.TaskID = id
 	transition.CreatedAt = time.Now().UTC()
 
+	// No indentBlock shift here either — see AppendConversationMessages'
+	// identical comment in conversation.go.
 	data, err := yamlutil.Marshal([]StageTransition{transition})
 	if err != nil {
 		return fmt.Errorf("encoding stage transition for %s: %w", id, err)
 	}
-	if _, err := f.Write(indentBlock(data, "    ")); err != nil {
+	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("appending to transitions %s: %w", path, err)
 	}
 	return nil

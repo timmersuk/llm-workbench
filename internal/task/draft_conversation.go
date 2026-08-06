@@ -103,11 +103,16 @@ func (s *FileStore) AppendTaskDraftConversationMessages(projectID, sessionID str
 		// hygiene here too).
 		m.Content = strings.TrimSpace(m.Content)
 
+		// No indentBlock shift here — see AppendConversationMessages'
+		// identical comment in conversation.go: yamlutil.Marshal's
+		// yaml.IndentSequence(true) already puts this bare
+		// []ConversationMessage{m}'s list marker at the correct 4-space
+		// depth on its own.
 		data, err := yamlutil.Marshal([]ConversationMessage{m})
 		if err != nil {
 			return Conversation{}, fmt.Errorf("encoding task draft conversation message for %s/%s: %w", projectID, sessionID, err)
 		}
-		if _, err := f.Write(indentBlock(data, "    ")); err != nil {
+		if _, err := f.Write(data); err != nil {
 			return Conversation{}, fmt.Errorf("appending to task draft conversation %s: %w", path, err)
 		}
 	}

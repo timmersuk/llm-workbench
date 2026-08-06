@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/timmersuk/llm-workbench/internal/yamlutil"
@@ -174,32 +173,17 @@ func (s *FileStore) AppendExecutionLogEvent(projectID, id, executionID string, e
 	}
 	defer f.Close()
 
-	// Four spaces, not two: matches yamlutil.Marshal's configured indent
-	// (internal/yamlutil), so this file reads identically to every
-	// conversation-*.yaml's messages: list instead of introducing a
-	// second indent convention.
-	if _, err := f.Write(indentBlock(data, "    ")); err != nil {
+	// No indentBlock shift: yamlutil.Marshal's yaml.IndentSequence(true)
+	// already puts this bare []ExecutionLogEvent{ev}'s list marker at the
+	// correct 4-space depth on its own (matches every conversation-*.yaml's
+	// messages: list, still the same single indent convention) — an
+	// additional indentBlock prefix on top would double it to 8, breaking
+	// this file's own sibling-list-item consistency the same way it did in
+	// conversation.go (see AppendConversationMessages' comment there).
+	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("appending to execution log %s for %s: %w", executionID, id, err)
 	}
 	return nil
-}
-
-// indentBlock prefixes every non-empty line of data with prefix, nesting
-// an already-valid YAML fragment (e.g. one block-sequence item) one level
-// deeper under a parent key. A uniform shift preserves every line's
-// indentation relative to the others, which is all YAML requires for the
-// nesting to stay valid — deliberately not a full re-parse-and-reindent,
-// since this needs to work as a byte-level append with no read of prior
-// content.
-func indentBlock(data []byte, prefix string) []byte {
-	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	for i, line := range lines {
-		if line == "" {
-			continue
-		}
-		lines[i] = prefix + line
-	}
-	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
 // GetExecutionLog reads back executionID's full event log.

@@ -287,6 +287,50 @@ func TestFileStore_AppendConversationMessages_SegmentsRoundTrip(t *testing.T) {
 // are untouched by a later one, the same property
 // AppendExecutionLogEvent's tests lock in — a crash mid-write can only
 // ever risk the newest message, never anything written before it.
+// TestFileStore_AppendConversationMessages_ListItemsIndentFourSpaces is a
+// regression test for a real production incident (2026-08-06): every
+// AppendConversationMessages call writes each message's `- role: ...` list
+// marker indented 8 spaces instead of 4. yamlutil.Marshal's
+// yaml.IndentSequence(true) option already indents a bare top-level
+// `[]ConversationMessage` sequence by one level (4 spaces) on its own —
+// indentBlock's own unconditional 4-space prefix on top of that produces 8,
+// not the 4 a sibling of the file's `messages:` key needs. A file whose
+// early entries were written before this drift (a different indent
+// baseline, e.g. across a process restart) and later entries after it ends
+// up with inconsistent sibling indentation: the deeper-indented entries
+// parse as nested content of the previous entry rather than new `messages:`
+// list items, so GetConversation silently stops returning anything past
+// the last consistently-indented entry — no error, just missing history.
+func TestFileStore_AppendConversationMessages_ListItemsIndentFourSpaces(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileStore(root)
+	_, err := store.Create("demo-project", Task{ID: "task-a", Title: "A"})
+	require.NoError(t, err)
+
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StagePlanning,
+		ConversationMessage{Role: "user", Content: "first"})
+	require.NoError(t, err)
+	_, err = store.AppendConversationMessages("demo-project", "task-a", StagePlanning,
+		ConversationMessage{Role: "assistant", Content: "second"})
+	require.NoError(t, err)
+
+	path := conversationPath(store.taskDir("demo-project", "task-a"), StagePlanning)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, "- role:") {
+			indent := len(line) - len(strings.TrimLeft(line, " "))
+			assert.Equal(t, 4, indent, "every `- role:` list item must sit at the same 4-space indent as a sibling of `messages:`, got: %q", line)
+		}
+	}
+
+	reloaded, err := store.GetConversation("demo-project", "task-a", StagePlanning)
+	require.NoError(t, err, "the persisted file must itself be readable back")
+	require.Len(t, reloaded.Messages, 2)
+	assert.Equal(t, "second", reloaded.Messages[1].Content)
+}
+
 func TestFileStore_AppendConversationMessages_DoesNotRewritePriorMessages(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
