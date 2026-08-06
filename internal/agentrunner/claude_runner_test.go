@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1076,8 +1078,11 @@ func TestClaudeRunner_ClientFor_SetsToolsAlongsideAllowedTools(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: t.TempDir()})
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}, captured.Tools)
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}, captured.AllowedTools)
+	// Task is admitted alongside readOnlyTools (scoped to the custom
+	// workbench-readonly-agent via WithAgents/WithDisallowedTools) — see
+	// docs/adr/0022's Update reversing the block-outright conclusion.
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"}, captured.Tools)
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"}, captured.AllowedTools)
 }
 
 // TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames locks in that
@@ -1110,7 +1115,7 @@ func TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:review", in)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash"}, captured.Tools,
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash", "Task"}, captured.Tools,
 		"WithTools must stay built-in-only even when Draft MCP tools are registered")
 	assert.Contains(t, captured.AllowedTools, mcpQualifiedName("propose_context"),
 		"the MCP-qualified name still belongs in AllowedTools/--allowed-tools")
@@ -1135,8 +1140,350 @@ func TestClaudeRunner_Execute_SetsToolsAlongsideAllowedTools(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	assert.Equal(t, executionTools, captured.Tools)
-	assert.Equal(t, executionTools, captured.AllowedTools)
+	// Execute admits Task alongside executionTools (scoped to the custom
+	// workbench-execution-agent) — see docs/adr/0022's Update.
+	wantTools := append(append([]string{}, executionTools...), "Task")
+	assert.Equal(t, wantTools, captured.Tools)
+	assert.Equal(t, wantTools, captured.AllowedTools)
+}
+
+// hookEvents returns the set of HookEvents a captured Options registers, so a
+// test can assert SubagentStart/SubagentStop were wired without depending on
+// the SDK's internal matcher/callback-id representation.
+func hookEvents(o claudecode.Options) map[claudecode.HookEvent]bool {
+	events := map[claudecode.HookEvent]bool{}
+	hooks, ok := o.Hooks.(map[claudecode.HookEvent][]claudecode.HookMatcher)
+	if !ok {
+		return events
+	}
+	for event, matchers := range hooks {
+		if len(matchers) > 0 {
+			events[event] = true
+		}
+	}
+	return events
+}
+
+// TestClaudeRunner_ClientFor_RegistersScopedReadOnlySubagent locks in
+// docs/adr/0022's Update: Run re-admits Task, but only for a single custom
+// AgentDefinition whose Tools never exceed the calling stage's readOnlyTools
+// boundary, with the CLI's built-in presets denied so a model can't route
+// around it.
+func TestClaudeRunner_ClientFor_RegistersScopedReadOnlySubagent(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		captured = captureOptions(opts...)
+		return &fakeClaudeClient{}
+	}
+
+	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: t.TempDir()})
+	require.NoError(t, err)
+
+	agent, ok := captured.Agents[readOnlyAgentName]
+	require.True(t, ok, "the custom read-only subagent must be registered via WithAgents")
+	assert.Equal(t, readOnlyTools, agent.Tools,
+		"the subagent's tool access must not exceed the stage's readOnlyTools boundary")
+	assert.NotContains(t, agent.Tools, "Task", "a subagent must not be able to spawn further subagents")
+	assert.ElementsMatch(t, []string{"Task(Explore)", "Task(Plan)", "Task(general-purpose)"}, captured.DisallowedTools,
+		"the CLI's built-in agent presets must be denied so only the custom agent is invocable")
+	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStart], "SubagentStart hook must be registered")
+	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStop], "SubagentStop hook must be registered")
+}
+
+// TestClaudeRunner_ClientFor_ReviewSubagentInheritsBashBoundary confirms the
+// scoped subagent tracks the exact stage boundary, widening to Bash when (and
+// only when) the Review stage's EnableBashTool does.
+func TestClaudeRunner_ClientFor_ReviewSubagentInheritsBashBoundary(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		captured = captureOptions(opts...)
+		return &fakeClaudeClient{}
+	}
+
+	_, err := r.clientFor(context.Background(), "task-a:review", RunInput{Workspace: t.TempDir(), EnableBashTool: true})
+	require.NoError(t, err)
+
+	agent := captured.Agents[readOnlyAgentName]
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash"}, agent.Tools)
+}
+
+// TestClaudeRunner_Execute_RegistersScopedExecutionSubagent is the Execute
+// analog: the execution subagent is scoped to executionTools, presets denied,
+// hooks wired.
+func TestClaudeRunner_Execute_RegistersScopedExecutionSubagent(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	var captured claudecode.Options
+	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
+		captured = captureOptions(opts...)
+		return &fakeClaudeClient{}
+	}
+
+	_, err := r.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute", Workspace: t.TempDir()}, nil)
+	require.NoError(t, err)
+
+	agent, ok := captured.Agents[executionAgentName]
+	require.True(t, ok, "the custom execution subagent must be registered via WithAgents")
+	assert.Equal(t, executionTools, agent.Tools,
+		"the subagent's tool access must match Execute's executionTools boundary")
+	assert.NotContains(t, agent.Tools, "Task")
+	assert.ElementsMatch(t, []string{"Task(Explore)", "Task(Plan)", "Task(general-purpose)"}, captured.DisallowedTools)
+	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStart])
+	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStop])
+}
+
+// writeTranscript writes a minimal JSONL subagent transcript to a temp file
+// and returns its path — mirroring what the CLI leaves at
+// SubagentStopHookInput.AgentTranscriptPath.
+func writeTranscript(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "subagent-transcript.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600))
+	return path
+}
+
+func TestReadAgentTranscript_ExtractsLastAssistantText(t *testing.T) {
+	path := writeTranscript(t,
+		`{"type":"user","message":{"content":"go investigate"}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"first thoughts"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"the real finding"}]}}`,
+	)
+	output, isError := readAgentTranscript(path)
+	assert.False(t, isError)
+	assert.Equal(t, "the real finding", output)
+}
+
+func TestReadAgentTranscript_MissingPathIsAnErrorResult(t *testing.T) {
+	output, isError := readAgentTranscript("")
+	assert.True(t, isError)
+	assert.Contains(t, output, "no transcript")
+}
+
+// TestReadAgentTranscript_RealSidechainShape covers finding #3: a real
+// subagent/sidechain transcript line carries many extra top-level fields
+// (uuid, parentUuid, isSidechain, agentId, timestamp, sessionId) and its
+// assistant content array intermixes thinking, tool_use, and text blocks. Only
+// the last assistant message's text must be extracted — never the whole raw
+// JSONL blob.
+func TestReadAgentTranscript_RealSidechainShape(t *testing.T) {
+	path := writeTranscript(t,
+		`{"parentUuid":null,"isSidechain":true,"agentId":"agent-1","type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"go investigate the auth flow"}]}}`,
+		`{"parentUuid":"u1","isSidechain":true,"agentId":"agent-1","type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me look"},{"type":"tool_use","id":"t1","name":"Read","input":{"path":"auth.go"}}]}}`,
+		`{"parentUuid":"a1","isSidechain":true,"agentId":"agent-1","type":"assistant","uuid":"a2","message":{"role":"assistant","content":[{"type":"text","text":"the auth flow uses JWTs signed with RS256"}]}}`,
+	)
+	output, isError := readAgentTranscript(path)
+	assert.False(t, isError)
+	assert.Equal(t, "the auth flow uses JWTs signed with RS256", output)
+}
+
+// TestReadAgentTranscript_RoleBasedAssistantDetection covers the specific
+// shape finding #3 suspected: assistant entries whose top-level "type" is
+// absent/different but whose message.role is "assistant" must still be
+// recognized (the old parser, keyed only on type=="assistant", found none and
+// dumped raw JSON).
+func TestReadAgentTranscript_RoleBasedAssistantDetection(t *testing.T) {
+	path := writeTranscript(t,
+		`{"message":{"role":"user","content":"investigate"}}`,
+		`{"message":{"role":"assistant","content":[{"type":"text","text":"here is the finding"}]}}`,
+	)
+	output, isError := readAgentTranscript(path)
+	assert.False(t, isError)
+	assert.Equal(t, "here is the finding", output)
+}
+
+// TestReadAgentTranscript_PrettyPrintedJSONArray covers the defensive fallback
+// for a transcript that isn't line-delimited (a single pretty-printed JSON
+// array, where no individual line parses on its own).
+func TestReadAgentTranscript_PrettyPrintedJSONArray(t *testing.T) {
+	path := writeTranscript(t, `[
+  {"type": "user", "message": {"role": "user", "content": "investigate"}},
+  {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "the multi-line answer"}]}}
+]`)
+	output, isError := readAgentTranscript(path)
+	assert.False(t, isError)
+	assert.Equal(t, "the multi-line answer", output)
+}
+
+// TestReadAgentTranscript_NoAssistantMessageDoesNotDumpRawJSON is the direct
+// regression guard for finding #3's symptom: a transcript with no recognizable
+// assistant message must never surface the raw JSONL content as the subagent's
+// output. The last readable text block (here, the user turn) is preferred over
+// a raw dump — but it is text, not JSON.
+func TestReadAgentTranscript_NoAssistantMessageDoesNotDumpRawJSON(t *testing.T) {
+	path := writeTranscript(t,
+		`{"type":"system","subtype":"init","uuid":"s1"}`,
+		`{"type":"user","message":{"role":"user","content":"only a user turn"}}`,
+	)
+	output, _ := readAgentTranscript(path)
+	assert.NotContains(t, output, `{`, "must never persist raw transcript JSON as the subagent's output")
+	assert.NotContains(t, output, `"type"`, "must never persist raw transcript JSON as the subagent's output")
+}
+
+// TestReadAgentTranscript_EmptyTranscriptIsANote confirms a genuinely empty or
+// unreadable transcript falls back to a clear note (never an empty string or
+// raw content), marked as a degraded result.
+func TestReadAgentTranscript_EmptyTranscriptIsANote(t *testing.T) {
+	path := writeTranscript(t, ``)
+	output, isError := readAgentTranscript(path)
+	assert.True(t, isError)
+	assert.Contains(t, output, "no readable message")
+}
+
+// TestSubagentHooks_AwaitCapturesRealTranscriptOutput drives the hook
+// callbacks and the tracker exactly as a live turn would: a Task call is
+// observed, its opaque placeholder suppressed, the subagent starts and stops
+// (leaving a transcript), and awaitAndEmit surfaces the real transcript text —
+// not the placeholder — keyed to the originating Task call.
+func TestSubagentHooks_AwaitCapturesRealTranscriptOutput(t *testing.T) {
+	tracker := newSubagentTracker()
+	getTracker := func() *subagentTracker { return tracker }
+
+	type emitted struct {
+		id, name, result string
+		isError          bool
+	}
+	var results []emitted
+	onResult := func(id, name, result string, isError bool) {
+		results = append(results, emitted{id, name, result, isError})
+	}
+
+	hooks := &toolActivityHooks{
+		onCall:   tracker.wrapOnCall(nil),
+		onResult: tracker.wrapOnResult(onResult),
+		pending:  make(pendingToolCalls),
+	}
+	var content assistantText
+	var out RunOutput
+
+	// The model spawns a subagent. The live CLI streams this as a ToolUseBlock
+	// named "Agent" (NOT "Task" — the flag-syntax name); asserting against the
+	// real name here is what stops finding #1's silent-correlation-break from
+	// regressing (see subagentToolCallName).
+	taskCall := &claudecode.AssistantMessage{Content: []claudecode.ContentBlock{
+		&claudecode.ToolUseBlock{ToolUseID: "task-1", Name: "Agent", Input: map[string]any{"prompt": "research the auth flow"}},
+	}}
+	_, err := processMessage(taskCall, nil, &content, &out, nil, hooks)
+	require.NoError(t, err)
+
+	// ... and the CLI reports its opaque "launched" acknowledgment, which must
+	// be suppressed rather than persisted as the subagent's output.
+	placeholder := &claudecode.UserMessage{Content: []claudecode.ContentBlock{
+		&claudecode.ToolResultBlock{ToolUseID: "task-1", Content: "Agent launched"},
+	}}
+	_, err = processMessage(placeholder, nil, &content, &out, nil, hooks)
+	require.NoError(t, err)
+	assert.Empty(t, results, "the opaque launch acknowledgment must not be surfaced as tool activity")
+
+	// The subagent runs and stops, leaving its real output in a transcript.
+	transcript := writeTranscript(t,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"the auth flow uses JWTs"}]}}`,
+	)
+	_, err = subagentStartHook(getTracker)(context.Background(), &claudecode.SubagentStartHookInput{AgentID: "agent-1"}, nil, claudecode.HookContext{})
+	require.NoError(t, err)
+	_, err = subagentStopHook(getTracker)(context.Background(), &claudecode.SubagentStopHookInput{AgentID: "agent-1", AgentTranscriptPath: transcript}, nil, claudecode.HookContext{})
+	require.NoError(t, err)
+
+	// The turn awaits the subagent and persists its real output as tool
+	// activity, keyed to the originating Task call.
+	awaitAndEmitRunSubagents(context.Background(), tracker, onResult)
+
+	require.Len(t, results, 1)
+	assert.Equal(t, "task-1", results[0].id, "the result must pair with the originating call's tool_use_id, not the AgentID")
+	assert.Equal(t, "Agent", results[0].name, "the result must carry the call's real streamed name, not a hard-coded \"Task\"")
+	assert.Equal(t, "the auth flow uses JWTs", results[0].result)
+	assert.False(t, results[0].isError)
+}
+
+// TestIsSubagentToolCall_MatchesLiveAgentName locks in finding #1's fix: the
+// live CLI streams a subagent spawn as "Agent", and correlation must key off
+// that (not the flag-syntax "Task"). Both are matched defensively; an unrelated
+// tool is not.
+func TestIsSubagentToolCall_MatchesLiveAgentName(t *testing.T) {
+	assert.True(t, isSubagentToolCall("Agent"), "the live streamed name must match")
+	assert.True(t, isSubagentToolCall("Task"), "the flag-syntax name is matched defensively too")
+	assert.False(t, isSubagentToolCall("Read"))
+	assert.False(t, isSubagentToolCall("general-purpose"))
+}
+
+// TestSubagentTracker_WaitBlocksUntilStopThenUnblocks confirms the await is
+// genuinely synchronous: wait() does not return while a started subagent is
+// still running, and returns once it stops.
+func TestSubagentTracker_WaitBlocksUntilStopThenUnblocks(t *testing.T) {
+	tracker := newSubagentTracker()
+	tracker.observeTask("task-1", "Agent")
+	tracker.start("agent-1", nil)
+
+	returned := make(chan struct{})
+	go func() {
+		tracker.wait(context.Background())
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("wait() must block while a started subagent has not yet stopped")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	tracker.stop("agent-1", "done", false)
+
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("wait() must return once every started subagent has stopped")
+	}
+}
+
+// TestSubagentTracker_WaitReturnsOnContextDeadline confirms a hung subagent
+// can't block a turn past its timeout budget: wait() returns when ctx is done
+// even though the subagent never stopped, and collect() then falls back to the
+// launch acknowledgment so the Task call still gets a result.
+func TestSubagentTracker_WaitReturnsOnContextDeadline(t *testing.T) {
+	tracker := newSubagentTracker()
+	tracker.observeTask("task-1", "Agent")
+	tracker.setPlaceholder("task-1", "Agent launched")
+	tracker.start("agent-1", nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	tracker.wait(ctx) // must not hang: the subagent never stops
+
+	collected := tracker.collect()
+	require.Len(t, collected, 1)
+	assert.Equal(t, "task-1", collected[0].id)
+	assert.Equal(t, "Agent launched", collected[0].output,
+		"a never-completing subagent falls back to its launch acknowledgment, not a dropped result")
+}
+
+// TestSubagentTracker_WrapOnEventSuppressesTaskPlaceholder covers the Execute
+// path's placeholder suppression: a Task tool_result is dropped (real output
+// comes from the awaited transcript), while non-Task tool activity passes
+// through untouched.
+func TestSubagentTracker_WrapOnEventSuppressesTaskPlaceholder(t *testing.T) {
+	tracker := newSubagentTracker()
+	var forwarded []ExecuteEvent
+	wrapped := tracker.wrapOnEvent(func(ev ExecuteEvent) error {
+		forwarded = append(forwarded, ev)
+		return nil
+	})
+
+	// The subagent spawn streams as ToolName "Agent" (finding #1), not "Task".
+	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_call", ID: "task-1", ToolName: "Agent"}))
+	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_call", ID: "w-1", ToolName: "Write"}))
+	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_result", ID: "task-1", ToolResult: "Agent launched"}))
+	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_result", ID: "w-1", ToolResult: "wrote a.go"}))
+
+	// The subagent-spawn tool_call still surfaces (real args), but its opaque
+	// result is suppressed; the Write call and its result pass through.
+	require.Len(t, forwarded, 3)
+	assert.Equal(t, "tool_call", forwarded[0].Kind)
+	assert.Equal(t, "Agent", forwarded[0].ToolName)
+	assert.Equal(t, "Write", forwarded[1].ToolName)
+	assert.Equal(t, "wrote a.go", forwarded[2].ToolResult)
 }
 
 // fakeKnowledgeStore is a minimal knowledgetool.Store stub, shared by the
