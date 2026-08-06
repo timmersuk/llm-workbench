@@ -150,7 +150,7 @@ describe('TimelinePanel', () => {
   it('does not offer a conversation view for a transition whose destination stage has no Conversation', async () => {
     const transitions: StageTransition[] = [
       { task_id: taskId, from_stage: 'implementation', to_stage: 'review', trigger: 'execution_success', created_at: '2026-01-01T00:00:00Z' },
-      { task_id: taskId, from_stage: 'pr_review', to_stage: 'merged', trigger: 'mark_pr_merged', created_at: '2026-01-02T00:00:00Z' },
+      { task_id: taskId, from_stage: 'pr_review', to_stage: 'completed', trigger: 'mark_pr_merged', created_at: '2026-01-02T00:00:00Z' },
     ]
     vi.mocked(api.listStageTransitions).mockResolvedValue({ stage_transitions: transitions })
     vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
@@ -163,7 +163,7 @@ describe('TimelinePanel', () => {
     // "review" (execution_success's to_stage) has a Conversation, so its
     // <details> body renders an (empty, unexpanded) log container...
     expect(items[0].querySelector('.execution-log')).not.toBeNull()
-    // ...but "merged" (mark_pr_merged's to_stage) does not.
+    // ...but "completed" (mark_pr_merged's to_stage) does not.
     expect(items[1].querySelector('.execution-log')).toBeNull()
   })
 })

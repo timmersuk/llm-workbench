@@ -27,9 +27,9 @@ type finalizePlanResponse struct {
 }
 
 // finalizeReviewResponse is the wire shape for a Review Finalize: the task
-// (now moved by the verdict — merged/implementation/requirements) plus the
+// (now moved by the verdict — pr_review/implementation/requirements) plus the
 // review-NNN.yaml just recorded. Unlike context/plan, the review record is
-// what the terminal "merged" screen reads back to show the verdict notes,
+// what the terminal "completed" screen reads back to show the verdict notes,
 // so it travels in the response rather than being re-fetched by id.
 type finalizeReviewResponse struct {
 	Task   task.Task   `json:"task"`
@@ -150,7 +150,7 @@ func (s *Server) handleFinalizePlan() http.HandlerFunc {
 // task.FinalizeReview's doc comment). See handleFinalizeRequirements's
 // comment for the CloseSession rationale — a finalized review conversation
 // is done, so its agent session is torn down. The just-recorded review is
-// read back so the response can carry the verdict notes the "merged" screen
+// read back so the response can carry the verdict notes the "completed" screen
 // shows without a second call.
 func (s *Server) handleFinalizeReview() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -192,7 +192,7 @@ export function finalizeKnowledge(
 }
 
 // listReviews returns every recorded verdict for a task, oldest first — the
-// terminal "merged" screen reads the latest to show its notes on a fresh
+// terminal "completed" screen reads the latest to show its notes on a fresh
 // visit (ReviewsListResult).
 export function listReviews(projectId: string, taskId: string): Promise<ReviewsListResult> {
   return getJSON<ReviewsListResult>(`${taskPath(projectId, taskId)}/reviews`)
@@ -234,7 +234,7 @@ export function pushPR(projectId: string, taskId: string): Promise<Task> {
 // assertion that the PR was merged on GitHub, no review-record write. Lands
 // the task on stage 'cleanup' and runs the execution-worktree cleanup
 // routine synchronously (internal/api/pr.go's handleMarkPRMerged) — the
-// returned Task is already 'merged' if every worktree came back clean, or
+// returned Task is already 'completed' if every worktree came back clean, or
 // still 'cleanup' (with a fresh cleanup_status report) otherwise.
 export function markPRMerged(projectId: string, taskId: string): Promise<Task> {
   return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/pr/merged`, {})
@@ -244,7 +244,7 @@ export function markPRMerged(projectId: string, taskId: string): Promise<Task> {
 // at stage 'cleanup': re-runs the same worktree-removal routine
 // markPRMerged ran automatically, optionally overriding its dirty/unpushed
 // safety checks (internal/api/pr.go's handleTaskCleanup). Returns the task
-// still at 'cleanup' (with an updated report) or advanced to 'merged'.
+// still at 'cleanup' (with an updated report) or advanced to 'completed'.
 export function runTaskCleanup(projectId: string, taskId: string, force?: boolean): Promise<Task> {
   return mutateJSON<Task>('POST', `${taskPath(projectId, taskId)}/cleanup`, { force: !!force })
 }

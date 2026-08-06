@@ -185,7 +185,7 @@ func TestHandleMarkPRMerged_NoExecutionsAdvancesStraightToMerged(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	parked := task.Task{ID: "task-a", Stage: task.StageCleanup, PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7, Branch: "task-exec/task-a/exec-001"}}
-	merged := task.Task{ID: "task-a", Stage: task.StageMerged, PullRequest: parked.PullRequest}
+	merged := task.Task{ID: "task-a", Stage: task.StageCompleted, PullRequest: parked.PullRequest}
 	tasks := new(mockTaskStore)
 	tasks.On("MarkPRMerged", "demo-project", "task-a").Return(parked, nil)
 	tasks.On("ListExecutions", "demo-project", "task-a").Return([]task.Execution{}, nil)
@@ -201,7 +201,7 @@ func TestHandleMarkPRMerged_NoExecutionsAdvancesStraightToMerged(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	var got task.Task
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, task.StageMerged, got.Stage)
+	assert.Equal(t, task.StageCompleted, got.Stage)
 	tasks.AssertCalled(t, "CompleteCleanup", "demo-project", "task-a")
 }
 
@@ -324,7 +324,7 @@ func TestHandleTaskCleanup_RetrySucceedsAfterWorktreeCommitted(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}}, nil)
 
 	current := task.Task{ID: "task-a", Stage: task.StageCleanup, PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7, Branch: ws.Branch}}
-	merged := task.Task{ID: "task-a", Stage: task.StageMerged, PullRequest: current.PullRequest}
+	merged := task.Task{ID: "task-a", Stage: task.StageCompleted, PullRequest: current.PullRequest}
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "demo-project", "task-a").Return(current, nil)
 	tasks.On("ListExecutions", "demo-project", "task-a").Return([]task.Execution{{ExecutionID: "exec-001"}}, nil)
@@ -340,7 +340,7 @@ func TestHandleTaskCleanup_RetrySucceedsAfterWorktreeCommitted(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var got task.Task
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, task.StageMerged, got.Stage)
+	assert.Equal(t, task.StageCompleted, got.Stage)
 	assert.NoDirExists(t, ws.Path)
 }
 
@@ -356,7 +356,7 @@ func TestHandleTaskCleanup_ForceRemovesDirtyWorktree(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project", Repositories: []string{"github.com/x/myrepo"}}, nil)
 
 	current := task.Task{ID: "task-a", Stage: task.StageCleanup, PullRequest: &task.PullRequest{URL: "https://github.com/org/repo/pull/7", Number: 7, Branch: ws.Branch}}
-	merged := task.Task{ID: "task-a", Stage: task.StageMerged, PullRequest: current.PullRequest}
+	merged := task.Task{ID: "task-a", Stage: task.StageCompleted, PullRequest: current.PullRequest}
 	tasks := new(mockTaskStore)
 	tasks.On("Get", "demo-project", "task-a").Return(current, nil)
 	tasks.On("ListExecutions", "demo-project", "task-a").Return([]task.Execution{{ExecutionID: "exec-001"}}, nil)
@@ -375,7 +375,7 @@ func TestHandleTaskCleanup_ForceRemovesDirtyWorktree(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var got task.Task
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, task.StageMerged, got.Stage)
+	assert.Equal(t, task.StageCompleted, got.Stage)
 	assert.NoDirExists(t, ws.Path)
 	require.Len(t, savedStatus, 1)
 	assert.Equal(t, task.CleanupOutcomeRemoved, savedStatus[0].Outcome)

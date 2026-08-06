@@ -48,7 +48,7 @@ id: fix-login-bug
 title: ""
 project: auth-service
 
-stage: requirements  # requirements | planning | implementation | review | pr_review | merged
+stage: requirements  # requirements | planning | implementation | review | pr_review | cleanup | completed
 # pr_review (Milestone 7) is live-reachable from an approved review as of
 # PR 2, but has no route/UI to act on it until PR 3 ships — see
 # docs/milestones/done/milestone7.md's "Phasing" section.
@@ -220,7 +220,7 @@ created_at: 2026-07-09T00:00:00Z
 
 `decision` drives the stage transition on Finalize: `approved` → `pr_review`
 (Milestone 7 PR 2 — see `docs/milestones/done/milestone7.md`; a human then pushes
-the branch and opens a GitHub PR, eventually reaching `merged`),
+the branch and opens a GitHub PR, eventually reaching `completed`),
 `needs_changes` → `implementation` (a fresh execution attempt), `rejected` →
 `requirements` (reopening GrillMe). `needs_changes`/`rejected` are also valid
 from `pr_review`, reusing this same transition.

@@ -41,9 +41,9 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
   // surfaced later in TimelinePanel. Shared between both actions since only
   // one is ever rendered at a time (gated by task.stage below).
   const [reviseReason, setReviseReason] = useState('')
-  // review backs the terminal "merged" screen: the latest verdict's notes
-  // (the approving review from back at the review stage — merged never
-  // itself writes a new one). Loaded only at stage merged (see effect
+  // review backs the terminal "completed" screen: the latest verdict's notes
+  // (the approving review from back at the review stage — completed never
+  // itself writes a new one). Loaded only at stage completed (see effect
   // below), so a re-visited completed task re-reads it rather than relying
   // on in-session state. The PR link that screen also shows comes straight
   // off task.pull_request — already on hand, no extra fetch needed.
@@ -98,7 +98,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
 
   useEffect(() => {
     setReview(null)
-    if (task.stage !== 'merged') {
+    if (task.stage !== 'completed') {
       return
     }
     listReviews(projectId, task.id)
@@ -129,7 +129,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
   // default and gets the "Current" badge — Requirements/Context are what a
   // human is actively working from while still in requirements/planning;
   // Plan is what an execution/review is actively working from afterward.
-  // Neither is "current" once merged — the task's reference material is
+  // Neither is "current" once completed — the task's reference material is
   // settled history at that point, same as everything else on the page.
   const requirementsCurrent = task.stage === 'requirements' || task.stage === 'planning'
   const planCurrent = task.stage === 'implementation' || task.stage === 'review' || task.stage === 'pr_review'
@@ -361,7 +361,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
             projectId={projectId}
             taskId={task.id}
             defaultSelection={task.agent_defaults?.stage_conversation}
-            // A verdict moves the task (approved→merged,
+            // A verdict moves the task (approved→pr_review,
             // needs_changes→implementation, rejected→requirements);
             // re-rendering by the new stage is all the panel needs to do.
             onFinalized={(updatedTask) => setTask(updatedTask)}
@@ -400,7 +400,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
         </div>
       )}
 
-      {task.stage === 'merged' && (
+      {task.stage === 'completed' && (
         <div className="task-complete">
           <h4>Review complete — {review?.decision ?? 'approved'}</h4>
           {review?.notes && <MarkdownMessage content={review.notes} />}
@@ -418,7 +418,7 @@ export function TaskDetailPanel({ projectId, task: initialTask, onBack, onViewDr
       {/* ExecutePanel (stage 'implementation') already shows this same list
           itself, live-appending a just-finished run — showing it again here
           too would duplicate it. Every later stage (review, pr_review,
-          merged) has no other execution-history view at all, and that's
+          cleanup, completed) has no other execution-history view at all, and that's
           exactly when a human is most likely to want to check what a past
           attempt actually did. */}
       {task.stage !== 'implementation' && executions.length > 0 && (

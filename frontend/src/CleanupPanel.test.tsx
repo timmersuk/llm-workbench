@@ -61,21 +61,21 @@ describe('CleanupPanel', () => {
   it('Retry calls runTaskCleanup without force and reports the updated task', async () => {
     const user = userEvent.setup()
     const task = makeTask({ cleanup_status: [{ execution_id: 'exec-001', outcome: 'skipped', reason: 'dirty' }] })
-    const merged = makeTask({ stage: 'merged' })
-    vi.mocked(api.runTaskCleanup).mockResolvedValue(merged)
+    const completed = makeTask({ stage: 'completed' })
+    vi.mocked(api.runTaskCleanup).mockResolvedValue(completed)
     const onUpdated = vi.fn()
 
     render(<CleanupPanel projectId={projectId} taskId={taskId} task={task} onUpdated={onUpdated} />)
     await user.click(screen.getByRole('button', { name: 'Retry' }))
 
     expect(api.runTaskCleanup).toHaveBeenCalledWith(projectId, taskId, false)
-    expect(onUpdated).toHaveBeenCalledWith(merged)
+    expect(onUpdated).toHaveBeenCalledWith(completed)
   })
 
   it('Force-remove calls runTaskCleanup with force: true', async () => {
     const user = userEvent.setup()
     const task = makeTask({ cleanup_status: [{ execution_id: 'exec-001', outcome: 'failed', reason: 'boom' }] })
-    vi.mocked(api.runTaskCleanup).mockResolvedValue(makeTask({ stage: 'merged' }))
+    vi.mocked(api.runTaskCleanup).mockResolvedValue(makeTask({ stage: 'completed' }))
 
     render(<CleanupPanel projectId={projectId} taskId={taskId} task={task} onUpdated={vi.fn()} />)
     await user.click(screen.getByRole('button', { name: 'Force-remove' }))

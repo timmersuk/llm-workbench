@@ -15,12 +15,12 @@ import "time"
 //
 // StagePRReview is introduced by Milestone 7 PR 1 (docs/milestones/done/milestone7.md)
 // as real, unit-tested machinery, but is not yet reachable through any live
-// path: FinalizeReview's approved branch still targets StageMerged until a
+// path: FinalizeReview's approved branch still targets StageCompleted until a
 // later PR retargets it alongside the "Push & Open PR" action and its
 // frontend.
 //
-// StageCleanup sits between StagePRReview and StageMerged: MarkPRMerged
-// (lifecycle.go) moves a task here instead of straight to StageMerged, and
+// StageCleanup sits between StagePRReview and StageCompleted: MarkPRMerged
+// (lifecycle.go) moves a task here instead of straight to StageCompleted, and
 // the synchronous, best-effort worktree-removal routine
 // (agentrunner.CleanupTaskWorktrees) runs before CompleteCleanup advances it
 // the rest of the way. A task only ever "sticks" at StageCleanup when that
@@ -34,7 +34,7 @@ const (
 	StageReview         = "review"
 	StagePRReview       = "pr_review"
 	StageCleanup        = "cleanup"
-	StageMerged         = "merged"
+	StageCompleted      = "completed"
 )
 
 // Cleanup outcome values recorded per execution worktree on

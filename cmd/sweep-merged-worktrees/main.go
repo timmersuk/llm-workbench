@@ -1,9 +1,9 @@
 // Command sweep-merged-worktrees is a one-off CLI addressing execution
-// worktrees left behind by tasks that reached "merged" before the
+// worktrees left behind by tasks that reached "completed" before the
 // automatic cleanup routine (internal/api's handleMarkPRMerged) existed —
 // disk usage under .worktrees/<repo>/<taskID>/<executionID> that nothing
 // would otherwise ever reclaim. It walks every project's tasks already at
-// task.StageMerged (plus any parked at task.StageCleanup, which the same
+// task.StageCompleted (plus any parked at task.StageCleanup, which the same
 // routine would otherwise only ever retry via the API) and runs the exact
 // same agentrunner.CleanupTaskWorktrees routine handleMarkPRMerged/
 // handleTaskCleanup use.
@@ -70,7 +70,7 @@ func run(ctx context.Context, apply, force bool) error {
 			continue
 		}
 		for _, t := range result.Tasks {
-			if t.Stage != task.StageMerged && t.Stage != task.StageCleanup {
+			if t.Stage != task.StageCompleted && t.Stage != task.StageCleanup {
 				continue
 			}
 			if err := sweepTask(ctx, store, cfg.ReposRoot, proj.ID, proj.Repositories, t, apply, force); err != nil {

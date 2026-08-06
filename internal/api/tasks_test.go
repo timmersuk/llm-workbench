@@ -209,10 +209,10 @@ func TestHandleUpdateProjectTask_StageChangeRejected(t *testing.T) {
 	projects.On("Get", "demo-project").Return(project.Project{ID: "demo-project"}, nil)
 
 	tasks := new(mockTaskStore)
-	tasks.On("Update", "demo-project", "TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Project: "demo-project", Stage: task.StageMerged}).
+	tasks.On("Update", "demo-project", "TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Project: "demo-project", Stage: task.StageCompleted}).
 		Return(nil, task.ErrStageImmutable)
 
-	req := newTaskRequest(t, http.MethodPut, "/api/v1/projects/demo-project/tasks/TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Stage: task.StageMerged})
+	req := newTaskRequest(t, http.MethodPut, "/api/v1/projects/demo-project/tasks/TASK-0001", task.Task{ID: "TASK-0001", Title: "Updated", Stage: task.StageCompleted})
 	req.SetPathValue("projectId", "demo-project")
 	req.SetPathValue("taskId", "TASK-0001")
 	w := httptest.NewRecorder()

@@ -91,7 +91,7 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
 function stubNoContextOrPlan() {
   vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
   vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
-  // The merged-stage effect reads the latest verdict; default to empty so
+  // The completed-stage effect reads the latest verdict; default to empty so
   // tests that don't care about the completion detail don't crash on an
   // unmocked call.
   vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
@@ -207,9 +207,9 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(screen.queryByRole('button', { name: 'Revise Plan' })).not.toBeInTheDocument()
   })
 
-  it('merged stage renders neither stage panel nor any Revise button', async () => {
+  it('completed stage renders neither stage panel nor any Revise button', async () => {
     stubNoContextOrPlan()
-    render(<TaskDetailPanel projectId={projectId} task={makeTask('merged')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
+    render(<TaskDetailPanel projectId={projectId} task={makeTask('completed')} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await waitFor(() => expect(api.getTaskContext).toHaveBeenCalled())
     expect(screen.queryByTestId('grillme-panel')).not.toBeInTheDocument()
@@ -217,7 +217,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
     expect(screen.queryByRole('button', { name: /Revise/ })).not.toBeInTheDocument()
   })
 
-  it('merged stage shows the verdict notes and a link to the merged pull request', async () => {
+  it('completed stage shows the verdict notes and a link to the merged pull request', async () => {
     vi.mocked(api.getTaskContext).mockRejectedValue(new Error('not found'))
     vi.mocked(api.getTaskPlan).mockRejectedValue(new Error('not found'))
     vi.mocked(api.getWorkspaceStatus).mockResolvedValue({
@@ -231,7 +231,7 @@ describe('TaskDetailPanel — stage-conditional rendering', () => {
       ],
     })
 
-    const task = makeTask('merged', {
+    const task = makeTask('completed', {
       pull_request: { url: 'https://github.com/org/repo/pull/7', number: 7, branch: 'task-exec/task-a/exec-002' },
     })
     render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
@@ -359,10 +359,10 @@ describe('TaskDetailPanel — reference sections open/highlight the one relevant
     expect(plan.querySelector('.task-section-current-badge')).toBeInTheDocument()
   })
 
-  it('collapses every reference section once merged — nothing is "current" anymore', async () => {
+  it('collapses every reference section once completed — nothing is "current" anymore', async () => {
     stubContextAndPlan()
     vi.mocked(api.listReviews).mockResolvedValue({ reviews: [] })
-    const task = makeTask('merged', { objective: 'ship it' })
+    const task = makeTask('completed', { objective: 'ship it' })
     render(<TaskDetailPanel projectId={projectId} task={task} onBack={vi.fn()} onViewDraft={vi.fn()} />)
 
     await screen.findByText('A finalized summary')

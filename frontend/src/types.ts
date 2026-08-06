@@ -4,12 +4,12 @@ export interface TaskReferences {
 }
 
 // 'cleanup' mirrors task.StageCleanup (internal/task/task.go): "Mark as
-// merged" now lands here first, not straight on 'merged' — the execution-
+// merged" now lands here first, not straight on 'completed' — the execution-
 // worktree cleanup routine runs synchronously and only advances the task
 // the rest of the way once every worktree is confirmed removed or already
 // gone. A task only "sticks" at 'cleanup' when CleanupWorktreeStatus records
 // at least one skipped/failed worktree (CleanupPanel.tsx).
-export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'pr_review' | 'cleanup' | 'merged'
+export type TaskStage = 'requirements' | 'planning' | 'implementation' | 'review' | 'pr_review' | 'cleanup' | 'completed'
 
 export interface PullRequest {
   url: string

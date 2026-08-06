@@ -13,7 +13,7 @@ interface CleanupPanelProps {
 // worktree-removal pass "Mark as merged" ran inline
 // (internal/api/pr.go's handleMarkPRMerged) left at least one of a task's
 // execution worktrees skipped or failed — a task that came back all-clean
-// skips this screen entirely, landing straight on stage 'merged'. Renders
+// skips this screen entirely, landing straight on stage 'completed'. Renders
 // the persisted per-worktree report (task.cleanup_status) and offers Retry
 // (re-run the same safety-checked routine — useful once a flagged worktree
 // has been committed/pushed by hand) and Force-remove (override the dirty/

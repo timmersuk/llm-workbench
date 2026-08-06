@@ -271,13 +271,13 @@ func TestFileStore_CompleteCleanup_AdvancesToMerged(t *testing.T) {
 
 	got, err := store.CompleteCleanup("demo-project", "task-a")
 	require.NoError(t, err)
-	assert.Equal(t, StageMerged, got.Stage)
+	assert.Equal(t, StageCompleted, got.Stage)
 
 	transitions, err := store.ListStageTransitions("demo-project", "task-a")
 	require.NoError(t, err)
 	last := transitions[len(transitions)-1]
 	assert.Equal(t, StageCleanup, last.FromStage)
-	assert.Equal(t, StageMerged, last.ToStage)
+	assert.Equal(t, StageCompleted, last.ToStage)
 	assert.Equal(t, TransitionTriggerCleanupComplete, last.Trigger)
 }
 

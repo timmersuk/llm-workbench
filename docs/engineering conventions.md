@@ -558,16 +558,23 @@ doesn't have to be re-derived or re-litigated later.
 
 ## Execution-worktree cleanup
 
-* `task.StageCleanup` ("cleanup") sits between `pr_review` and `merged`
+* `task.StageCleanup` ("cleanup") sits between `pr_review` and `completed`
   (`internal/task/task.go`): `MarkPRMerged` (`internal/task/lifecycle.go`)
-  now lands a task here instead of straight on `merged`, keeping its
+  now lands a task here instead of straight on `completed`, keeping its
   `mark_pr_merged` trigger — the human action is unchanged, it just lands
   one stage earlier. `CompleteCleanup` (trigger `cleanup_complete`) is the
-  only way from `cleanup` to `merged`, and `SetCleanupStatus` persists a
+  only way from `cleanup` to `completed`, and `SetCleanupStatus` persists a
   task's latest per-worktree report (`Task.CleanupStatus`,
   `[]CleanupWorktreeStatus`) independently of Stage — deliberately not
   stage-guarded, since the sweep CLI below also calls it against tasks
-  already sitting at `merged`.
+  already sitting at `completed`. `StageCompleted`'s value was renamed from
+  `"merged"` to `"completed"` after this milestone shipped, once the stage
+  came to mean "PR merged and cleanup finished" rather than "PR merged" —
+  since the stage id is a plain string persisted verbatim on every
+  `task.yaml`/`transitions.yaml` (there's no schema version field to gate
+  on), any such rename needs every existing `stage:`/`to_stage:`/
+  `from_stage: merged` in the data store rewritten to `completed` alongside
+  the code change, or older tasks silently stop matching the new constant.
 * `agentrunner.CleanupTaskWorktrees` (`internal/agentrunner/worktree_cleanup.go`)
   is the shared, synchronous, best-effort routine: given a task's execution
   ids, it removes each `.worktrees/<repo>/<taskID>/<executionID>` via `git
@@ -590,7 +597,7 @@ doesn't have to be re-derived or re-litigated later.
   split.
 * `handleMarkPRMerged`/`handleTaskCleanup` (`internal/api/pr.go`) share one
   `runCleanupPass` helper: run the routine, persist the report
-  (`SetCleanupStatus`), and advance to `merged` (`CompleteCleanup`) only
+  (`SetCleanupStatus`), and advance to `completed` (`CompleteCleanup`) only
   when every worktree came back `removed`/`already-gone` — otherwise the
   task stays parked at `cleanup` with the report for a human to act on via
   `POST .../cleanup {force?: bool}` (`handleTaskCleanup`, 409 outside
@@ -605,7 +612,7 @@ doesn't have to be re-derived or re-litigated later.
 * `cmd/sweep-merged-worktrees` is a one-off CLI (mirroring
   `cmd/migrate-agent-defaults`'s shape) addressing worktrees orphaned by
   tasks merged before this mechanism shipped: it walks every project's
-  tasks at `merged` (and any parked at `cleanup`) and re-runs the same
+  tasks at `completed` (and any parked at `cleanup`) and re-runs the same
   routine. Dry-run by default; `-apply` performs the real removals,
   `-force` overrides the safety checks (only meaningful with `-apply`).
 

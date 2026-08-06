@@ -21,7 +21,7 @@ type reviewDiffResponse struct {
 
 // handleListReviews returns every recorded review verdict for a task, oldest
 // first — a file-for-file mirror of handleListExecutions. The terminal
-// "merged" screen reads this to show the latest verdict's notes on a fresh
+// "completed" screen reads this to show the latest verdict's notes on a fresh
 // visit, when no just-finalized response is in hand (docs/milestones/done/milestone6.md
 // PR 3 decision 4).
 func (s *Server) handleListReviews() http.HandlerFunc {
