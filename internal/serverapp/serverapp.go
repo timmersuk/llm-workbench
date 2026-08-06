@@ -119,7 +119,7 @@ func LoadConfig() Config {
 		ExecutionSeedExecutor:         utils.GetEnvDefault("EXECUTION_SEED_EXECUTOR", "claude-code"),
 		// Idle timeout between streamed chunks (resets on every chunk received);
 		// total-duration timeout for non-streaming calls.
-		LLMTimeout:   utils.GetEnvDefault("LLM_TIMEOUT", 30*time.Second),
+		LLMTimeout:   utils.GetEnvDefault("LLM_TIMEOUT", 5*time.Minute),
 		AgentTimeout: utils.GetEnvDefault("AGENT_TIMEOUT", 5*time.Minute),
 		// Execute (an unattended, multi-step Implementation-stage run to
 		// completion) needs a much larger budget than Run (one turn of a

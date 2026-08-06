@@ -391,8 +391,9 @@ doesn't have to be re-derived or re-litigated later.
   `docs/adr/0004-chat-client-openai-compatible-wire-format.md` for why
   this shape was standardized on instead of a bespoke interface with
   per-vendor adapters.
-* `LLM_TIMEOUT` means two different things depending on call shape, both
-  handled in `internal/chat/client.go`: for `StreamChatCompletion`, it's an
+* `LLM_TIMEOUT` (default 5m, same as `AGENT_TIMEOUT`) means two different
+  things depending on call shape, both handled in `internal/chat/client.go`:
+  for `StreamChatCompletion`, it's an
   **idle/inactivity** timeout that resets on every chunk received, so a
   stream that keeps emitting data never times out no matter its total
   duration — only a stalled/hung connection aborts (as
