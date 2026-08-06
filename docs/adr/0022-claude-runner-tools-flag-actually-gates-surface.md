@@ -128,3 +128,51 @@ mechanisms above now guarantee. The original section's objection was to
 is fully addressed, not overridden. See
 `internal/agentrunner/claude_runner.go` (`withSubagentSupport`, `scopedSubagent`,
 `subagentTracker`, `readAgentTranscript`).
+
+## Update (2026-08-06): `Task` block reinstated — background dispatch never reports back over this transport
+
+The scoped/tracked design in the Update above assumed the CLI's subagent
+spawn stays synchronous (its `SubagentStop` hook fires before the parent
+turn ends, which `awaitAndEmitRunSubagents`/`awaitAndEmitExecuteSubagents`
+wait for). Live usage the same day hit the CLI's other mode instead: the
+`Agent` tool call itself returned "launched in the background... you'll be
+notified when it completes" and the parent turn completed normally with
+`SubagentStart`/`SubagentStop` never firing.
+
+Two things confirmed by direct live testing, not inference:
+
+* **The subagent never does any work.** Its dedicated output file was 0
+  bytes and never grew, for the entire life of the incident (3+ hours). Each
+  HTTP-request-scoped `Run()` call connects with a context timed to that
+  one turn and cancels it via `defer cancel()` on return — `exec.CommandContext`
+  kills the underlying `claude` subprocess at that point, so the process a
+  background dispatch would need to keep running in doesn't survive the
+  turn it was dispatched from.
+* **Keeping the connection alive doesn't fix it either.** A throwaway probe
+  connected a client with a context that outlived a single turn (not
+  `Run`'s per-call `runCtx`) and confirmed the connection genuinely
+  persists — a second `Query()` on the same client succeeded. Forced into
+  background dispatch on that same long-lived connection, the model still
+  reported "no completion notification yet" after 2 full minutes on a task
+  that completes in seconds when done synchronously. The completion-delivery
+  mechanism itself doesn't work over this SDK-driven headless transport,
+  independent of process lifetime.
+
+Given that, offering `Task` only ever costs a wasted turn (best case) or
+leaves a session permanently unresumable, silently, until something notices
+(worst case — the actual 2026-08-06 incident, compounded by an unrelated YAML
+append-indent bug that hid the failure from the UI entirely; both fixed
+separately). `Task` is removed from `WithTools`/`WithAllowedTools` again at
+both call sites, and `withSubagentSupport`/`scopedSubagent` are no longer
+invoked. The tracker/hook-wrapping plumbing (`subagentTracker`,
+`awaitAndEmitRunSubagents`, `awaitAndEmitExecuteSubagents`) is left in place
+rather than torn out — with `Task` never offered it's permanently inert, but
+removing it would mean unwinding the turn-processing loop's `OnToolCall`/
+`OnToolResult` wrapping for no behavioral gain.
+
+Not addressed here, tracked separately: the per-turn context (`Run`'s
+`runCtx`) killing the subprocess on every single call, subagents aside,
+means every turn of every conversation pays a full subprocess-spawn +
+`--resume` reconnect cost it doesn't need to. Decoupling a session's
+connection lifetime from one turn's timeout (idle-reaped instead) is a real
+win independent of subagents, worth its own task.

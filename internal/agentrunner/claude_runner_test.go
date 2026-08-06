@@ -832,7 +832,7 @@ func TestClaudeRunner_Run_ReconnectsOnceOnStaleConnectionThenSucceeds(t *testing
 	stale := &fakeClaudeClient{queryErr: errors.New("write |1: The pipe is being closed.")}
 	r.clients[key] = stale
 
-	fresh := &fakeClaudeClient{}
+	fresh := &fakeClaudeClient{messages: []claudecode.Message{&claudecode.ResultMessage{}}}
 	r.newClient = func(...claudecode.Option) claudecode.Client { return fresh }
 
 	out, err := r.Run(context.Background(), RunInput{SessionKey: key, Workspace: t.TempDir()}, nil)
@@ -887,6 +887,115 @@ func TestClaudeRunner_Run_NonStaleQueryErrorIsNotRetried(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "some other failure")
 	assert.Equal(t, 1, client.queryCalls)
+}
+
+// TestClaudeRunner_Run_ErrorsAndEvictsWhenMessageChannelClosesWithNoResult
+// covers a real incident: an async-dispatched subagent left a resumed
+// session that produces zero messages and no error on every future turn.
+// Run must not treat that as a silent success — it should error and evict
+// the client, so callers don't keep resuming a dead session forever.
+func TestClaudeRunner_Run_ErrorsAndEvictsWhenMessageChannelClosesWithNoResult(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	key := "task-a:planning"
+
+	client := &fakeClaudeClient{}
+	r.clients[key] = client
+
+	out, err := r.Run(context.Background(), RunInput{SessionKey: key, Workspace: t.TempDir()}, nil)
+
+	require.Error(t, err)
+	assert.Empty(t, out.SessionID)
+	assert.True(t, client.disconnected, "the dead client should be evicted, not left cached for the next turn to resume")
+	_, cached := r.clients[key]
+	assert.False(t, cached)
+}
+
+// TestClaudeRunner_ClientFor_ConnectsWithContextIndependentOfTurn locks in
+// the fix for a real bug: buildAndConnectClient used to connect with the
+// turn's own runCtx, so Run's `defer cancel()` killed the underlying
+// subprocess (exec.CommandContext) the instant every single turn returned —
+// a cached client was never actually reusable, every turn paid a fresh
+// spawn + --resume reconnect. The connection must now survive the context
+// that created it.
+func TestClaudeRunner_ClientFor_ConnectsWithContextIndependentOfTurn(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+
+	fake := &fakeClaudeClient{}
+	r.newClient = func(...claudecode.Option) claudecode.Client { return fake }
+
+	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	_, err := r.clientFor(turnCtx, "task-a:planning", RunInput{Workspace: t.TempDir()})
+	require.NoError(t, err)
+	require.NotNil(t, fake.connectCtx)
+
+	cancelTurn()
+	assert.Nil(t, fake.connectCtx.Err(), "the connection's context must not be canceled just because the turn that created it ended")
+}
+
+// TestClaudeRunner_CloseSession_CancelsConnectionContext confirms eviction
+// actually tears down the connection (not just the SDK-level Disconnect) —
+// the cancel captured at connect time must fire.
+func TestClaudeRunner_CloseSession_CancelsConnectionContext(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	fake := &fakeClaudeClient{}
+	r.newClient = func(...claudecode.Option) claudecode.Client { return fake }
+
+	_, err := r.clientFor(context.Background(), "task-a:planning", RunInput{Workspace: t.TempDir()})
+	require.NoError(t, err)
+	require.NotNil(t, fake.connectCtx)
+
+	r.CloseSession("task-a:planning")
+
+	assert.NotNil(t, fake.connectCtx.Err(), "CloseSession must cancel the connection's own context")
+}
+
+// TestClaudeRunner_ReapIdleClients_EvictsPastIdleTimeout confirms a
+// connection nobody's touched in a while gets cleaned up rather than held
+// (and its subprocess kept alive) forever.
+func TestClaudeRunner_ReapIdleClients_EvictsPastIdleTimeout(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	fake := &fakeClaudeClient{}
+	r.newClient = func(...claudecode.Option) claudecode.Client { return fake }
+
+	_, err := r.clientFor(context.Background(), "task-a:planning", RunInput{Workspace: t.TempDir()})
+	require.NoError(t, err)
+
+	r.mu.Lock()
+	r.clientLastUsed["task-a:planning"] = time.Now().Add(-(sessionIdleTimeout + time.Minute))
+	r.mu.Unlock()
+
+	r.reapIdleClients()
+
+	assert.True(t, fake.disconnected)
+	_, cached := r.clients["task-a:planning"]
+	assert.False(t, cached)
+}
+
+// TestClaudeRunner_ClientFor_ReusingCachedClientTouchesLastUsed confirms a
+// cache hit refreshes clientLastUsed — otherwise a session getting real,
+// regular use would still look idle to reapIdleClients and get evicted out
+// from under an active conversation.
+func TestClaudeRunner_ClientFor_ReusingCachedClientTouchesLastUsed(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	fake := &fakeClaudeClient{}
+	r.newClient = func(...claudecode.Option) claudecode.Client { return fake }
+
+	key := "task-a:planning"
+	_, err := r.clientFor(context.Background(), key, RunInput{Workspace: t.TempDir()})
+	require.NoError(t, err)
+
+	r.mu.Lock()
+	r.clientLastUsed[key] = time.Now().Add(-5 * time.Minute) // well under sessionIdleTimeout, so the reap sweep leaves it alone
+	r.mu.Unlock()
+
+	// Cache hit — same client, no reconnect.
+	_, err = r.clientFor(context.Background(), key, RunInput{Workspace: t.TempDir()})
+	require.NoError(t, err)
+
+	r.mu.Lock()
+	lastUsed := r.clientLastUsed[key]
+	r.mu.Unlock()
+	assert.WithinDuration(t, time.Now(), lastUsed, 5*time.Second)
 }
 
 func TestClaudeRunner_ClientFor_ErrorsWhenWorkspaceEmpty(t *testing.T) {
@@ -1078,11 +1187,10 @@ func TestClaudeRunner_ClientFor_SetsToolsAlongsideAllowedTools(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: t.TempDir()})
 	require.NoError(t, err)
 
-	// Task is admitted alongside readOnlyTools (scoped to the custom
-	// workbench-readonly-agent via WithAgents/WithDisallowedTools) — see
-	// docs/adr/0022's Update reversing the block-outright conclusion.
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"}, captured.Tools)
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"}, captured.AllowedTools)
+	// Task is deliberately not admitted — see docs/adr/0022's second Update.
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}, captured.Tools)
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}, captured.AllowedTools)
+	assert.NotContains(t, captured.Tools, "Task")
 }
 
 // TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames locks in that
@@ -1115,7 +1223,7 @@ func TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:review", in)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash", "Task"}, captured.Tools,
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash"}, captured.Tools,
 		"WithTools must stay built-in-only even when Draft MCP tools are registered")
 	assert.Contains(t, captured.AllowedTools, mcpQualifiedName("propose_context"),
 		"the MCP-qualified name still belongs in AllowedTools/--allowed-tools")
@@ -1140,11 +1248,9 @@ func TestClaudeRunner_Execute_SetsToolsAlongsideAllowedTools(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	// Execute admits Task alongside executionTools (scoped to the custom
-	// workbench-execution-agent) — see docs/adr/0022's Update.
-	wantTools := append(append([]string{}, executionTools...), "Task")
-	assert.Equal(t, wantTools, captured.Tools)
-	assert.Equal(t, wantTools, captured.AllowedTools)
+	// Task is deliberately not admitted — see docs/adr/0022's second Update.
+	assert.Equal(t, executionTools, captured.Tools)
+	assert.Equal(t, executionTools, captured.AllowedTools)
 }
 
 // hookEvents returns the set of HookEvents a captured Options registers, so a
@@ -1164,12 +1270,13 @@ func hookEvents(o claudecode.Options) map[claudecode.HookEvent]bool {
 	return events
 }
 
-// TestClaudeRunner_ClientFor_RegistersScopedReadOnlySubagent locks in
-// docs/adr/0022's Update: Run re-admits Task, but only for a single custom
-// AgentDefinition whose Tools never exceed the calling stage's readOnlyTools
-// boundary, with the CLI's built-in presets denied so a model can't route
-// around it.
-func TestClaudeRunner_ClientFor_RegistersScopedReadOnlySubagent(t *testing.T) {
+// TestClaudeRunner_ClientFor_DoesNotRegisterSubagentSupport is a regression
+// guard for docs/adr/0022's second Update: a background-dispatched subagent
+// never reports back over this transport regardless of connection lifetime
+// (live-verified against a real session, 2026-08-06), so Run must not offer
+// Task or register a custom agent — re-admitting it would silently
+// reintroduce turns that dispatch work that can never complete.
+func TestClaudeRunner_ClientFor_DoesNotRegisterSubagentSupport(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 
 	var captured claudecode.Options
@@ -1181,40 +1288,16 @@ func TestClaudeRunner_ClientFor_RegistersScopedReadOnlySubagent(t *testing.T) {
 	_, err := r.clientFor(context.Background(), "task-a:requirements", RunInput{Workspace: t.TempDir()})
 	require.NoError(t, err)
 
-	agent, ok := captured.Agents[readOnlyAgentName]
-	require.True(t, ok, "the custom read-only subagent must be registered via WithAgents")
-	assert.Equal(t, readOnlyTools, agent.Tools,
-		"the subagent's tool access must not exceed the stage's readOnlyTools boundary")
-	assert.NotContains(t, agent.Tools, "Task", "a subagent must not be able to spawn further subagents")
-	assert.ElementsMatch(t, []string{"Task(Explore)", "Task(Plan)", "Task(general-purpose)"}, captured.DisallowedTools,
-		"the CLI's built-in agent presets must be denied so only the custom agent is invocable")
-	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStart], "SubagentStart hook must be registered")
-	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStop], "SubagentStop hook must be registered")
+	assert.NotContains(t, captured.Tools, "Task")
+	assert.NotContains(t, captured.AllowedTools, "Task")
+	assert.Empty(t, captured.Agents)
+	assert.False(t, hookEvents(captured)[claudecode.HookEventSubagentStart])
+	assert.False(t, hookEvents(captured)[claudecode.HookEventSubagentStop])
 }
 
-// TestClaudeRunner_ClientFor_ReviewSubagentInheritsBashBoundary confirms the
-// scoped subagent tracks the exact stage boundary, widening to Bash when (and
-// only when) the Review stage's EnableBashTool does.
-func TestClaudeRunner_ClientFor_ReviewSubagentInheritsBashBoundary(t *testing.T) {
-	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
-
-	var captured claudecode.Options
-	r.newClient = func(opts ...claudecode.Option) claudecode.Client {
-		captured = captureOptions(opts...)
-		return &fakeClaudeClient{}
-	}
-
-	_, err := r.clientFor(context.Background(), "task-a:review", RunInput{Workspace: t.TempDir(), EnableBashTool: true})
-	require.NoError(t, err)
-
-	agent := captured.Agents[readOnlyAgentName]
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash"}, agent.Tools)
-}
-
-// TestClaudeRunner_Execute_RegistersScopedExecutionSubagent is the Execute
-// analog: the execution subagent is scoped to executionTools, presets denied,
-// hooks wired.
-func TestClaudeRunner_Execute_RegistersScopedExecutionSubagent(t *testing.T) {
+// TestClaudeRunner_Execute_DoesNotRegisterSubagentSupport is the Execute
+// analog of TestClaudeRunner_ClientFor_DoesNotRegisterSubagentSupport.
+func TestClaudeRunner_Execute_DoesNotRegisterSubagentSupport(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 
 	var captured claudecode.Options
@@ -1226,14 +1309,11 @@ func TestClaudeRunner_Execute_RegistersScopedExecutionSubagent(t *testing.T) {
 	_, err := r.Execute(context.Background(), ExecuteInput{SessionKey: "task-a:execute", Workspace: t.TempDir()}, nil)
 	require.NoError(t, err)
 
-	agent, ok := captured.Agents[executionAgentName]
-	require.True(t, ok, "the custom execution subagent must be registered via WithAgents")
-	assert.Equal(t, executionTools, agent.Tools,
-		"the subagent's tool access must match Execute's executionTools boundary")
-	assert.NotContains(t, agent.Tools, "Task")
-	assert.ElementsMatch(t, []string{"Task(Explore)", "Task(Plan)", "Task(general-purpose)"}, captured.DisallowedTools)
-	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStart])
-	assert.True(t, hookEvents(captured)[claudecode.HookEventSubagentStop])
+	assert.NotContains(t, captured.Tools, "Task")
+	assert.NotContains(t, captured.AllowedTools, "Task")
+	assert.Empty(t, captured.Agents)
+	assert.False(t, hookEvents(captured)[claudecode.HookEventSubagentStart])
+	assert.False(t, hookEvents(captured)[claudecode.HookEventSubagentStop])
 }
 
 // writeTranscript writes a minimal JSONL subagent transcript to a temp file
@@ -1604,9 +1684,18 @@ type fakeClaudeClient struct {
 	connectErr   error
 	queryErr     error
 	queryCalls   int
+	// messages, if set, are streamed on ReceiveMessages before the channel
+	// closes. Left nil (an immediately-closed empty channel) by tests that
+	// only care about the reconnect/error path, not a real completed turn.
+	messages []claudecode.Message
+	// connectCtx captures whatever context Connect was actually called
+	// with, so a test can assert it's independent of a caller's own
+	// turn-scoped context.
+	connectCtx context.Context
 }
 
-func (f *fakeClaudeClient) Connect(context.Context, ...claudecode.StreamMessage) error {
+func (f *fakeClaudeClient) Connect(ctx context.Context, _ ...claudecode.StreamMessage) error {
+	f.connectCtx = ctx
 	return f.connectErr
 }
 func (f *fakeClaudeClient) Disconnect() error { f.disconnected = true; return nil }
@@ -1619,7 +1708,10 @@ func (f *fakeClaudeClient) QueryStream(context.Context, <-chan claudecode.Stream
 	return nil
 }
 func (f *fakeClaudeClient) ReceiveMessages(context.Context) <-chan claudecode.Message {
-	ch := make(chan claudecode.Message)
+	ch := make(chan claudecode.Message, len(f.messages))
+	for _, m := range f.messages {
+		ch <- m
+	}
 	close(ch)
 	return ch
 }

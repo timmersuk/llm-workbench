@@ -110,6 +110,12 @@ const (
 	executionAgentName = "workbench-execution-agent"
 )
 
+// sessionIdleTimeout is how long a cached Run client's connection is kept
+// alive with no turns against it before reapIdleClients evicts it. Its
+// subprocess otherwise has no other reason to ever exit — see
+// buildAndConnectClient's doc comment.
+const sessionIdleTimeout = 30 * time.Minute
+
 // builtinSubagentPresets are the `claude` CLI's own built-in Task agent
 // presets. Each is denied via WithDisallowedTools' Task(<name>) scoped-deny
 // syntax so a model can't route around the custom, tool-scoped agent by
@@ -196,7 +202,17 @@ type ClaudeRunner struct {
 	mu               sync.Mutex
 	clients          map[string]claudecode.Client
 	clientSelections map[string]Selection
-	inFlight         map[string]bool
+	// clientCancels holds each cached client's own connection-lifetime
+	// cancel func, keyed the same as clients — see buildAndConnectClient's
+	// doc comment for why a client's connection outlives the turn that
+	// created it. Absent for a client seeded directly into clients
+	// (tests only); evictClient tolerates that.
+	clientCancels map[string]context.CancelFunc
+	// clientLastUsed tracks when each cached client last served a Run
+	// call, so reapIdleClients can evict connections nobody's touched in
+	// a while instead of holding them (and their subprocess) forever.
+	clientLastUsed map[string]time.Time
+	inFlight       map[string]bool
 	// subagentTrackers holds the current turn's subagent tracker per
 	// SessionKey. A Run client is cached and reused across turns, so its
 	// SubagentStart/SubagentStop hooks (registered once at connect time)
@@ -242,6 +258,8 @@ func NewClaudeRunner(timeout, executeTimeout time.Duration, reposRoot string, kn
 	return &ClaudeRunner{
 		clients:          make(map[string]claudecode.Client),
 		clientSelections: make(map[string]Selection),
+		clientCancels:    make(map[string]context.CancelFunc),
+		clientLastUsed:   make(map[string]time.Time),
 		inFlight:         make(map[string]bool),
 		subagentTrackers: make(map[string]*subagentTracker),
 		timeout:          timeout,
@@ -300,13 +318,39 @@ func claudeSelectionOptions(model string, effort ReasoningEffort) []claudecode.O
 func (r *ClaudeRunner) CloseSession(sessionKey string) {
 	r.mu.Lock()
 	client, ok := r.clients[sessionKey]
+	cancel := r.clientCancels[sessionKey]
 	if ok {
 		delete(r.clients, sessionKey)
 		delete(r.clientSelections, sessionKey)
+		delete(r.clientCancels, sessionKey)
+		delete(r.clientLastUsed, sessionKey)
 	}
 	r.mu.Unlock()
 	if ok {
 		_ = client.Disconnect()
+	}
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// reapIdleClients evicts every cached client whose connection has sat idle
+// past sessionIdleTimeout. There's no background ticker for this (every
+// ClaudeRunner in the test suite would leak one) — it runs inline at the
+// top of clientFor instead, so idle connections get cleaned up on the next
+// unrelated request rather than accumulating forever.
+func (r *ClaudeRunner) reapIdleClients() {
+	r.mu.Lock()
+	var expired []string
+	now := time.Now()
+	for key, lastUsed := range r.clientLastUsed {
+		if now.Sub(lastUsed) > sessionIdleTimeout {
+			expired = append(expired, key)
+		}
+	}
+	r.mu.Unlock()
+	for _, key := range expired {
+		r.CloseSession(key)
 	}
 }
 
@@ -324,8 +368,11 @@ func (r *ClaudeRunner) CloseSession(sessionKey string) {
 func (r *ClaudeRunner) CloseAll() {
 	r.mu.Lock()
 	clients := r.clients
+	cancels := r.clientCancels
 	r.clients = make(map[string]claudecode.Client)
 	r.clientSelections = make(map[string]Selection)
+	r.clientCancels = make(map[string]context.CancelFunc)
+	r.clientLastUsed = make(map[string]time.Time)
 	r.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -337,6 +384,9 @@ func (r *ClaudeRunner) CloseAll() {
 		}(client)
 	}
 	wg.Wait()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 // Run implements AgentRunner. Unlike the engine-backed ChatClientRunner
@@ -417,7 +467,16 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 	if done {
 		return out, nil
 	}
-	return out, runCtx.Err()
+	if err := runCtx.Err(); err != nil {
+		return out, err
+	}
+	// The message channel closed with no ResultMessage and no timeout —
+	// a resumed session left with unfinished business (e.g. an
+	// async-dispatched subagent) can do this silently, forever, on every
+	// future resume. Evict it so the next call starts fresh instead of
+	// repeating the same silent failure.
+	r.CloseSession(key)
+	return RunOutput{}, fmt.Errorf("claude code agent run for %s ended with no result and no error", key)
 }
 
 // Execute implements AgentRunner. Unlike Run, it never reuses or caches a
@@ -443,17 +502,13 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 	runCtx, cancel := context.WithTimeout(ctx, r.executeTimeout)
 	defer cancel()
 
-	// Execute uses a fresh client per call, so its SubagentStart/SubagentStop
-	// hooks can close over this local tracker directly (unlike Run's cached
-	// client, which routes via r.subagentTrackers).
 	tracker := newSubagentTracker()
 
-	// executeTools is executionTools plus Task (subagent spawning). Task is
-	// appended to a fresh slice, never mutated into the shared executionTools
-	// var. The spawned subagent is confined to executionTools by its own
-	// AgentDefinition.Tools (scopedSubagent), so admitting Task here doesn't
-	// widen Execute's boundary — see docs/adr/0022's Update.
-	executeTools := append(append([]string{}, executionTools...), subagentToolName)
+	// executeTools deliberately does not admit Task — see docs/adr/0022's
+	// second Update: a background-dispatched subagent never reports back
+	// over this transport regardless of connection lifetime (live-verified),
+	// so the tool is not offered at all.
+	executeTools := append([]string{}, executionTools...)
 
 	opts := []claudecode.Option{
 		claudecode.WithCwd(in.Workspace),
@@ -473,18 +528,6 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		claudecode.WithTools(executeTools...),
 		claudecode.WithAllowedTools(executeTools...),
 	}
-	// Admit Task for the execution-scoped custom agent only (built-in presets
-	// denied), and register the hooks that let this call await a subagent's
-	// completion and capture its real output before returning.
-	opts = append(opts, withSubagentSupport(
-		executionAgentName,
-		scopedSubagent(
-			"Implementation subagent scoped to the isolated execution worktree.",
-			"You are an implementation subagent operating inside an isolated git worktree. Carry out the delegated sub-task using only your available tools, then report concisely what you changed. You have the same tool access as the calling execution agent and cannot spawn further subagents.",
-			executionTools,
-		),
-		func() *subagentTracker { return tracker },
-	)...)
 	opts = append(opts, claudeSelectionOptions(in.Model, in.ReasoningEffort)...)
 	// See clientFor's identical comment: omitting WithMaxTurns entirely
 	// (rather than passing 0) is what tells the underlying `claude` CLI not
@@ -594,6 +637,8 @@ func (r *ClaudeRunner) clearSubagentTracker(key string) {
 // the caller's next persisted RunOutput.SessionID is always correct either
 // way.
 func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (claudecode.Client, error) {
+	r.reapIdleClients()
+
 	r.mu.Lock()
 	client, ok := r.clients[key]
 	priorSelection, selectionKnown := r.clientSelections[key]
@@ -604,6 +649,7 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 		ok = false
 	}
 	if ok {
+		r.touchClient(key)
 		return client, nil
 	}
 
@@ -612,10 +658,11 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 	}
 
 	if in.ResumeSessionID != "" {
-		client, err := r.buildAndConnectClient(ctx, in, in.ResumeSessionID)
+		client, cancel, err := r.buildAndConnectClient(ctx, in, in.ResumeSessionID)
 		if err == nil {
-			return r.cacheClient(key, client, currentSelection), nil
+			return r.cacheClient(key, client, cancel, currentSelection), nil
 		}
+		cancel()
 		if !isSessionNotFoundError(err) {
 			return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
 		}
@@ -624,22 +671,33 @@ func (r *ClaudeRunner) clientFor(ctx context.Context, key string, in RunInput) (
 		// surfacing this turn as a failure.
 	}
 
-	client, err := r.buildAndConnectClient(ctx, in, "")
+	client, cancel, err := r.buildAndConnectClient(ctx, in, "")
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("connecting claude code agent for %s: %w", key, err)
 	}
-	return r.cacheClient(key, client, currentSelection), nil
+	return r.cacheClient(key, client, cancel, currentSelection), nil
 }
 
 // cacheClient records client as key's live session and returns it —
 // factored out of clientFor purely so both the resume and fallback connect
 // paths share the exact same lock/store sequence.
-func (r *ClaudeRunner) cacheClient(key string, client claudecode.Client, selection Selection) claudecode.Client {
+func (r *ClaudeRunner) cacheClient(key string, client claudecode.Client, cancel context.CancelFunc, selection Selection) claudecode.Client {
 	r.mu.Lock()
 	r.clients[key] = client
+	r.clientCancels[key] = cancel
+	r.clientLastUsed[key] = time.Now()
 	r.clientSelections[key] = selection
 	r.mu.Unlock()
 	return client
+}
+
+// touchClient records that key's cached client just served a turn, so
+// reapIdleClients doesn't evict a connection that's actually in use.
+func (r *ClaudeRunner) touchClient(key string) {
+	r.mu.Lock()
+	r.clientLastUsed[key] = time.Now()
+	r.mu.Unlock()
 }
 
 // buildAndConnectClient constructs a claudecode.Client from in's workspace/
@@ -652,7 +710,14 @@ func (r *ClaudeRunner) cacheClient(key string, client claudecode.Client, selecti
 // is widened by systemPromptWithHistory's replay — never both, since a
 // resumed session already has its own real history and replaying an
 // approximation on top would just duplicate it.
-func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, resumeSessionID string) (claudecode.Client, error) {
+//
+// The returned cancel func governs the connection's own lifetime, not this
+// call's ctx — see the struct-level clientCancels doc comment for why: a
+// client cached for reuse across turns must not have its subprocess killed
+// by the turn that happened to create it. cancel is always non-nil, even on
+// error, so callers can unconditionally call it for cleanup.
+func (r *ClaudeRunner) buildAndConnectClient(_ context.Context, in RunInput, resumeSessionID string) (claudecode.Client, context.CancelFunc, error) {
+	connCtx, cancel := context.WithCancel(context.Background())
 	systemPrompt := in.SystemPrompt
 	var opts []claudecode.Option
 	if resumeSessionID != "" {
@@ -700,7 +765,7 @@ func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, r
 		for _, t := range in.Tools {
 			schema, err := decodeToolSchema(t.Function.Parameters)
 			if err != nil {
-				return nil, err
+				return nil, cancel, err
 			}
 			tools = append(tools, claudecode.NewTool(t.Function.Name, t.Function.Description, schema, draftToolHandlerFor(t.Function.Name)))
 			allowedTools = append(allowedTools, mcpQualifiedName(t.Function.Name))
@@ -724,7 +789,7 @@ func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, r
 		for _, d := range knowledgetool.All() {
 			schema, err := decodeToolSchema(d.Schema)
 			if err != nil {
-				return nil, err
+				return nil, cancel, err
 			}
 			knowledgeTools = append(knowledgeTools, claudecode.NewTool(d.Name, d.Description, schema, handlers[d.Name]))
 			allowedTools = append(allowedTools, qualifiedName(knowledgeServerName, d.Name))
@@ -732,44 +797,22 @@ func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, r
 		server := claudecode.CreateSDKMcpServer(knowledgeServerName, "1.0.0", knowledgeTools...)
 		opts = append(opts, claudecode.WithSdkMcpServer(knowledgeServerName, server))
 	}
-	// agentTools is the calling stage's own built-in boundary (readOnlyTools,
-	// +Bash for Review) — exactly what the scoped subagent is confined to.
-	// Snapshot it before Task is appended so a subagent can't itself spawn
-	// further subagents.
-	agentTools := append([]string{}, builtinTools...)
-	// Admit Task (subagent spawning) into both --tools and --allowed-tools,
-	// scoped to the custom read-only agent only (built-in presets denied via
-	// withSubagentSupport). See docs/adr/0022's Update.
-	builtinTools = append(builtinTools, subagentToolName)
-	allowedTools = append(allowedTools, subagentToolName)
-	// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
-	// (--allowed-tools) only auto-approves these without a permission
-	// prompt — see docs/adr/0022. Both must be set, or the CLI's full
-	// default built-in surface (Skill, ScheduleWakeup, ...) stays
-	// visible/callable alongside readOnlyTools.
+	// Task (subagent spawning) is deliberately NOT admitted here — see
+	// docs/adr/0022's second Update. A background-dispatched subagent's
+	// completion never reaches a caller of this SDK/transport regardless of
+	// how long the connection lives (live-verified), so offering the tool
+	// only ever costs a wasted turn or worse (a session left silently
+	// unresumable — see the 2026-08-06 incident in the ADR). WithTools is
+	// the actual tool-surface gate; without Task in it, the model can't see
+	// or call the tool at all.
 	opts = append(opts, claudecode.WithTools(builtinTools...))
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
-	// Scope subagent spawning to a single custom, read-only agent whose Tools
-	// are exactly agentTools (trust-boundary parity), deny the CLI's built-in
-	// presets, and register the SubagentStart/SubagentStop hooks Run awaits.
-	// getTracker reads r.subagentTrackers lazily so this (cached) client's
-	// hooks route to whatever turn's tracker is currently live for key.
-	key := in.SessionKey
-	opts = append(opts, withSubagentSupport(
-		readOnlyAgentName,
-		scopedSubagent(
-			"Read-only research subagent scoped to the reference repository.",
-			"You are a read-only research subagent. Investigate the reference repository using only your available read-only tools and report concise findings to the calling agent. You cannot modify files and cannot spawn further subagents.",
-			agentTools,
-		),
-		func() *subagentTracker { return r.subagentTrackerFor(key) },
-	)...)
 
 	client := r.newClient(opts...)
-	if err := client.Connect(ctx); err != nil {
-		return nil, err
+	if err := client.Connect(connCtx); err != nil {
+		return nil, cancel, err
 	}
-	return client, nil
+	return client, cancel, nil
 }
 
 // maxHistoryReplayBytes bounds how much prior-conversation transcript
