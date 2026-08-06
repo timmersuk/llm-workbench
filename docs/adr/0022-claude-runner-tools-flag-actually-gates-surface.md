@@ -106,6 +106,19 @@ The design:
   invariants.md's "No hidden state" and keeps a subagent's existence, status,
   and output part of persisted turn state rather than out-of-band.
 
+Live-verified naming caveat: the CLI's arg syntax and its runtime stream use
+**different names** for the same tool. `--tools`/`--allowed-tools`/
+`--disallowed-tools` (and the `Task(<name>)` scoped-deny) take `"Task"`, but the
+live CLI streams the spawn as a `ToolUseBlock`/`tool_call` named `"Agent"`
+(observed against `claude` 2.1.206; the vendored SDK pins neither — it's
+CLI-runtime-determined). Runtime correlation of a subagent's result back to its
+originating call must therefore match the **streamed** name (`"Agent"`), not the
+flag name (`"Task"`); conflating the two silently breaks the correlation (the
+result surfaces orphaned, keyed by `AgentID` rather than the parent
+`tool_use_id`) even though every unit test and the flag-level preset denial
+still pass. `claude_runner.go` keeps the two as `subagentToolName` (flags) and
+`subagentToolCallName` (stream), matched via `isSubagentToolCall`.
+
 Why reverse: `agentrunner-subagent-support` established that a scoped,
 tracked subagent is a genuinely useful capability (delegating a bounded
 read-only investigation, or an isolated execution sub-task) once its output is

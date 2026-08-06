@@ -1263,6 +1263,76 @@ func TestReadAgentTranscript_MissingPathIsAnErrorResult(t *testing.T) {
 	assert.Contains(t, output, "no transcript")
 }
 
+// TestReadAgentTranscript_RealSidechainShape covers finding #3: a real
+// subagent/sidechain transcript line carries many extra top-level fields
+// (uuid, parentUuid, isSidechain, agentId, timestamp, sessionId) and its
+// assistant content array intermixes thinking, tool_use, and text blocks. Only
+// the last assistant message's text must be extracted — never the whole raw
+// JSONL blob.
+func TestReadAgentTranscript_RealSidechainShape(t *testing.T) {
+	path := writeTranscript(t,
+		`{"parentUuid":null,"isSidechain":true,"agentId":"agent-1","type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"go investigate the auth flow"}]}}`,
+		`{"parentUuid":"u1","isSidechain":true,"agentId":"agent-1","type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me look"},{"type":"tool_use","id":"t1","name":"Read","input":{"path":"auth.go"}}]}}`,
+		`{"parentUuid":"a1","isSidechain":true,"agentId":"agent-1","type":"assistant","uuid":"a2","message":{"role":"assistant","content":[{"type":"text","text":"the auth flow uses JWTs signed with RS256"}]}}`,
+	)
+	output, isError := readAgentTranscript(path)
+	assert.False(t, isError)
+	assert.Equal(t, "the auth flow uses JWTs signed with RS256", output)
+}
+
+// TestReadAgentTranscript_RoleBasedAssistantDetection covers the specific
+// shape finding #3 suspected: assistant entries whose top-level "type" is
+// absent/different but whose message.role is "assistant" must still be
+// recognized (the old parser, keyed only on type=="assistant", found none and
+// dumped raw JSON).
+func TestReadAgentTranscript_RoleBasedAssistantDetection(t *testing.T) {
+	path := writeTranscript(t,
+		`{"message":{"role":"user","content":"investigate"}}`,
+		`{"message":{"role":"assistant","content":[{"type":"text","text":"here is the finding"}]}}`,
+	)
+	output, isError := readAgentTranscript(path)
+	assert.False(t, isError)
+	assert.Equal(t, "here is the finding", output)
+}
+
+// TestReadAgentTranscript_PrettyPrintedJSONArray covers the defensive fallback
+// for a transcript that isn't line-delimited (a single pretty-printed JSON
+// array, where no individual line parses on its own).
+func TestReadAgentTranscript_PrettyPrintedJSONArray(t *testing.T) {
+	path := writeTranscript(t, `[
+  {"type": "user", "message": {"role": "user", "content": "investigate"}},
+  {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "the multi-line answer"}]}}
+]`)
+	output, isError := readAgentTranscript(path)
+	assert.False(t, isError)
+	assert.Equal(t, "the multi-line answer", output)
+}
+
+// TestReadAgentTranscript_NoAssistantMessageDoesNotDumpRawJSON is the direct
+// regression guard for finding #3's symptom: a transcript with no recognizable
+// assistant message must never surface the raw JSONL content as the subagent's
+// output. The last readable text block (here, the user turn) is preferred over
+// a raw dump — but it is text, not JSON.
+func TestReadAgentTranscript_NoAssistantMessageDoesNotDumpRawJSON(t *testing.T) {
+	path := writeTranscript(t,
+		`{"type":"system","subtype":"init","uuid":"s1"}`,
+		`{"type":"user","message":{"role":"user","content":"only a user turn"}}`,
+	)
+	output, _ := readAgentTranscript(path)
+	assert.NotContains(t, output, `{`, "must never persist raw transcript JSON as the subagent's output")
+	assert.NotContains(t, output, `"type"`, "must never persist raw transcript JSON as the subagent's output")
+}
+
+// TestReadAgentTranscript_EmptyTranscriptIsANote confirms a genuinely empty or
+// unreadable transcript falls back to a clear note (never an empty string or
+// raw content), marked as a degraded result.
+func TestReadAgentTranscript_EmptyTranscriptIsANote(t *testing.T) {
+	path := writeTranscript(t, ``)
+	output, isError := readAgentTranscript(path)
+	assert.True(t, isError)
+	assert.Contains(t, output, "no readable message")
+}
+
 // TestSubagentHooks_AwaitCapturesRealTranscriptOutput drives the hook
 // callbacks and the tracker exactly as a live turn would: a Task call is
 // observed, its opaque placeholder suppressed, the subagent starts and stops
@@ -1289,9 +1359,12 @@ func TestSubagentHooks_AwaitCapturesRealTranscriptOutput(t *testing.T) {
 	var content assistantText
 	var out RunOutput
 
-	// The model spawns a subagent (Task call) ...
+	// The model spawns a subagent. The live CLI streams this as a ToolUseBlock
+	// named "Agent" (NOT "Task" — the flag-syntax name); asserting against the
+	// real name here is what stops finding #1's silent-correlation-break from
+	// regressing (see subagentToolCallName).
 	taskCall := &claudecode.AssistantMessage{Content: []claudecode.ContentBlock{
-		&claudecode.ToolUseBlock{ToolUseID: "task-1", Name: "Task", Input: map[string]any{"prompt": "research the auth flow"}},
+		&claudecode.ToolUseBlock{ToolUseID: "task-1", Name: "Agent", Input: map[string]any{"prompt": "research the auth flow"}},
 	}}
 	_, err := processMessage(taskCall, nil, &content, &out, nil, hooks)
 	require.NoError(t, err)
@@ -1319,10 +1392,21 @@ func TestSubagentHooks_AwaitCapturesRealTranscriptOutput(t *testing.T) {
 	awaitAndEmitRunSubagents(context.Background(), tracker, onResult)
 
 	require.Len(t, results, 1)
-	assert.Equal(t, "task-1", results[0].id)
-	assert.Equal(t, "Task", results[0].name)
+	assert.Equal(t, "task-1", results[0].id, "the result must pair with the originating call's tool_use_id, not the AgentID")
+	assert.Equal(t, "Agent", results[0].name, "the result must carry the call's real streamed name, not a hard-coded \"Task\"")
 	assert.Equal(t, "the auth flow uses JWTs", results[0].result)
 	assert.False(t, results[0].isError)
+}
+
+// TestIsSubagentToolCall_MatchesLiveAgentName locks in finding #1's fix: the
+// live CLI streams a subagent spawn as "Agent", and correlation must key off
+// that (not the flag-syntax "Task"). Both are matched defensively; an unrelated
+// tool is not.
+func TestIsSubagentToolCall_MatchesLiveAgentName(t *testing.T) {
+	assert.True(t, isSubagentToolCall("Agent"), "the live streamed name must match")
+	assert.True(t, isSubagentToolCall("Task"), "the flag-syntax name is matched defensively too")
+	assert.False(t, isSubagentToolCall("Read"))
+	assert.False(t, isSubagentToolCall("general-purpose"))
 }
 
 // TestSubagentTracker_WaitBlocksUntilStopThenUnblocks confirms the await is
@@ -1330,7 +1414,7 @@ func TestSubagentHooks_AwaitCapturesRealTranscriptOutput(t *testing.T) {
 // still running, and returns once it stops.
 func TestSubagentTracker_WaitBlocksUntilStopThenUnblocks(t *testing.T) {
 	tracker := newSubagentTracker()
-	tracker.observeTask("task-1")
+	tracker.observeTask("task-1", "Agent")
 	tracker.start("agent-1", nil)
 
 	returned := make(chan struct{})
@@ -1360,7 +1444,7 @@ func TestSubagentTracker_WaitBlocksUntilStopThenUnblocks(t *testing.T) {
 // launch acknowledgment so the Task call still gets a result.
 func TestSubagentTracker_WaitReturnsOnContextDeadline(t *testing.T) {
 	tracker := newSubagentTracker()
-	tracker.observeTask("task-1")
+	tracker.observeTask("task-1", "Agent")
 	tracker.setPlaceholder("task-1", "Agent launched")
 	tracker.start("agent-1", nil)
 
@@ -1387,16 +1471,17 @@ func TestSubagentTracker_WrapOnEventSuppressesTaskPlaceholder(t *testing.T) {
 		return nil
 	})
 
-	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_call", ID: "task-1", ToolName: "Task"}))
+	// The subagent spawn streams as ToolName "Agent" (finding #1), not "Task".
+	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_call", ID: "task-1", ToolName: "Agent"}))
 	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_call", ID: "w-1", ToolName: "Write"}))
 	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_result", ID: "task-1", ToolResult: "Agent launched"}))
 	require.NoError(t, wrapped(ExecuteEvent{Kind: "tool_result", ID: "w-1", ToolResult: "wrote a.go"}))
 
-	// The Task tool_call still surfaces (real args), but its opaque result is
-	// suppressed; the Write call and its result pass through.
+	// The subagent-spawn tool_call still surfaces (real args), but its opaque
+	// result is suppressed; the Write call and its result pass through.
 	require.Len(t, forwarded, 3)
 	assert.Equal(t, "tool_call", forwarded[0].Kind)
-	assert.Equal(t, "Task", forwarded[0].ToolName)
+	assert.Equal(t, "Agent", forwarded[0].ToolName)
 	assert.Equal(t, "Write", forwarded[1].ToolName)
 	assert.Equal(t, "wrote a.go", forwarded[2].ToolResult)
 }

@@ -66,13 +66,38 @@ var readOnlyTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 // stage's read-only agent has open.
 var executionTools = append(append([]string{}, readOnlyTools...), "Write", "Edit", "Bash")
 
-// subagentToolName is the CLI's built-in subagent-spawning tool (`--tools`
-// name "Task", surfaced as a ToolUseBlock/tool_call named "Task"). ADR-0022
-// originally blocked it outright by omitting it from WithTools; its Update
-// reverses that in favor of first-class, scoped support — Task is re-admitted
-// but bound to a single custom AgentDefinition (readOnlyAgentName /
-// executionAgentName), never the CLI's own built-in presets.
+// subagentToolName is the CLI *argument-syntax* name for subagent spawning:
+// the value passed to WithTools/WithAllowedTools and the Task(<agent>)
+// scoped-deny entries of WithDisallowedTools. This is the name the `claude`
+// CLI expects on its --tools/--allowed-tools/--disallowed-tools flags,
+// confirmed live (preset denial for general-purpose worked against claude
+// 2.1.206). ADR-0022 originally blocked subagent spawning outright by omitting
+// this from WithTools; its Update reverses that in favor of first-class,
+// scoped support — Task is re-admitted but bound to a single custom
+// AgentDefinition (readOnlyAgentName / executionAgentName), never the CLI's
+// own built-in presets.
 const subagentToolName = "Task"
+
+// subagentToolCallName is the name the *live CLI streams* for a subagent spawn
+// in a ToolUseBlock/tool_call — observed as "Agent" (NOT "Task") against claude
+// 2.1.206. The two genuinely differ: the flag syntax above is "Task", but the
+// runtime tool call is "Agent". The vendored SDK hardcodes neither (it's
+// CLI-runtime-determined — no "Task"/"Agent" constant exists in it), so runtime
+// correlation must match the streamed name, not the flag name. Getting this
+// wrong silently breaks the Task-call correlation that persists a subagent's
+// real output (matchers never fire, the result surfaces orphaned) — the exact
+// live defect this constant split fixes.
+const subagentToolCallName = "Agent"
+
+// isSubagentToolCall reports whether a streamed ToolUseBlock.Name (Run) or
+// ExecuteEvent.ToolName (Execute) is a subagent spawn. Both the observed live
+// name ("Agent") and the flag-syntax name ("Task") are matched so correlation
+// survives the CLI naming the call either way across versions — neither is
+// pinned by the SDK, so defending against both is cheap insurance against a
+// silent re-break.
+func isSubagentToolCall(name string) bool {
+	return name == subagentToolCallName || name == subagentToolName
+}
 
 // readOnlyAgentName/executionAgentName are the WithAgents keys for the two
 // stage-scoped custom subagents. A model can only ever invoke these
@@ -1457,10 +1482,23 @@ type subagentResult struct {
 	isError bool
 }
 
+// observedTask is one suppressed subagent-spawn call: its tool-use id and the
+// real name the CLI streamed it under ("Agent"), kept so the awaited result
+// emits paired with its call on name as well as id.
+type observedTask struct {
+	id   string
+	name string
+}
+
 // subagentActivity is a completed subagent's output correlated to the Task
-// tool-use id that triggered it, ready to emit as tool activity.
+// tool-use id (and the tool name that call streamed under) that triggered it,
+// ready to emit as tool activity. name carries the originating call's real
+// streamed name ("Agent") so the emitted result pairs with its call on both id
+// AND name downstream — never a hard-coded "Task" that never matches the live
+// "Agent" call.
 type subagentActivity struct {
 	id      string
+	name    string
 	output  string
 	isError bool
 }
@@ -1478,13 +1516,16 @@ type subagentTracker struct {
 	cond    *sync.Cond
 	started int
 	stopped int
-	// taskIDs are the Task tool-use ids observed this turn whose placeholder
-	// was suppressed, in call order — correlated FIFO with results at collect
-	// time (the CLI's SubagentStart/SubagentStop payloads carry an AgentID,
-	// not the parent Task's tool_use_id, so order is the correlation we have).
-	taskIDs []string
-	// placeholders holds each suppressed Task call's launch acknowledgment,
-	// used as a fallback output if that subagent never reports completion.
+	// tasks are the subagent-spawn tool calls observed this turn whose
+	// placeholder was suppressed, in call order — each carrying the call's
+	// tool-use id and its real streamed name ("Agent"). Correlated FIFO with
+	// results at collect time (the CLI's SubagentStart/SubagentStop payloads
+	// carry an AgentID, not the parent call's tool_use_id, so order is the
+	// correlation we have).
+	tasks []observedTask
+	// placeholders holds each suppressed subagent call's launch acknowledgment
+	// (keyed by tool-use id), used as a fallback output if that subagent never
+	// reports completion.
 	placeholders map[string]string
 	// results are completed subagent outputs, in SubagentStop order.
 	results []subagentResult
@@ -1496,11 +1537,12 @@ func newSubagentTracker() *subagentTracker {
 	return t
 }
 
-// observeTask records a Task tool-use id whose opaque placeholder result is
-// being suppressed pending its subagent's real output.
-func (t *subagentTracker) observeTask(id string) {
+// observeTask records a subagent-spawn tool call (its id and real streamed
+// name, e.g. "Agent") whose opaque placeholder result is being suppressed
+// pending its subagent's real output.
+func (t *subagentTracker) observeTask(id, name string) {
 	t.mu.Lock()
-	t.taskIDs = append(t.taskIDs, id)
+	t.tasks = append(t.tasks, observedTask{id: id, name: name})
 	t.mu.Unlock()
 }
 
@@ -1512,15 +1554,16 @@ func (t *subagentTracker) setPlaceholder(id, text string) {
 	t.mu.Unlock()
 }
 
-// resolveTask forgets a Task call — used when its placeholder result was an
-// error (the launch failed, so no subagent will run and the error is surfaced
-// inline), so collect() neither waits for nor synthesizes a result for it.
+// resolveTask forgets a subagent-spawn call — used when its placeholder result
+// was an error (the launch failed, so no subagent will run and the error is
+// surfaced inline), so collect() neither waits for nor synthesizes a result
+// for it.
 func (t *subagentTracker) resolveTask(id string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for i, existing := range t.taskIDs {
-		if existing == id {
-			t.taskIDs = append(t.taskIDs[:i], t.taskIDs[i+1:]...)
+	for i, existing := range t.tasks {
+		if existing.id == id {
+			t.tasks = append(t.tasks[:i], t.tasks[i+1:]...)
 			break
 		}
 	}
@@ -1529,7 +1572,7 @@ func (t *subagentTracker) resolveTask(id string) {
 
 // start records a subagent spawn (SubagentStart). toolUseID is the generic
 // hook correlation id the CLI may attach; it's accepted for forward
-// compatibility but not currently relied upon (order is — see taskIDs).
+// compatibility but not currently relied upon (order is — see tasks).
 func (t *subagentTracker) start(_ string, _ *string) {
 	t.mu.Lock()
 	t.started++
@@ -1581,21 +1624,25 @@ func (t *subagentTracker) wait(ctx context.Context) {
 func (t *subagentTracker) collect() []subagentActivity {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	out := make([]subagentActivity, 0, len(t.taskIDs)+len(t.results))
-	for i, id := range t.taskIDs {
+	out := make([]subagentActivity, 0, len(t.tasks)+len(t.results))
+	for i, task := range t.tasks {
 		switch {
 		case i < len(t.results):
 			r := t.results[i]
-			out = append(out, subagentActivity{id: id, output: r.output, isError: r.isError})
-		case t.placeholders[id] != "":
-			out = append(out, subagentActivity{id: id, output: t.placeholders[id], isError: false})
+			out = append(out, subagentActivity{id: task.id, name: task.name, output: r.output, isError: r.isError})
+		case t.placeholders[task.id] != "":
+			out = append(out, subagentActivity{id: task.id, name: task.name, output: t.placeholders[task.id], isError: false})
 		default:
-			out = append(out, subagentActivity{id: id, output: subagentIncompleteNote, isError: true})
+			out = append(out, subagentActivity{id: task.id, name: task.name, output: subagentIncompleteNote, isError: true})
 		}
 	}
-	for i := len(t.taskIDs); i < len(t.results); i++ {
+	// Any subagent result beyond the observed calls (more stops than tracked
+	// calls — e.g. the call was never correlated) still surfaces, keyed by its
+	// AgentID and the canonical streamed name so downstream isn't left without
+	// a result.
+	for i := len(t.tasks); i < len(t.results); i++ {
 		r := t.results[i]
-		out = append(out, subagentActivity{id: r.agentID, output: r.output, isError: r.isError})
+		out = append(out, subagentActivity{id: r.agentID, name: subagentToolCallName, output: r.output, isError: r.isError})
 	}
 	return out
 }
@@ -1604,8 +1651,8 @@ func (t *subagentTracker) collect() []subagentActivity {
 // while still forwarding the call (with its real arguments) to onCall if set.
 func (t *subagentTracker) wrapOnCall(onCall func(id, name, argsJSON string)) func(id, name, argsJSON string) {
 	return func(id, name, argsJSON string) {
-		if name == subagentToolName {
-			t.observeTask(id)
+		if isSubagentToolCall(name) {
+			t.observeTask(id, name)
 		}
 		if onCall != nil {
 			onCall(id, name, argsJSON)
@@ -1619,7 +1666,7 @@ func (t *subagentTracker) wrapOnCall(onCall func(id, name, argsJSON string)) fun
 // error is visible and the call doesn't dangle.
 func (t *subagentTracker) wrapOnResult(onResult func(id, name, result string, isError bool)) func(id, name, result string, isError bool) {
 	return func(id, name, result string, isError bool) {
-		if name == subagentToolName {
+		if isSubagentToolCall(name) {
 			if isError {
 				t.resolveTask(id)
 			} else {
@@ -1644,9 +1691,9 @@ func (t *subagentTracker) wrapOnEvent(onEvent func(ExecuteEvent) error) func(Exe
 	return func(ev ExecuteEvent) error {
 		switch ev.Kind {
 		case "tool_call":
-			if ev.ToolName == subagentToolName {
+			if isSubagentToolCall(ev.ToolName) {
 				taskIDs[ev.ID] = true
-				t.observeTask(ev.ID)
+				t.observeTask(ev.ID, ev.ToolName)
 			}
 		case "tool_result":
 			if taskIDs[ev.ID] {
@@ -1713,7 +1760,7 @@ func awaitAndEmitRunSubagents(ctx context.Context, tracker *subagentTracker, onR
 		return
 	}
 	for _, a := range tracker.collect() {
-		onResult(a.id, subagentToolName, a.output, a.isError)
+		onResult(a.id, a.name, a.output, a.isError)
 	}
 }
 
@@ -1749,43 +1796,110 @@ func readAgentTranscript(path string) (output string, isError bool) {
 	if err != nil {
 		return fmt.Sprintf("(failed to read subagent transcript: %v)", err), true
 	}
-	text := lastAssistantTranscriptText(data)
+	entries := parseTranscriptEntries(data)
+	text := lastAssistantTranscriptText(entries)
 	if text == "" {
-		text = strings.TrimSpace(string(data))
+		// No assistant message parsed. Rather than dump the whole raw JSONL
+		// transcript as "output" (unreadable, and the exact live defect this
+		// replaces), fall back to the last readable text of ANY entry — still
+		// never raw JSON — and only then to a clear note.
+		text = lastTranscriptText(entries)
+	}
+	if text == "" {
+		return "(subagent transcript contained no readable message)", true
 	}
 	if len(text) > maxSubagentOutputBytes {
 		text = text[:maxSubagentOutputBytes] + "\n…(truncated)"
 	}
-	if text == "" {
-		return "(subagent produced no output)", false
-	}
 	return text, false
 }
 
-// lastAssistantTranscriptText extracts the text of the last assistant message
-// in a JSONL transcript — the subagent's final answer to the calling agent.
-// Unrecognized/blank lines are skipped; message content may be a plain string
-// or an array of typed blocks (only "text" blocks contribute).
-func lastAssistantTranscriptText(data []byte) string {
-	var last string
+// transcriptEntry is one parsed transcript record. It tolerates the shape
+// variations the real `claude` CLI has been observed to emit: the documented
+// top-level "type" discriminator with the message nested under "message"
+// (whose own "role" is the more reliable signal on some versions), plus a
+// flat role/content fallback in case a version carries them at the top level.
+// A sidechain/subagent line also carries many extra fields (uuid, parentUuid,
+// isSidechain, agentId, timestamp, ...) — all ignored here; only role and
+// content matter.
+type transcriptEntry struct {
+	Type    string          `json:"type"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+	Message struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// isAssistant reports whether this entry is an assistant turn, checking every
+// place the role/type has been observed rather than only the top-level "type"
+// (which a live run found absent on the assistant entries — the root of the
+// raw-JSON-dump defect).
+func (e transcriptEntry) isAssistant() bool {
+	return e.Type == "assistant" || e.Message.Role == "assistant" || e.Role == "assistant"
+}
+
+// text renders this entry's content (from message.content, or the flat
+// top-level content fallback) to its concatenated text.
+func (e transcriptEntry) text() string {
+	if t := transcriptContentText(e.Message.Content); t != "" {
+		return t
+	}
+	return transcriptContentText(e.Content)
+}
+
+// parseTranscriptEntries decodes a transcript into its records, tolerant of
+// both JSONL (one object per line — the documented/common shape) and, if not a
+// single line parses, a single JSON array/document (a defensive fallback for a
+// pretty-printed or otherwise non-line-delimited transcript). Unparseable
+// lines are skipped rather than aborting the whole read.
+func parseTranscriptEntries(data []byte) []transcriptEntry {
+	var entries []transcriptEntry
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		var entry struct {
-			Type    string `json:"type"`
-			Message struct {
-				Content json.RawMessage `json:"content"`
-			} `json:"message"`
+		var e transcriptEntry
+		if json.Unmarshal([]byte(line), &e) == nil {
+			entries = append(entries, e)
 		}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+	}
+	if len(entries) > 0 {
+		return entries
+	}
+	// No line parsed on its own — try the whole document as a single JSON
+	// array (a pretty-printed transcript would land here).
+	var arr []transcriptEntry
+	if json.Unmarshal(data, &arr) == nil {
+		return arr
+	}
+	return nil
+}
+
+// lastAssistantTranscriptText returns the text of the last assistant message in
+// the transcript — the subagent's final answer to the calling agent.
+func lastAssistantTranscriptText(entries []transcriptEntry) string {
+	var last string
+	for _, e := range entries {
+		if !e.isAssistant() {
 			continue
 		}
-		if entry.Type != "assistant" {
-			continue
+		if text := e.text(); text != "" {
+			last = text
 		}
-		if text := transcriptContentText(entry.Message.Content); text != "" {
+	}
+	return last
+}
+
+// lastTranscriptText returns the last readable text of any entry (regardless of
+// role) — a safety net so a transcript whose assistant entries we failed to
+// recognize still surfaces readable text rather than raw JSON or nothing.
+func lastTranscriptText(entries []transcriptEntry) string {
+	var last string
+	for _, e := range entries {
+		if text := e.text(); text != "" {
 			last = text
 		}
 	}
@@ -1793,7 +1907,8 @@ func lastAssistantTranscriptText(data []byte) string {
 }
 
 // transcriptContentText renders a transcript message's "content" (a plain
-// string or an array of typed blocks) to its concatenated text.
+// string or an array of typed blocks — text, thinking, tool_use intermixed) to
+// its concatenated text; only "text" blocks contribute.
 func transcriptContentText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
