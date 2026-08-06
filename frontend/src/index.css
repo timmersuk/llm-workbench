@@ -466,6 +466,35 @@ th {
   color: var(--text-muted);
 }
 
+/* Renders a turn's tool-call sequence as a small pill sitting inline
+   between the text segments on either side of it, rather than a full-width
+   block — a turn's text often pauses mid-sentence to call a tool and
+   resumes right after, and a block-level divider there made the two
+   surrounding text segments read as unrelated fragments instead of one
+   continuous reply. */
+.tool-activity-sequence {
+  display: inline-block;
+  margin: 2px 4px 2px 0;
+  vertical-align: middle;
+}
+
+.tool-activity-sequence > summary {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+}
+
+.tool-activity-sequence[open] {
+  display: block;
+  margin: 4px 0;
+}
+
+.tool-activity-sequence[open] > summary {
+  border-radius: 6px 6px 0 0;
+}
+
 .thinking-panel summary {
   cursor: pointer;
   font-weight: 600;

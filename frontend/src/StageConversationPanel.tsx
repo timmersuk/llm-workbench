@@ -1119,17 +1119,19 @@ export function StageConversationPanel<D, S = never>({
             )}
             <strong>{message.role}:</strong>{' '}
             <span className="message-timestamp">{formatMessageTimestamp(message.created_at)}</span>
-            {message.segments.map((segment, segIndex) => (
-              <div key={segIndex}>
-                {segment.kind === 'text' && <MarkdownMessage content={segment.text} />}
-                {segment.kind === 'tools' && (
-                  <ToolActivitySequence
-                    activities={segment.activities}
-                    live={sending && index === messages.length - 1 && segIndex === message.segments.length - 1}
-                  />
-                )}
-              </div>
-            ))}
+            {message.segments.map((segment, segIndex) =>
+              segment.kind === 'text' ? (
+                <div key={segIndex}>
+                  <MarkdownMessage content={segment.text} />
+                </div>
+              ) : (
+                <ToolActivitySequence
+                  key={segIndex}
+                  activities={segment.activities}
+                  live={sending && index === messages.length - 1 && segIndex === message.segments.length - 1}
+                />
+              ),
+            )}
             {message.toolCallNames
               .filter((name) => name !== askQuestionToolName)
               .map((name) => (

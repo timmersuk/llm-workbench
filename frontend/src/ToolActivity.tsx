@@ -123,7 +123,7 @@ export function ToolActivitySequence({ activities, live }: { activities: ToolAct
 
   if (!live) {
     return (
-      <details className="thinking-panel">
+      <details className="thinking-panel tool-activity-sequence">
         <summary>
           Used {countLabel(activities.length)}
           {hasError(activities) && <span className="tool-status-error"> ⚠</span>}
@@ -151,7 +151,7 @@ export function ToolActivitySequence({ activities, live }: { activities: ToolAct
 
   return (
     <>
-      <details className="thinking-panel">
+      <details className="thinking-panel tool-activity-sequence">
         <summary>
           {earlier.length} earlier tool call{earlier.length === 1 ? '' : 's'}
           {hasError(earlier) && <span className="tool-status-error"> ⚠</span>}
