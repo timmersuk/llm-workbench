@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -46,10 +47,15 @@ var lookPath = exec.LookPath
 // Edit, Skill, LSP, etc. — from being visible and callable). WebFetch/
 // WebSearch are both read-only (fetch/search, never write) and included
 // deliberately (see architecture/agentrunner-tool-surface-control knowledge
-// doc); Agent/Skill/Workflow/Monitor stay excluded (no supervision over
-// what they could trigger — ADR-0022 already rejected Agent specifically),
-// as does LSP (documented broken per the user's global lsp-first.md rule)
-// and PowerShell (redundant with Bash, which Review/Execute already grant).
+// doc); Skill/Workflow/Monitor stay excluded (no supervision over what they
+// could trigger), as does LSP (documented broken per the user's global
+// lsp-first.md rule) and PowerShell (redundant with Bash, which Review/
+// Execute already grant). Task (subagent spawning) is deliberately NOT in
+// this list: it is admitted separately (see subagentToolName /
+// withSubagentSupport and docs/adr/0022's Update) and confined to a single
+// custom, tool-limited AgentDefinition, so the calling stage's trust
+// boundary is preserved via the subagent's own Tools rather than by
+// widening this set.
 var readOnlyTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 
 // executionTools is the tool set for Execute — the Implementation stage is
@@ -59,6 +65,79 @@ var readOnlyTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 // uses, so Write/Edit/Bash here can't touch anything a human or another
 // stage's read-only agent has open.
 var executionTools = append(append([]string{}, readOnlyTools...), "Write", "Edit", "Bash")
+
+// subagentToolName is the CLI's built-in subagent-spawning tool (`--tools`
+// name "Task", surfaced as a ToolUseBlock/tool_call named "Task"). ADR-0022
+// originally blocked it outright by omitting it from WithTools; its Update
+// reverses that in favor of first-class, scoped support — Task is re-admitted
+// but bound to a single custom AgentDefinition (readOnlyAgentName /
+// executionAgentName), never the CLI's own built-in presets.
+const subagentToolName = "Task"
+
+// readOnlyAgentName/executionAgentName are the WithAgents keys for the two
+// stage-scoped custom subagents. A model can only ever invoke these
+// (Task(<name>)) — the CLI's built-in presets are denied via
+// builtinSubagentPresets — so a spawned subagent's tool access can never
+// exceed the calling stage's own boundary (its AgentDefinition.Tools is that
+// exact set; see withSubagentSupport).
+const (
+	readOnlyAgentName  = "workbench-readonly-agent"
+	executionAgentName = "workbench-execution-agent"
+)
+
+// builtinSubagentPresets are the `claude` CLI's own built-in Task agent
+// presets. Each is denied via WithDisallowedTools' Task(<name>) scoped-deny
+// syntax so a model can't route around the custom, tool-scoped agent by
+// spawning e.g. a general-purpose subagent that would inherit the full
+// default tool surface (the exact loophole ADR-0022's Update closes). This is
+// a small, CLI-shipped set — unlike the open-ended built-in *tool* surface
+// ADR-0022 argued must be gated by allow-list, the built-in *agents* are few
+// and named, so a deny-list is the right shape here.
+var builtinSubagentPresets = []string{"Explore", "Plan", "general-purpose"}
+
+// disallowedSubagentPresets renders builtinSubagentPresets into the
+// Task(<name>) entries WithDisallowedTools expects.
+func disallowedSubagentPresets() []string {
+	denied := make([]string, len(builtinSubagentPresets))
+	for i, name := range builtinSubagentPresets {
+		denied[i] = subagentToolName + "(" + name + ")"
+	}
+	return denied
+}
+
+// scopedSubagent builds the custom AgentDefinition a stage exposes: its Tools
+// is exactly the calling stage's own built-in boundary (readOnlyTools, +Bash
+// for Review, or executionTools for Execute), so the trust-boundary parity
+// invariant (docs/architectural invariants.md, docs/adr/0022's Update) is met
+// by construction — the subagent can never touch a tool the parent stage
+// couldn't. Task itself is intentionally omitted from the subagent's Tools so
+// a subagent can't recursively spawn further subagents.
+func scopedSubagent(description, prompt string, tools []string) claudecode.AgentDefinition {
+	return claudecode.AgentDefinition{
+		Description: description,
+		Prompt:      prompt,
+		Tools:       append([]string{}, tools...),
+	}
+}
+
+// withSubagentSupport returns the options that admit first-class, scoped
+// subagent spawning for a call: the custom stage-scoped agent (WithAgent),
+// the built-in-preset deny entries (WithDisallowedTools), and the
+// SubagentStart/SubagentStop hooks that let Run()/Execute synchronously await
+// a spawned subagent and capture its real transcript output. getTracker is
+// evaluated lazily at hook-fire time (not connect time) so a client cached
+// across Run turns still routes each turn's subagent events to that turn's
+// own tracker. Note: "Task" must also be added to WithTools/WithAllowedTools
+// at the call site — those lists are built there and this only carries the
+// agent/deny/hook wiring.
+func withSubagentSupport(agentName string, agent claudecode.AgentDefinition, getTracker func() *subagentTracker) []claudecode.Option {
+	return []claudecode.Option{
+		claudecode.WithAgent(agentName, agent),
+		claudecode.WithDisallowedTools(disallowedSubagentPresets()...),
+		claudecode.WithHook(claudecode.HookEventSubagentStart, "", subagentStartHook(getTracker)),
+		claudecode.WithHook(claudecode.HookEventSubagentStop, "", subagentStopHook(getTracker)),
+	}
+}
 
 // executionKickoffMessage is the fixed user turn Execute sends to start an
 // autonomous run — all real instructions live in the system prompt
@@ -93,6 +172,14 @@ type ClaudeRunner struct {
 	clients          map[string]claudecode.Client
 	clientSelections map[string]Selection
 	inFlight         map[string]bool
+	// subagentTrackers holds the current turn's subagent tracker per
+	// SessionKey. A Run client is cached and reused across turns, so its
+	// SubagentStart/SubagentStop hooks (registered once at connect time)
+	// can't close over a per-turn tracker directly — they look the current
+	// one up here instead, which Run swaps each turn under the key's
+	// in-flight lock. Execute uses a fresh client per call and captures its
+	// tracker directly, so it never touches this map.
+	subagentTrackers map[string]*subagentTracker
 	timeout          time.Duration
 	executeTimeout   time.Duration
 	reposRoot        string
@@ -131,6 +218,7 @@ func NewClaudeRunner(timeout, executeTimeout time.Duration, reposRoot string, kn
 		clients:          make(map[string]claudecode.Client),
 		clientSelections: make(map[string]Selection),
 		inFlight:         make(map[string]bool),
+		subagentTrackers: make(map[string]*subagentTracker),
 		timeout:          timeout,
 		executeTimeout:   executeTimeout,
 		reposRoot:        reposRoot,
@@ -243,6 +331,12 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 	runCtx, cancel := context.WithTimeout(ctx, r.runTimeout(in))
 	defer cancel()
 
+	// Install this turn's subagent tracker before connecting/querying so the
+	// (possibly cached) client's SubagentStart/SubagentStop hooks route to it.
+	tracker := newSubagentTracker()
+	r.setSubagentTracker(key, tracker)
+	defer r.clearSubagentTracker(key)
+
 	client, err := r.clientFor(runCtx, key, in)
 	if err != nil {
 		return RunOutput{}, err
@@ -269,17 +363,34 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 		}
 	}
 
-	hooks := &toolActivityHooks{onCall: in.OnToolCall, onResult: in.OnToolResult, pending: make(pendingToolCalls)}
+	// Wrap the caller's tool-activity callbacks so a Task subagent's opaque
+	// "launched" acknowledgment is suppressed and its call tracked; the real
+	// output is surfaced from the awaited transcript below, via the original
+	// in.OnToolResult (not the wrapper, which would suppress it again).
+	hooks := &toolActivityHooks{
+		onCall:   tracker.wrapOnCall(in.OnToolCall),
+		onResult: tracker.wrapOnResult(in.OnToolResult),
+		pending:  make(pendingToolCalls),
+	}
 	var out RunOutput
 	var content assistantText
+	var done bool
 	for msg := range client.ReceiveMessages(runCtx) {
-		done, err := processMessage(msg, toolNames(in.Tools), &content, &out, onDelta, hooks)
+		d, err := processMessage(msg, toolNames(in.Tools), &content, &out, onDelta, hooks)
 		if err != nil {
 			return out, err
 		}
-		if done {
-			return out, nil
+		if d {
+			done = true
+			break
 		}
+	}
+	// Synchronously await every subagent spawned this turn and persist its
+	// real output as tool activity before the turn returns (preserving the
+	// turn-based, no-hidden-state contract — see docs/adr/0022's Update).
+	awaitAndEmitRunSubagents(runCtx, tracker, in.OnToolResult)
+	if done {
+		return out, nil
 	}
 	return out, runCtx.Err()
 }
@@ -307,6 +418,18 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 	runCtx, cancel := context.WithTimeout(ctx, r.executeTimeout)
 	defer cancel()
 
+	// Execute uses a fresh client per call, so its SubagentStart/SubagentStop
+	// hooks can close over this local tracker directly (unlike Run's cached
+	// client, which routes via r.subagentTrackers).
+	tracker := newSubagentTracker()
+
+	// executeTools is executionTools plus Task (subagent spawning). Task is
+	// appended to a fresh slice, never mutated into the shared executionTools
+	// var. The spawned subagent is confined to executionTools by its own
+	// AgentDefinition.Tools (scopedSubagent), so admitting Task here doesn't
+	// widen Execute's boundary — see docs/adr/0022's Update.
+	executeTools := append(append([]string{}, executionTools...), subagentToolName)
+
 	opts := []claudecode.Option{
 		claudecode.WithCwd(in.Workspace),
 		// WithAppendSystemPrompt, not WithSystemPrompt: the latter replaces
@@ -320,11 +443,23 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
 		// (--allowed-tools) only auto-approves these without a permission
 		// prompt — see docs/adr/0022. Both must be set, or the CLI's full
-		// default built-in surface (Agent, Skill, LSP, ...) stays
-		// visible/callable alongside executionTools.
-		claudecode.WithTools(executionTools...),
-		claudecode.WithAllowedTools(executionTools...),
+		// default built-in surface (Skill, LSP, ...) stays visible/callable
+		// alongside executionTools.
+		claudecode.WithTools(executeTools...),
+		claudecode.WithAllowedTools(executeTools...),
 	}
+	// Admit Task for the execution-scoped custom agent only (built-in presets
+	// denied), and register the hooks that let this call await a subagent's
+	// completion and capture its real output before returning.
+	opts = append(opts, withSubagentSupport(
+		executionAgentName,
+		scopedSubagent(
+			"Implementation subagent scoped to the isolated execution worktree.",
+			"You are an implementation subagent operating inside an isolated git worktree. Carry out the delegated sub-task using only your available tools, then report concisely what you changed. You have the same tool access as the calling execution agent and cannot spawn further subagents.",
+			executionTools,
+		),
+		func() *subagentTracker { return tracker },
+	)...)
 	opts = append(opts, claudeSelectionOptions(in.Model, in.ReasoningEffort)...)
 	// See clientFor's identical comment: omitting WithMaxTurns entirely
 	// (rather than passing 0) is what tells the underlying `claude` CLI not
@@ -342,17 +477,32 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		return ExecuteOutput{}, fmt.Errorf("starting claude code execution: %w", err)
 	}
 
+	// Wrap onEvent so a Task subagent's opaque "launched" tool_result is
+	// suppressed and its call tracked; the real output is emitted from the
+	// awaited transcript below, via the original onEvent.
+	wrappedOnEvent := tracker.wrapOnEvent(onEvent)
+
 	var out ExecuteOutput
 	var content assistantText
 	pending := make(pendingToolCalls)
+	var done bool
 	for msg := range client.ReceiveMessages(runCtx) {
-		done, err := processExecuteMessage(msg, &content, &out, onEvent, pending)
+		d, err := processExecuteMessage(msg, &content, &out, wrappedOnEvent, pending)
 		if err != nil {
 			return out, err
 		}
-		if done {
-			return out, nil
+		if d {
+			done = true
+			break
 		}
+	}
+	// Synchronously await every subagent spawned this run and emit its real
+	// output as a tool_result before returning (see docs/adr/0022's Update).
+	if err := awaitAndEmitExecuteSubagents(runCtx, tracker, onEvent); err != nil {
+		return out, err
+	}
+	if done {
+		return out, nil
 	}
 	return out, runCtx.Err()
 }
@@ -371,6 +521,31 @@ func (r *ClaudeRunner) unlock(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.inFlight, key)
+}
+
+// setSubagentTracker installs t as key's current-turn tracker, read lazily by
+// a cached Run client's SubagentStart/SubagentStop hooks. Safe against races
+// because the caller holds key's in-flight lock, so only one turn per key is
+// ever live.
+func (r *ClaudeRunner) setSubagentTracker(key string, t *subagentTracker) {
+	r.mu.Lock()
+	r.subagentTrackers[key] = t
+	r.mu.Unlock()
+}
+
+// subagentTrackerFor returns key's current-turn tracker, or nil between turns
+// (a hook firing with no live turn — shouldn't happen, but nil is handled).
+func (r *ClaudeRunner) subagentTrackerFor(key string) *subagentTracker {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.subagentTrackers[key]
+}
+
+// clearSubagentTracker forgets key's tracker once its turn returns.
+func (r *ClaudeRunner) clearSubagentTracker(key string) {
+	r.mu.Lock()
+	delete(r.subagentTrackers, key)
+	r.mu.Unlock()
 }
 
 // clientFor returns the cached client for key, or creates and connects one.
@@ -532,13 +707,38 @@ func (r *ClaudeRunner) buildAndConnectClient(ctx context.Context, in RunInput, r
 		server := claudecode.CreateSDKMcpServer(knowledgeServerName, "1.0.0", knowledgeTools...)
 		opts = append(opts, claudecode.WithSdkMcpServer(knowledgeServerName, server))
 	}
+	// agentTools is the calling stage's own built-in boundary (readOnlyTools,
+	// +Bash for Review) — exactly what the scoped subagent is confined to.
+	// Snapshot it before Task is appended so a subagent can't itself spawn
+	// further subagents.
+	agentTools := append([]string{}, builtinTools...)
+	// Admit Task (subagent spawning) into both --tools and --allowed-tools,
+	// scoped to the custom read-only agent only (built-in presets denied via
+	// withSubagentSupport). See docs/adr/0022's Update.
+	builtinTools = append(builtinTools, subagentToolName)
+	allowedTools = append(allowedTools, subagentToolName)
 	// WithTools is the actual tool-surface gate (--tools); WithAllowedTools
 	// (--allowed-tools) only auto-approves these without a permission
 	// prompt — see docs/adr/0022. Both must be set, or the CLI's full
-	// default built-in surface (Agent, Skill, ScheduleWakeup, ...) stays
+	// default built-in surface (Skill, ScheduleWakeup, ...) stays
 	// visible/callable alongside readOnlyTools.
 	opts = append(opts, claudecode.WithTools(builtinTools...))
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
+	// Scope subagent spawning to a single custom, read-only agent whose Tools
+	// are exactly agentTools (trust-boundary parity), deny the CLI's built-in
+	// presets, and register the SubagentStart/SubagentStop hooks Run awaits.
+	// getTracker reads r.subagentTrackers lazily so this (cached) client's
+	// hooks route to whatever turn's tracker is currently live for key.
+	key := in.SessionKey
+	opts = append(opts, withSubagentSupport(
+		readOnlyAgentName,
+		scopedSubagent(
+			"Read-only research subagent scoped to the reference repository.",
+			"You are a read-only research subagent. Investigate the reference repository using only your available read-only tools and report concise findings to the calling agent. You cannot modify files and cannot spawn further subagents.",
+			agentTools,
+		),
+		func() *subagentTracker { return r.subagentTrackerFor(key) },
+	)...)
 
 	client := r.newClient(opts...)
 	if err := client.Connect(ctx); err != nil {
@@ -1236,4 +1436,387 @@ func contentBlockDelta(ev *claudecode.StreamEvent) (map[string]any, bool) {
 	}
 	delta, ok := ev.Event["delta"].(map[string]any)
 	return delta, ok
+}
+
+// maxSubagentOutputBytes caps a subagent's captured transcript output so a
+// verbose subagent can't bloat the persisted Conversation state (or, when a
+// later turn replays history into the system prompt, the CLI's command-line
+// limit — see maxHistoryReplayBytes).
+const maxSubagentOutputBytes = 16 * 1024
+
+// subagentIncompleteNote is the result surfaced for a Task call whose subagent
+// neither reported completion (no SubagentStop) nor left a launch
+// acknowledgment to fall back on before the turn's deadline — so the call
+// never dangles without a result.
+const subagentIncompleteNote = "(subagent did not report completion before the turn deadline)"
+
+// subagentResult is one completed subagent's captured output, in stop order.
+type subagentResult struct {
+	agentID string
+	output  string
+	isError bool
+}
+
+// subagentActivity is a completed subagent's output correlated to the Task
+// tool-use id that triggered it, ready to emit as tool activity.
+type subagentActivity struct {
+	id      string
+	output  string
+	isError bool
+}
+
+// subagentTracker correlates a turn's Task subagent spawns with their real
+// output so Run()/Execute can synchronously await completion and persist that
+// output as inspectable tool activity — never the CLI's opaque "launched"
+// acknowledgment (docs/architectural invariants.md "No hidden state";
+// docs/adr/0022's Update). It is shared between the message-processing
+// goroutine (which observes Task ToolUseBlocks / their placeholder results)
+// and the SDK's SubagentStart/SubagentStop hook goroutines (which count
+// spawns and read transcripts), so every field is guarded by mu.
+type subagentTracker struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	started int
+	stopped int
+	// taskIDs are the Task tool-use ids observed this turn whose placeholder
+	// was suppressed, in call order — correlated FIFO with results at collect
+	// time (the CLI's SubagentStart/SubagentStop payloads carry an AgentID,
+	// not the parent Task's tool_use_id, so order is the correlation we have).
+	taskIDs []string
+	// placeholders holds each suppressed Task call's launch acknowledgment,
+	// used as a fallback output if that subagent never reports completion.
+	placeholders map[string]string
+	// results are completed subagent outputs, in SubagentStop order.
+	results []subagentResult
+}
+
+func newSubagentTracker() *subagentTracker {
+	t := &subagentTracker{placeholders: make(map[string]string)}
+	t.cond = sync.NewCond(&t.mu)
+	return t
+}
+
+// observeTask records a Task tool-use id whose opaque placeholder result is
+// being suppressed pending its subagent's real output.
+func (t *subagentTracker) observeTask(id string) {
+	t.mu.Lock()
+	t.taskIDs = append(t.taskIDs, id)
+	t.mu.Unlock()
+}
+
+// setPlaceholder stashes a suppressed Task call's launch acknowledgment as a
+// fallback (see subagentIncompleteNote for when no fallback exists either).
+func (t *subagentTracker) setPlaceholder(id, text string) {
+	t.mu.Lock()
+	t.placeholders[id] = text
+	t.mu.Unlock()
+}
+
+// resolveTask forgets a Task call — used when its placeholder result was an
+// error (the launch failed, so no subagent will run and the error is surfaced
+// inline), so collect() neither waits for nor synthesizes a result for it.
+func (t *subagentTracker) resolveTask(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i, existing := range t.taskIDs {
+		if existing == id {
+			t.taskIDs = append(t.taskIDs[:i], t.taskIDs[i+1:]...)
+			break
+		}
+	}
+	delete(t.placeholders, id)
+}
+
+// start records a subagent spawn (SubagentStart). toolUseID is the generic
+// hook correlation id the CLI may attach; it's accepted for forward
+// compatibility but not currently relied upon (order is — see taskIDs).
+func (t *subagentTracker) start(_ string, _ *string) {
+	t.mu.Lock()
+	t.started++
+	t.mu.Unlock()
+}
+
+// stop records a subagent's completion (SubagentStop) and its captured output,
+// waking any goroutine blocked in wait().
+func (t *subagentTracker) stop(agentID, output string, isError bool) {
+	t.mu.Lock()
+	t.stopped++
+	t.results = append(t.results, subagentResult{agentID: agentID, output: output, isError: isError})
+	t.cond.Broadcast()
+	t.mu.Unlock()
+}
+
+// wait blocks until every started subagent has stopped, or ctx is done
+// (bounding the wait by the turn's existing timeout budget — a hung subagent
+// can't block a turn indefinitely). In async fire-and-forget spawning a
+// subagent's SubagentStart fires around its Task call, before the turn's
+// ResultMessage, so by the time Run/Execute reaches here started already
+// counts every spawn this turn.
+func (t *subagentTracker) wait(ctx context.Context) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			t.mu.Lock()
+			t.cond.Broadcast()
+			t.mu.Unlock()
+		case <-done:
+		}
+	}()
+	t.mu.Lock()
+	for t.started != t.stopped && ctx.Err() == nil {
+		t.cond.Wait()
+	}
+	t.mu.Unlock()
+}
+
+// collect returns each observed Task call's real output, correlated FIFO with
+// completed subagent results. A Task call with no matching result (its
+// subagent never stopped before the deadline) falls back to its launch
+// acknowledgment, or subagentIncompleteNote — never nothing, so an emitted
+// onCall is never left without a result. Any subagent result beyond the
+// observed Task calls (more stops than tracked calls) still surfaces, keyed by
+// its AgentID. Call only after wait().
+func (t *subagentTracker) collect() []subagentActivity {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]subagentActivity, 0, len(t.taskIDs)+len(t.results))
+	for i, id := range t.taskIDs {
+		switch {
+		case i < len(t.results):
+			r := t.results[i]
+			out = append(out, subagentActivity{id: id, output: r.output, isError: r.isError})
+		case t.placeholders[id] != "":
+			out = append(out, subagentActivity{id: id, output: t.placeholders[id], isError: false})
+		default:
+			out = append(out, subagentActivity{id: id, output: subagentIncompleteNote, isError: true})
+		}
+	}
+	for i := len(t.taskIDs); i < len(t.results); i++ {
+		r := t.results[i]
+		out = append(out, subagentActivity{id: r.agentID, output: r.output, isError: r.isError})
+	}
+	return out
+}
+
+// wrapOnCall wraps a Run caller's OnToolCall so each Task spawn is tracked,
+// while still forwarding the call (with its real arguments) to onCall if set.
+func (t *subagentTracker) wrapOnCall(onCall func(id, name, argsJSON string)) func(id, name, argsJSON string) {
+	return func(id, name, argsJSON string) {
+		if name == subagentToolName {
+			t.observeTask(id)
+		}
+		if onCall != nil {
+			onCall(id, name, argsJSON)
+		}
+	}
+}
+
+// wrapOnResult wraps a Run caller's OnToolResult so a Task subagent's opaque
+// "launched" acknowledgment is suppressed (its real output is emitted later
+// from the awaited transcript); a failed launch (isError) is forwarded so the
+// error is visible and the call doesn't dangle.
+func (t *subagentTracker) wrapOnResult(onResult func(id, name, result string, isError bool)) func(id, name, result string, isError bool) {
+	return func(id, name, result string, isError bool) {
+		if name == subagentToolName {
+			if isError {
+				t.resolveTask(id)
+			} else {
+				t.setPlaceholder(id, result)
+				return
+			}
+		}
+		if onResult != nil {
+			onResult(id, name, result, isError)
+		}
+	}
+}
+
+// wrapOnEvent wraps an Execute caller's onEvent to do the same Task-placeholder
+// suppression as wrapOnResult, but over ExecuteEvents — whose tool_result
+// carries no tool name, so it remembers which ids were Task tool_calls. The
+// returned closure is called only from the single message-loop goroutine, so
+// its taskIDs map needs no lock (the tracker's own methods handle the
+// cross-goroutine state).
+func (t *subagentTracker) wrapOnEvent(onEvent func(ExecuteEvent) error) func(ExecuteEvent) error {
+	taskIDs := make(map[string]bool)
+	return func(ev ExecuteEvent) error {
+		switch ev.Kind {
+		case "tool_call":
+			if ev.ToolName == subagentToolName {
+				taskIDs[ev.ID] = true
+				t.observeTask(ev.ID)
+			}
+		case "tool_result":
+			if taskIDs[ev.ID] {
+				if ev.IsError {
+					t.resolveTask(ev.ID)
+				} else {
+					t.setPlaceholder(ev.ID, ev.ToolResult)
+					return nil
+				}
+			}
+		}
+		if onEvent != nil {
+			return onEvent(ev)
+		}
+		return nil
+	}
+}
+
+// subagentStartHook builds the SubagentStart HookCallback: it counts a spawn
+// against the current turn's tracker (fetched lazily, since a cached Run
+// client's hooks outlive any single turn).
+func subagentStartHook(getTracker func() *subagentTracker) claudecode.HookCallback {
+	return func(_ context.Context, input any, toolUseID *string, _ claudecode.HookContext) (claudecode.HookJSONOutput, error) {
+		tracker := getTracker()
+		if tracker == nil {
+			return claudecode.HookJSONOutput{}, nil
+		}
+		var agentID string
+		if in, ok := input.(*claudecode.SubagentStartHookInput); ok {
+			agentID = in.AgentID
+		}
+		tracker.start(agentID, toolUseID)
+		return claudecode.HookJSONOutput{}, nil
+	}
+}
+
+// subagentStopHook builds the SubagentStop HookCallback: it reads the
+// stopping subagent's transcript for its real output and records it, unblocking
+// the turn's synchronous wait.
+func subagentStopHook(getTracker func() *subagentTracker) claudecode.HookCallback {
+	return func(_ context.Context, input any, _ *string, _ claudecode.HookContext) (claudecode.HookJSONOutput, error) {
+		tracker := getTracker()
+		if tracker == nil {
+			return claudecode.HookJSONOutput{}, nil
+		}
+		var agentID, transcriptPath string
+		if in, ok := input.(*claudecode.SubagentStopHookInput); ok {
+			agentID = in.AgentID
+			transcriptPath = in.AgentTranscriptPath
+		}
+		output, isError := readAgentTranscript(transcriptPath)
+		tracker.stop(agentID, output, isError)
+		return claudecode.HookJSONOutput{}, nil
+	}
+}
+
+// awaitAndEmitRunSubagents blocks until this turn's subagents finish (bounded
+// by ctx), then emits each one's real output through the caller's ORIGINAL
+// OnToolResult (bypassing the suppression wrapper) so it lands in Conversation
+// state as inspectable tool activity paired with the earlier Task call.
+func awaitAndEmitRunSubagents(ctx context.Context, tracker *subagentTracker, onResult func(id, name, result string, isError bool)) {
+	tracker.wait(ctx)
+	if onResult == nil {
+		return
+	}
+	for _, a := range tracker.collect() {
+		onResult(a.id, subagentToolName, a.output, a.isError)
+	}
+}
+
+// awaitAndEmitExecuteSubagents is awaitAndEmitRunSubagents for Execute's
+// onEvent shape, emitting each subagent's real output as a tool_result
+// ExecuteEvent (which the execution log persists).
+func awaitAndEmitExecuteSubagents(ctx context.Context, tracker *subagentTracker, onEvent func(ExecuteEvent) error) error {
+	tracker.wait(ctx)
+	if onEvent == nil {
+		return nil
+	}
+	for _, a := range tracker.collect() {
+		if err := onEvent(ExecuteEvent{Kind: "tool_result", ID: a.id, ToolResult: a.output, IsError: a.isError}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readAgentTranscript reads a stopped subagent's real output from its
+// transcript file (SubagentStopHookInput.AgentTranscriptPath) — the whole
+// point of awaiting SubagentStop rather than trusting the CLI's opaque
+// "launched" acknowledgment. The transcript is JSONL (one CLI message per
+// line); the subagent's output is its last assistant message's text. Any
+// failure (missing path, unreadable file, unparseable content) is surfaced as
+// an error result rather than dropped, so the tracker still signals completion
+// and the turn never hangs.
+func readAgentTranscript(path string) (output string, isError bool) {
+	if path == "" {
+		return "(subagent produced no transcript)", true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("(failed to read subagent transcript: %v)", err), true
+	}
+	text := lastAssistantTranscriptText(data)
+	if text == "" {
+		text = strings.TrimSpace(string(data))
+	}
+	if len(text) > maxSubagentOutputBytes {
+		text = text[:maxSubagentOutputBytes] + "\n…(truncated)"
+	}
+	if text == "" {
+		return "(subagent produced no output)", false
+	}
+	return text, false
+}
+
+// lastAssistantTranscriptText extracts the text of the last assistant message
+// in a JSONL transcript — the subagent's final answer to the calling agent.
+// Unrecognized/blank lines are skipped; message content may be a plain string
+// or an array of typed blocks (only "text" blocks contribute).
+func lastAssistantTranscriptText(data []byte) string {
+	var last string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Type != "assistant" {
+			continue
+		}
+		if text := transcriptContentText(entry.Message.Content); text != "" {
+			last = text
+		}
+	}
+	return last
+}
+
+// transcriptContentText renders a transcript message's "content" (a plain
+// string or an array of typed blocks) to its concatenated text.
+func transcriptContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, blk := range blocks {
+		if blk.Type == "text" && blk.Text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(blk.Text)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }

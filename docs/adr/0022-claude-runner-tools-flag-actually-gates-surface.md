@@ -65,3 +65,53 @@ Considered and rejected:
   while it deliberately widens to `Write`/`Edit`/`Bash` already, there's no reason
   an autonomous Implementation-stage run should have `Task`/`Agent` or
   `ScheduleWakeup` available either — the same argument applies.
+
+## Update (2026-08-06): `Task`/`Agent` block reversed in favor of first-class, scoped subagents
+
+The `--tools`-vs-`--allowed-tools` **diagnosis above stands unchanged** — it is
+correct and remains the reason `ClaudeRunner` sets `WithTools` alongside
+`WithAllowedTools`, and the reason `ScheduleWakeup`/`Skill`/`Workflow` and the
+rest of the CLI's default built-in surface stay gated by the `WithTools`
+allow-list. What this Update reverses is only the narrower **conclusion** the
+section above drew from that diagnosis: that `Task`/`Agent` subagent spawning
+should be blocked outright, as an incidental consequence of an unset flag.
+
+That "block outright" call is superseded. `Task` is now re-admitted at both
+call sites (`clientFor`/`buildAndConnectClient` for Run, `Execute` for the
+Implementation stage), but as **first-class, tool-scoped support** — exactly
+the "new, explicit `WithTools`/`WithAgents` opt-in" the original section named
+as the acceptable path, not the unset-flag side effect it rightly rejected.
+The design:
+
+* **Scoped custom agent, not the built-in presets.** Each call registers a
+  single custom `AgentDefinition` via `WithAgents` — `workbench-readonly-agent`
+  for Run, `workbench-execution-agent` for Execute — whose `Tools` is exactly
+  that stage's own boundary (`readOnlyTools`, `+Bash` for Review, or
+  `executionTools`). A spawned subagent's tool access therefore **cannot exceed
+  the calling stage's scope**, and that parity is enforced by the subagent's
+  own `Tools`, not by reopening the parent's `WithTools`. `Task` is
+  deliberately excluded from the subagent's own tools so it can't recurse.
+* **Built-in presets stay closed.** The CLI's own agents (`Explore`, `Plan`,
+  `general-purpose`) are denied via `WithDisallowedTools`' `Task(<name>)`
+  scoped-deny syntax, so a model can't route around the scoped custom agent by
+  spawning a preset that would inherit the full default surface — preserving
+  the allow-list-by-construction posture the diagnosis argued for.
+* **No hidden state; turn-based await preserved.** `SubagentStart`/
+  `SubagentStop` hooks let `Run()`/`Execute` synchronously await a spawned
+  subagent's completion before the turn returns (bounded by the call's existing
+  timeout), and the subagent's **real output — read from
+  `AgentTranscriptPath` on `SubagentStop`** — is persisted into `Conversation`
+  state as inspectable `ToolActivity`, replacing the CLI's opaque "launched"
+  acknowledgment (which is suppressed). This satisfies docs/architectural
+  invariants.md's "No hidden state" and keeps a subagent's existence, status,
+  and output part of persisted turn state rather than out-of-band.
+
+Why reverse: `agentrunner-subagent-support` established that a scoped,
+tracked subagent is a genuinely useful capability (delegating a bounded
+read-only investigation, or an isolated execution sub-task) once its output is
+first-class and its tool access can't escape the stage boundary — which the
+mechanisms above now guarantee. The original section's objection was to
+*unscoped, untracked* spawning as an accident of an unset flag; that objection
+is fully addressed, not overridden. See
+`internal/agentrunner/claude_runner.go` (`withSubagentSupport`, `scopedSubagent`,
+`subagentTracker`, `readAgentTranscript`).
