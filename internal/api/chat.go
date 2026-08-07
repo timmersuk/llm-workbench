@@ -24,12 +24,16 @@ const defaultChatExecutor = "local"
 // reasoning_content already streamed is left in place, not discarded.
 // ToolCall is only ever set by the stage-conversation handlers
 // (stage_conversation.go), when the stage's registered Draft tool is called
-// — the free-floating chat endpoint below never registers any tools, so it
-// never populates it, but shares the same event shape. ToolActivity carries
-// the reviewing/interviewing agent's INTERMEDIATE tool calls and their
-// results (each read_file/grep_search/glob/bash the loop actually ran),
-// distinct from the single final Draft ToolCall — so a client can render the
-// agent's checks live, not just its prose.
+// — the free-floating chat endpoint below never registers any Draft tools
+// (in.Tools stays empty), so it never populates ToolCall, but shares the
+// same event shape. ToolActivity carries the agent's INTERMEDIATE tool
+// calls and their results (each Read/Grep/Glob/Bash/etc. the loop actually
+// ran), distinct from the single final Draft ToolCall — so a client can
+// render the agent's checks live, not just its prose. Both the
+// stage-conversation handlers and handleChatCompletions populate this one
+// (via RunInput.OnToolCall/OnToolResult) for any executor whose AgentRunner
+// drives them; ChatClientRunner never does, so a "local" turn never emits it
+// either way.
 type chatStreamEvent struct {
 	Content          string                 `json:"content,omitempty"`
 	ReasoningContent string                 `json:"reasoning_content,omitempty"`
@@ -174,12 +178,25 @@ func (s *Server) handleChatCompletions() http.HandlerFunc {
 		safeWrite := synchronizeWriteEvent(writeEvent)
 
 		_, err := runner.Run(r.Context(), agentrunner.RunInput{
-			SessionKey:          req.SessionKey,
-			Workspace:           s.ReposRoot,
-			UserMessage:         req.Content,
-			Model:               req.Model,
-			History:             req.History,
-			ReasoningEffort:     agentrunner.ReasoningEffort(req.Effort),
+			SessionKey:      req.SessionKey,
+			Workspace:       s.ReposRoot,
+			UserMessage:     req.Content,
+			Model:           req.Model,
+			History:         req.History,
+			ReasoningEffort: agentrunner.ReasoningEffort(req.Effort),
+			// OnToolCall/OnToolResult surface a Claude Code turn's intermediate
+			// tool activity (Read/Grep/Glob/Bash/etc.) live, the same
+			// chatStreamEvent.ToolActivity wire shape stage conversations already
+			// stream via runStageTurn (stage_conversation.go) — free chat has no
+			// persisted Conversation to accumulate segments into, so this just
+			// relays each call/result straight through as an SSE event, nothing
+			// to fold into a stored record afterward.
+			OnToolCall: func(id, name, argsJSON string) {
+				safeWrite(chatStreamEvent{ToolActivity: &chatToolActivityEvent{ID: id, Phase: "call", Name: name, Arguments: argsJSON}})
+			},
+			OnToolResult: func(id, name, result string, isError bool) {
+				safeWrite(chatStreamEvent{ToolActivity: &chatToolActivityEvent{ID: id, Phase: "result", Name: name, Result: result, IsError: isError}})
+			},
 			OnPermissionRequest: s.stagePermissionRequestHook(req.SessionKey, safeWrite),
 		}, func(d chat.Delta) error {
 			safeWrite(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent, Usage: usageEvent(d.Usage)})

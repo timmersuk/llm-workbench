@@ -4,14 +4,24 @@ import { closeChatSession, isAbortError, listAgentExecutors, listModels, postCha
 import { ChatInputArea } from './ChatInputArea'
 import { formatMessageTimestamp } from './formatTimestamp'
 import { MarkdownMessage } from './MarkdownMessage'
+import { PermissionRequestPanel } from './PermissionRequestPanel'
 import { ALL_REASONING_EFFORTS, resolveEffort } from './reasoningEffort'
+import { ToolActivitySequence } from './ToolActivity'
+import { appendTextBlock, appendToolCallBlock, appendToolResultBlock } from './toolActivityBlocks'
+import type { ToolActivityBlock } from './toolActivityBlocks'
 import type { ChatHistoryEntry, ChatStreamEvent, ReasoningEffort } from './types'
 import { useLiveTurnStatus } from './useLiveTurnStatus'
+import { usePermissionEscalation } from './usePermissionEscalation'
 
 interface DisplayMessage {
   role: string
+  // content is a derived concatenation of every text segment's text, kept
+  // alongside segments purely for handleCopyMessage/handleEditMessage/resend
+  // (all three need the plain reply text, not its segment structure) — see
+  // StageConversationPanel's identical DisplayMessage.content doc comment.
   content: string
   reasoningContent: string
+  segments: ToolActivityBlock[]
   error: string | null
   thinkingCollapsed: boolean
   created_at: string
@@ -58,12 +68,10 @@ export function ChatPanel() {
   const [streamedChars, setStreamedChars] = useState(0)
   const [finalTokens, setFinalTokens] = useState<number | undefined>(undefined)
   const liveTurnStatus = useLiveTurnStatus(sending, streamedChars, finalTokens)
-  // pendingPermission/permissionDeciding/permissionError mirror
-  // StageConversationPanel's identical trio (docs/adr/0024): a tool
-  // escalation blocks the turn server-side until Approve/Deny is clicked.
-  const [pendingPermission, setPendingPermission] = useState<{ id: string; name: string; arguments?: string } | null>(null)
-  const [permissionDeciding, setPermissionDeciding] = useState(false)
-  const [permissionError, setPermissionError] = useState<string | null>(null)
+  // permission manages an in-flight tool escalation (docs/adr/0024): the turn
+  // is blocked server-side until Approve/Deny is clicked. Shared with
+  // StageConversationPanel via usePermissionEscalation — see its doc comment.
+  const permission = usePermissionEscalation((id, allow) => postChatPermissionDecision(sessionKey, id, allow))
 
   useEffect(() => {
     listAgentExecutors()
@@ -152,8 +160,20 @@ export function ChatPanel() {
     if (event.permission_request) {
       // The turn is blocked server-side awaiting this decision; surface the
       // Approve/Deny control (a new prompt replaces any stale one).
-      setPermissionError(null)
-      setPendingPermission(event.permission_request)
+      permission.receive(event.permission_request)
+      return
+    }
+    if (event.tool_activity) {
+      // Surfaces a Claude Code turn's intermediate Read/Grep/Glob/Bash/etc.
+      // calls live, the same way StageConversationPanel already does — see
+      // that panel's identical branch and toolActivityBlocks.ts's doc
+      // comment for why this is the one shared implementation, not a copy.
+      const ta = event.tool_activity
+      if (ta.phase === 'call') {
+        updateLastMessage((msg) => ({ ...msg, segments: appendToolCallBlock(msg.segments, { id: ta.id, name: ta.name, arguments: ta.arguments }) }))
+      } else {
+        updateLastMessage((msg) => ({ ...msg, segments: appendToolResultBlock(msg.segments, ta.id, ta.result ?? '', ta.is_error) }))
+      }
       return
     }
     if (event.usage) {
@@ -164,28 +184,13 @@ export function ChatPanel() {
       setStreamedChars((n) => n + event.reasoning_content!.length)
     }
     if (event.content) {
-      updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
+      updateLastMessage((msg) => ({
+        ...msg,
+        segments: appendTextBlock(msg.segments, event.content!),
+        content: msg.content + event.content,
+        thinkingCollapsed: true,
+      }))
       setStreamedChars((n) => n + event.content!.length)
-    }
-  }
-
-  // decidePermission answers the pending tool escalation. On success the
-  // prompt clears and the blocked turn resumes (allow) or the model sees a
-  // denial and adapts (deny); on failure the prompt stays so the human can
-  // retry. Guarded against a double-click posting twice.
-  async function decidePermission(allow: boolean) {
-    if (!pendingPermission || permissionDeciding) {
-      return
-    }
-    setPermissionDeciding(true)
-    setPermissionError(null)
-    try {
-      await postChatPermissionDecision(sessionKey, pendingPermission.id, allow)
-      setPendingPermission(null)
-    } catch (err) {
-      setPermissionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setPermissionDeciding(false)
     }
   }
 
@@ -206,8 +211,8 @@ export function ChatPanel() {
 
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: trimmedText, reasoningContent: '', error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
-      { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
+      { role: 'user', content: trimmedText, reasoningContent: '', segments: [{ kind: 'text', text: trimmedText }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -268,8 +273,8 @@ export function ChatPanel() {
 
     setMessages((prev) => [
       ...prev.slice(0, index),
-      { role: 'user', content, reasoningContent: '', error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
-      { role: 'assistant', content: '', reasoningContent: '', error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
+      { role: 'user', content, reasoningContent: '', segments: [{ kind: 'text', text: content }], error: null, thinkingCollapsed: true, created_at: new Date().toISOString() },
+      { role: 'assistant', content: '', reasoningContent: '', segments: [], error: null, thinkingCollapsed: false, created_at: new Date().toISOString() },
     ])
     setSending(true)
     setStreamedChars(0)
@@ -433,7 +438,19 @@ export function ChatPanel() {
               </details>
             )}
             <strong>{message.role}:</strong> <span className="message-timestamp">{formatMessageTimestamp(message.created_at)}</span>{' '}
-            <MarkdownMessage content={message.content} />
+            {message.segments.map((segment, segIndex) =>
+              segment.kind === 'text' ? (
+                <div key={segIndex}>
+                  <MarkdownMessage content={segment.text} />
+                </div>
+              ) : (
+                <ToolActivitySequence
+                  key={segIndex}
+                  activities={segment.activities}
+                  live={sending && index === messages.length - 1 && segIndex === message.segments.length - 1}
+                />
+              ),
+            )}
             {message.error && <p className="error">{message.error}</p>}
             <div className="message-actions">
               <button type="button" className="action-btn" title="Copy" aria-label="Copy" onClick={() => handleCopyMessage(message.content)}>
@@ -477,36 +494,13 @@ export function ChatPanel() {
           </div>
         ))}
       </div>
-      {pendingPermission && (
-        // Rendered outside the composer below because it fires mid-turn
-        // (sending is true); the model can see and adapt to a denial. See docs/adr/0024.
-        <div className="permission-request" role="group" aria-label="Tool permission request">
-          <p className="permission-request-prompt">
-            The agent wants to run <strong>{pendingPermission.name}</strong> and needs your approval.
-          </p>
-          {pendingPermission.arguments && (
-            <pre className="permission-request-args">{pendingPermission.arguments}</pre>
-          )}
-          <div className="permission-request-actions">
-            <button
-              type="button"
-              className="permission-request-approve"
-              onClick={() => decidePermission(true)}
-              disabled={permissionDeciding}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              className="permission-request-deny"
-              onClick={() => decidePermission(false)}
-              disabled={permissionDeciding}
-            >
-              Deny
-            </button>
-          </div>
-          {permissionError && <p className="error">{permissionError}</p>}
-        </div>
+      {permission.pending && (
+        <PermissionRequestPanel
+          pending={permission.pending}
+          deciding={permission.deciding}
+          error={permission.error}
+          onDecide={permission.decide}
+        />
       )}
       <ChatInputArea
         draft={draft}

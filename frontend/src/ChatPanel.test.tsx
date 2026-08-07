@@ -444,3 +444,74 @@ describe('ChatPanel — streaming', () => {
     await waitFor(() => expect(details).toHaveAttribute('open'))
   })
 })
+
+describe('ChatPanel — tool activity', () => {
+  it('interleaves narration and tool activity in real chronological order', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.streamChatCompletion).mockImplementation((_content, _model, _executor, _sessionKey, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<ChatPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('model-a'))
+
+    await user.type(screen.getByPlaceholderText('Message the local LLM...'), 'Run the tests please')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    act(() => deliver({ content: 'build passes, now testing' }))
+    act(() => deliver({ tool_activity: { id: 'call-1', phase: 'call', name: 'Bash', arguments: '{"command":"go test ./..."}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-1', phase: 'result', name: 'Bash', result: 'ok', is_error: false } }))
+    act(() => deliver({ content: 'tests pass, now checking frontend' }))
+    act(() => deliver({ tool_activity: { id: 'call-2', phase: 'call', name: 'Grep', arguments: '{"pattern":"TODO"}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-2', phase: 'result', name: 'Grep', result: 'no matches', is_error: false } }))
+    act(() => deliver({ content: 'all green' }))
+
+    const text = document.body.textContent ?? ''
+    const iNarration1 = text.indexOf('build passes, now testing')
+    const iBash = text.indexOf('Bash')
+    const iNarration2 = text.indexOf('tests pass, now checking frontend')
+    const iGrep = text.indexOf('Grep')
+    const iNarration3 = text.indexOf('all green')
+
+    expect(iNarration1).toBeGreaterThanOrEqual(0)
+    expect(iBash).toBeGreaterThan(iNarration1)
+    expect(iNarration2).toBeGreaterThan(iBash)
+    expect(iGrep).toBeGreaterThan(iNarration2)
+    expect(iNarration3).toBeGreaterThan(iGrep)
+  })
+
+  it('attaches a result to its call by id regardless of arrival order', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.listModels).mockResolvedValue({ models: ['model-a'] })
+
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.streamChatCompletion).mockImplementation((_content, _model, _executor, _sessionKey, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<ChatPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue('model-a'))
+
+    await user.type(screen.getByPlaceholderText('Message the local LLM...'), 'Check two files')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    // Two calls declared before either result arrives (a batching provider's
+    // shape), results delivered in reverse declaration order.
+    act(() => deliver({ tool_activity: { id: 'call-A', phase: 'call', name: 'Bash', arguments: '{"command":"cat unique-path-A"}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-B', phase: 'call', name: 'Bash', arguments: '{"command":"cat unique-path-B"}' } }))
+    act(() => deliver({ tool_activity: { id: 'call-B', phase: 'result', name: 'Bash', result: 'RESULT-FOR-B', is_error: false } }))
+    act(() => deliver({ tool_activity: { id: 'call-A', phase: 'result', name: 'Bash', result: 'RESULT-FOR-A', is_error: false } }))
+
+    const rows = document.querySelectorAll('.tool-activity-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].textContent).toContain('unique-path-A')
+    expect(rows[0].textContent).toContain('RESULT-FOR-A')
+    expect(rows[1].textContent).toContain('unique-path-B')
+    expect(rows[1].textContent).toContain('RESULT-FOR-B')
+  })
+})
