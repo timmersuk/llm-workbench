@@ -147,6 +147,10 @@ type Server struct {
 	BuildId                       string
 	StageConversationSeedExecutor string
 	ExecutionSeedExecutor         string
+	// escalations tracks in-flight human permission escalations for stage turns
+	// (docs/adr/0024). nil-tolerant: a Server built directly in a test without it
+	// simply won't offer escalation.
+	escalations *escalationRegistry
 }
 
 // NewRouter builds the full HTTP handler: the JSON API plus the embedded
@@ -189,6 +193,7 @@ func newRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 		BuildId:                       buildId,
 		StageConversationSeedExecutor: stageSeed,
 		ExecutionSeedExecutor:         executionSeed,
+		escalations:                   newEscalationRegistry(),
 	}
 
 	mux := http.NewServeMux()
@@ -218,6 +223,7 @@ func newRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/conversation", s.handleGetStageConversation())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/start", s.handleStartStageConversation())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages", s.handlePostStageMessage())
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/permission", s.handleStagePermissionDecision())
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}", s.handleDeleteStageMessage())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/stages/{stage}/messages/{index}/regenerate", s.handleRegenerateStageMessage())
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/requirements/finalize", s.handleFinalizeRequirements())

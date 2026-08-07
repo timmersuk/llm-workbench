@@ -405,6 +405,27 @@ export async function postStageMessage(
   await streamSSE<ChatStreamEvent>(res, onEvent)
 }
 
+// postStagePermissionDecision answers a pending tool escalation (a
+// permission_request event — docs/adr/0024) for an in-flight stage turn. The
+// server validates requestId against this task/stage's own session, so a stale
+// or foreign id comes back 404.
+export async function postStagePermissionDecision(
+  projectId: string,
+  taskId: string,
+  stage: string,
+  requestId: string,
+  allow: boolean,
+): Promise<void> {
+  const res = await fetch(`${taskPath(projectId, taskId)}/stages/${encodeURIComponent(stage)}/permission`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_id: requestId, allow }),
+  })
+  if (!res.ok) {
+    throw new Error(await parseAPIError(res, `submitting permission decision returned ${res.status}`))
+  }
+}
+
 // startStageConversation begins a brand-new, empty stage Conversation on
 // the agent's own initiative — there is no human reply yet to post via
 // postStageMessage, so this runs one turn seeded server-side

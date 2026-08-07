@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +67,99 @@ var readOnlyTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 // uses, so Write/Edit/Bash here can't touch anything a human or another
 // stage's read-only agent has open.
 var executionTools = append(append([]string{}, readOnlyTools...), "Write", "Edit", "Bash")
+
+// claudePermissionMode is the explicit permission mode set on every Run and
+// Execute connection, replacing the CLI's unset default. Only "default" routes
+// a visible-but-not-auto-approved tool through WithCanUseTool for a per-call
+// decision in our code; acceptEdits/bypassPermissions skip the callback, plan
+// is read-only. See docs/adr/0024.
+const claudePermissionMode = claudecode.PermissionModeDefault
+
+// allowToolUse permits a tool call, echoing the proposed input back as
+// UpdatedInput. NOT claudecode.NewPermissionResultAllow(): that omits
+// updatedInput and CLI 2.1.206 rejects the response with a ZodError. See docs/adr/0024.
+func allowToolUse(input map[string]any) claudecode.PermissionResult {
+	if input == nil {
+		input = map[string]any{}
+	}
+	return claudecode.PermissionResultAllow{Behavior: "allow", UpdatedInput: input}
+}
+
+// guardedWriteTools are the tools Execute keeps off --allowed-tools so every
+// call routes through executeWriteGuard for a worktree-boundary check.
+var guardedWriteTools = map[string]bool{"Write": true, "Edit": true}
+
+// executeWriteGuard is Execute's WithCanUseTool callback: it allows a
+// Write/Edit only when its file_path stays inside the execution worktree,
+// denying+logging any that would escape it. The CLI does not confine Write to
+// cwd on its own (live-verified). Non-guarded tools pass through. See docs/adr/0024.
+func executeWriteGuard(workspace string) claudecode.CanUseToolCallback {
+	return func(_ context.Context, toolName string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
+		if !guardedWriteTools[toolName] {
+			return allowToolUse(input), nil
+		}
+		rawPath, _ := input["file_path"].(string)
+		if rawPath == "" {
+			return claudecode.NewPermissionResultDeny(fmt.Sprintf(
+				"%s denied: no file_path supplied to check against the execution worktree", toolName)), nil
+		}
+		if !withinWorkspace(workspace, rawPath) {
+			slog.Warn("execute write guard denied out-of-worktree write",
+				"tool", toolName, "file_path", rawPath, "workspace", workspace)
+			return claudecode.NewPermissionResultDeny(fmt.Sprintf(
+				"%s denied: %s is outside this execution's worktree (%s); only files within the worktree may be modified",
+				toolName, rawPath, workspace)), nil
+		}
+		return allowToolUse(input), nil
+	}
+}
+
+// withinWorkspace reports whether rawPath (resolved against workspace when
+// relative) stays inside workspace. Lexical only — a Write target may not
+// exist yet, so it must not stat or create it.
+func withinWorkspace(workspace, rawPath string) bool {
+	root, err := filepath.Abs(workspace)
+	if err != nil {
+		return false
+	}
+	target := rawPath
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	target = filepath.Clean(target)
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// permissionEscalationCallback is Run's WithCanUseTool callback: it forwards a
+// visible-but-not-auto-approved tool (Bash on a human-paced turn) to the turn's
+// human decision hook. The hook is looked up lazily by key, not captured at
+// connect time, because a cached Run client outlives the turn that created it.
+// No hook installed -> deny (a visible-but-unapproved tool must not auto-run).
+func (r *ClaudeRunner) permissionEscalationCallback(key string) claudecode.CanUseToolCallback {
+	return func(ctx context.Context, toolName string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
+		requester := r.permissionRequesterFor(key)
+		if requester == nil {
+			return claudecode.NewPermissionResultDeny(fmt.Sprintf(
+				"%s denied: no human is available to approve this tool for the current turn", toolName)), nil
+		}
+		args, err := json.Marshal(input)
+		if err != nil {
+			return nil, fmt.Errorf("encoding permission request arguments: %w", err)
+		}
+		allow, err := requester(ctx, toolName, string(args))
+		if err != nil {
+			return nil, err
+		}
+		if !allow {
+			return claudecode.NewPermissionResultDeny(fmt.Sprintf("%s denied by the human reviewer", toolName)), nil
+		}
+		return allowToolUse(input), nil
+	}
+}
 
 // subagentToolName is the CLI *argument-syntax* name for subagent spawning:
 // the value passed to WithTools/WithAllowedTools and the Task(<agent>)
@@ -221,10 +316,14 @@ type ClaudeRunner struct {
 	// in-flight lock. Execute uses a fresh client per call and captures its
 	// tracker directly, so it never touches this map.
 	subagentTrackers map[string]*subagentTracker
-	timeout          time.Duration
-	executeTimeout   time.Duration
-	reposRoot        string
-	knowledgeStore   knowledgetool.Store
+	// permissionRequesters holds the current turn's human decision hook per
+	// SessionKey, looked up lazily by permissionEscalationCallback (a cached Run
+	// client's callback is registered once but must route to the live turn).
+	permissionRequesters map[string]func(ctx context.Context, toolName, argsJSON string) (bool, error)
+	timeout              time.Duration
+	executeTimeout       time.Duration
+	reposRoot            string
+	knowledgeStore       knowledgetool.Store
 	// newClient constructs a claudecode.Client from the given options —
 	// indirected (defaulting to claudecode.NewClient) purely so tests can
 	// substitute a fake client without spawning a real `claude` subprocess,
@@ -256,17 +355,18 @@ type ClaudeRunner struct {
 // tools are never registered (e.g. tests that don't care).
 func NewClaudeRunner(timeout, executeTimeout time.Duration, reposRoot string, knowledgeStore knowledgetool.Store) *ClaudeRunner {
 	return &ClaudeRunner{
-		clients:          make(map[string]claudecode.Client),
-		clientSelections: make(map[string]Selection),
-		clientCancels:    make(map[string]context.CancelFunc),
-		clientLastUsed:   make(map[string]time.Time),
-		inFlight:         make(map[string]bool),
-		subagentTrackers: make(map[string]*subagentTracker),
-		timeout:          timeout,
-		executeTimeout:   executeTimeout,
-		reposRoot:        reposRoot,
-		knowledgeStore:   knowledgeStore,
-		newClient:        claudecode.NewClient,
+		clients:              make(map[string]claudecode.Client),
+		clientSelections:     make(map[string]Selection),
+		clientCancels:        make(map[string]context.CancelFunc),
+		clientLastUsed:       make(map[string]time.Time),
+		inFlight:             make(map[string]bool),
+		subagentTrackers:     make(map[string]*subagentTracker),
+		permissionRequesters: make(map[string]func(ctx context.Context, toolName, argsJSON string) (bool, error)),
+		timeout:              timeout,
+		executeTimeout:       executeTimeout,
+		reposRoot:            reposRoot,
+		knowledgeStore:       knowledgeStore,
+		newClient:            claudecode.NewClient,
 	}
 }
 
@@ -412,6 +512,13 @@ func (r *ClaudeRunner) Run(ctx context.Context, in RunInput, onDelta func(chat.D
 	r.setSubagentTracker(key, tracker)
 	defer r.clearSubagentTracker(key)
 
+	// Install this turn's human decision hook before connecting so a cached
+	// client's escalation callback routes to it.
+	if in.OnPermissionRequest != nil {
+		r.setPermissionRequester(key, in.OnPermissionRequest)
+		defer r.clearPermissionRequester(key)
+	}
+
 	client, err := r.clientFor(runCtx, key, in)
 	if err != nil {
 		return RunOutput{}, err
@@ -509,6 +616,15 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 	// over this transport regardless of connection lifetime (live-verified),
 	// so the tool is not offered at all.
 	executeTools := append([]string{}, executionTools...)
+	// Write/Edit stay visible (WithTools) but off --allowed-tools so every call
+	// routes through executeWriteGuard for a worktree-boundary check; everything
+	// else (incl. Bash) stays auto-approved. See docs/adr/0024.
+	executeAllowed := make([]string, 0, len(executeTools))
+	for _, t := range executeTools {
+		if !guardedWriteTools[t] {
+			executeAllowed = append(executeAllowed, t)
+		}
+	}
 
 	opts := []claudecode.Option{
 		claudecode.WithCwd(in.Workspace),
@@ -526,7 +642,11 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 		// default built-in surface (Skill, LSP, ...) stays visible/callable
 		// alongside executionTools.
 		claudecode.WithTools(executeTools...),
-		claudecode.WithAllowedTools(executeTools...),
+		claudecode.WithAllowedTools(executeAllowed...),
+		// Explicit mode + worktree write guard, replacing the CLI's unset
+		// default: bounds Execute's writes to in.Workspace. See docs/adr/0024.
+		claudecode.WithPermissionMode(claudePermissionMode),
+		claudecode.WithCanUseTool(executeWriteGuard(in.Workspace)),
 	}
 	opts = append(opts, claudeSelectionOptions(in.Model, in.ReasoningEffort)...)
 	// See clientFor's identical comment: omitting WithMaxTurns entirely
@@ -613,6 +733,29 @@ func (r *ClaudeRunner) subagentTrackerFor(key string) *subagentTracker {
 func (r *ClaudeRunner) clearSubagentTracker(key string) {
 	r.mu.Lock()
 	delete(r.subagentTrackers, key)
+	r.mu.Unlock()
+}
+
+// setPermissionRequester installs key's current-turn human decision hook, read
+// lazily by permissionEscalationCallback. Race-safe: the caller holds key's
+// in-flight lock (as with setSubagentTracker).
+func (r *ClaudeRunner) setPermissionRequester(key string, fn func(ctx context.Context, toolName, argsJSON string) (bool, error)) {
+	r.mu.Lock()
+	r.permissionRequesters[key] = fn
+	r.mu.Unlock()
+}
+
+// permissionRequesterFor returns key's current-turn hook, or nil.
+func (r *ClaudeRunner) permissionRequesterFor(key string) func(ctx context.Context, toolName, argsJSON string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.permissionRequesters[key]
+}
+
+// clearPermissionRequester forgets key's hook once its turn returns.
+func (r *ClaudeRunner) clearPermissionRequester(key string) {
+	r.mu.Lock()
+	delete(r.permissionRequesters, key)
 	r.mu.Unlock()
 }
 
@@ -757,6 +900,14 @@ func (r *ClaudeRunner) buildAndConnectClient(_ context.Context, in RunInput, res
 	// mcp__<server>__<tool> names, unlike WithAllowedTools/--allowed-tools
 	// which is MCP-qualified-name-aware (see mcpServerName's doc comment).
 	builtinTools := append([]string{}, allowedTools...)
+	// Human-escalation turn: make Bash visible (WithTools) without auto-approving
+	// it (allowedTools unchanged), so a Bash call reaches the human via
+	// permissionEscalationCallback instead of being invisible. Excludes Review's
+	// unattended EnableBashTool turn and free-chat/rehydration callers. See docs/adr/0024.
+	escalate := !in.EnableBashTool && in.OnPermissionRequest != nil
+	if escalate {
+		builtinTools = append(builtinTools, "Bash")
+	}
 	// in.Tools is optional — free-chat callers (no Draft concept) leave it
 	// empty, in which case no MCP tool/server is registered at all rather
 	// than trying to build one from zero tools.
@@ -807,6 +958,12 @@ func (r *ClaudeRunner) buildAndConnectClient(_ context.Context, in RunInput, res
 	// or call the tool at all.
 	opts = append(opts, claudecode.WithTools(builtinTools...))
 	opts = append(opts, claudecode.WithAllowedTools(allowedTools...))
+	// Explicit permission mode on every Run connection (see claudePermissionMode);
+	// required for the escalation callback to be consulted at all.
+	opts = append(opts, claudecode.WithPermissionMode(claudePermissionMode))
+	if escalate {
+		opts = append(opts, claudecode.WithCanUseTool(r.permissionEscalationCallback(in.SessionKey)))
+	}
 
 	client := r.newClient(opts...)
 	if err := client.Connect(connCtx); err != nil {

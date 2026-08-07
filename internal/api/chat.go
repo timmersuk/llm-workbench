@@ -42,7 +42,19 @@ type chatStreamEvent struct {
 	// executor/chunk that doesn't report it (the claude/codex CLI paths
 	// never do), which the frontend treats as "keep estimating."
 	Usage *chatUsageEvent `json:"usage,omitempty"`
-	Error string          `json:"error,omitempty"`
+	// PermissionRequest is set when a human-paced stage turn escalates a tool
+	// the agent can see but not auto-run (docs/adr/0024); the turn blocks until
+	// the human posts a decision to the stage /permission endpoint.
+	PermissionRequest *chatPermissionRequestEvent `json:"permission_request,omitempty"`
+	Error             string                      `json:"error,omitempty"`
+}
+
+// chatPermissionRequestEvent is the wire shape of a pending tool escalation:
+// the tool, its raw JSON input, and the request ID echoed back to /permission.
+type chatPermissionRequestEvent struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // chatUsageEvent is the wire shape of chat.Usage's total, the only figure

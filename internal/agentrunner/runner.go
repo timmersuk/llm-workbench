@@ -140,6 +140,11 @@ type RunInput struct {
 	// whichever call happens to be positionally last.
 	OnToolCall   func(id, name, argsJSON string)
 	OnToolResult func(id, name, result string, isError bool)
+	// OnPermissionRequest, if non-nil, opts a human-paced turn into escalating
+	// a visible-but-not-auto-approved tool (Bash) to the human for allow/deny.
+	// Only ClaudeRunner honors it, and only for EnableBashTool==false turns; it
+	// blocks until the human decides, bounded by the turn's ctx. See docs/adr/0024.
+	OnPermissionRequest func(ctx context.Context, toolName, argsJSON string) (allow bool, err error)
 }
 
 // RunOutput is the result of one AgentRunner.Run call: the assistant's

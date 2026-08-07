@@ -236,6 +236,10 @@ export interface StageConversationOps {
     onEvent: (event: ChatStreamEvent) => void,
     signal?: AbortSignal,
   ) => Promise<void>
+  // submitPermissionDecision answers a pending tool escalation (a
+  // permission_request event — docs/adr/0024). Only real stage conversations
+  // provide it; the task-drafts pre-creation chat leaves it undefined.
+  submitPermissionDecision?: (requestId: string, allow: boolean) => Promise<void>
 }
 
 interface StageConversationPanelProps<D, S = never> {
@@ -407,6 +411,12 @@ export function StageConversationPanel<D, S = never>({
   // "answered" by the human's very next message either way — there is
   // nothing to Finalize or Discard.
   const [pendingQuestion, setPendingQuestion] = useState<AskQuestionArgs | null>(null)
+  // pendingPermission holds an in-flight tool escalation (docs/adr/0024): the
+  // turn is blocked on the stream until the human clicks Approve or Deny.
+  // permissionError keeps a failed decision POST visible so the human can retry.
+  const [pendingPermission, setPendingPermission] = useState<{ id: string; name: string; arguments?: string } | null>(null)
+  const [permissionDeciding, setPermissionDeciding] = useState(false)
+  const [permissionError, setPermissionError] = useState<string | null>(null)
   const [finalizing, setFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   // pendingSecondaryDraft/secondaryFinalizing/secondaryError mirror the
@@ -709,6 +719,13 @@ export function StageConversationPanel<D, S = never>({
       }
       return
     }
+    if (event.permission_request) {
+      // The turn is blocked server-side awaiting this decision; surface the
+      // Approve/Deny control (a new prompt replaces any stale one).
+      setPermissionError(null)
+      setPendingPermission(event.permission_request)
+      return
+    }
     if (event.usage) {
       setFinalTokens(event.usage.total_tokens)
     }
@@ -724,6 +741,26 @@ export function StageConversationPanel<D, S = never>({
         thinkingCollapsed: true,
       }))
       setStreamedChars((n) => n + event.content!.length)
+    }
+  }
+
+  // decidePermission answers the pending tool escalation. On success the prompt
+  // clears and the blocked turn resumes (allow) or the model sees a denial and
+  // adapts (deny); on failure the prompt stays so the human can retry. Guarded
+  // against a double-click posting twice.
+  async function decidePermission(allow: boolean) {
+    if (!pendingPermission || permissionDeciding || !ops.submitPermissionDecision) {
+      return
+    }
+    setPermissionDeciding(true)
+    setPermissionError(null)
+    try {
+      await ops.submitPermissionDecision(pendingPermission.id, allow)
+      setPendingPermission(null)
+    } catch (err) {
+      setPermissionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPermissionDeciding(false)
     }
   }
 
@@ -1203,6 +1240,38 @@ export function StageConversationPanel<D, S = never>({
           </div>
         ))}
       </div>
+
+      {pendingPermission && (
+        // Rendered outside the composer gate below because it fires mid-turn
+        // (sending is true); the model can see and adapt to a denial. See docs/adr/0024.
+        <div className="permission-request" role="group" aria-label="Tool permission request">
+          <p className="permission-request-prompt">
+            The agent wants to run <strong>{pendingPermission.name}</strong> and needs your approval.
+          </p>
+          {pendingPermission.arguments && (
+            <pre className="permission-request-args">{pendingPermission.arguments}</pre>
+          )}
+          <div className="permission-request-actions">
+            <button
+              type="button"
+              className="permission-request-approve"
+              onClick={() => decidePermission(true)}
+              disabled={permissionDeciding}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="permission-request-deny"
+              onClick={() => decidePermission(false)}
+              disabled={permissionDeciding}
+            >
+              Deny
+            </button>
+          </div>
+          {permissionError && <p className="error">{permissionError}</p>}
+        </div>
+      )}
 
       {!notStarted && !readOnly && !pendingDraft && (
       <>

@@ -257,6 +257,14 @@ export interface ChatStreamEvent {
     result?: string
     is_error?: boolean
   }
+  // permission_request is set when a human-paced stage turn escalates a tool
+  // the agent can see but not auto-run (docs/adr/0024); the turn blocks until
+  // the human posts an allow/deny to the stage /permission endpoint.
+  permission_request?: {
+    id: string
+    name: string
+    arguments?: string
+  }
   usage?: { total_tokens: number }
   error?: string
   executor?: string

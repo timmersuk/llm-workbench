@@ -25,6 +25,7 @@ import {
   getStageConversation,
   getTaskDraftConversation,
   postStageMessage,
+  postStagePermissionDecision,
   postTaskDraftMessage,
   regenerateStageMessage,
   regenerateTaskDraftMessage,
@@ -47,6 +48,8 @@ export function stageConversationOps(projectId: string, taskId: string, stage: s
     deleteMessage: (index) => deleteStageMessage(projectId, taskId, stage, index),
     regenerateMessage: (index, content, model, executor, effort, onEvent, signal) =>
       regenerateStageMessage(projectId, taskId, stage, index, content, model, executor, onEvent, signal, effort),
+    submitPermissionDecision: (requestId, allow) =>
+      postStagePermissionDecision(projectId, taskId, stage, requestId, allow),
   }
 }
 
