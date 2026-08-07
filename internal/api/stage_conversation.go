@@ -397,19 +397,24 @@ func (s *Server) handlePostStageMessage() http.HandlerFunc {
 		} else {
 			var sessionID string
 			resumeSessionID := loadResumeSessionID(target.store, target.projectId, taskId, stage, target.executor)
+			sessionKey := taskId + ":" + stage
+			// A permission escalation fires from the runner's callback goroutine,
+			// concurrently with the message-stream drain — serialize both writers.
+			safeWrite := synchronizeWriteEvent(writeEvent)
 			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
-				SessionKey:      taskId + ":" + stage,
-				Workspace:       run.Workspace,
-				SystemPrompt:    run.SystemPrompt,
-				UserMessage:     req.Content,
-				Model:           target.selection.Model,
-				ReasoningEffort: target.selection.Effort,
-				Tools:           tools,
-				EnableBashTool:  run.EnableBash,
-				MaxTurns:        run.MaxTurns,
-				History:         conversationHistoryToChatMessages(history),
-				ResumeSessionID: resumeSessionID,
-			}, writeEvent)
+				SessionKey:          sessionKey,
+				Workspace:           run.Workspace,
+				SystemPrompt:        run.SystemPrompt,
+				UserMessage:         req.Content,
+				Model:               target.selection.Model,
+				ReasoningEffort:     target.selection.Effort,
+				Tools:               tools,
+				EnableBashTool:      run.EnableBash,
+				MaxTurns:            run.MaxTurns,
+				History:             conversationHistoryToChatMessages(history),
+				ResumeSessionID:     resumeSessionID,
+				OnPermissionRequest: s.stagePermissionRequestHook(sessionKey, safeWrite),
+			}, safeWrite)
 			persistSessionID(target.store, target.projectId, taskId, stage, target.executor, sessionID)
 		}
 		if streamErr != nil {

@@ -993,3 +993,85 @@ describe('GrillMePanel — ask_question', () => {
     expect(screen.queryByText('Proposed draft')).not.toBeInTheDocument()
   })
 })
+
+describe('GrillMePanel — permission escalation', () => {
+  async function sendAndReceivePermission(event: ChatStreamEvent) {
+    const user = userEvent.setup()
+    let deliver!: (event: ChatStreamEvent) => void
+    vi.mocked(api.postStageMessage).mockImplementation((_p, _t, _s, _c, _m, _e, onEvent) => {
+      deliver = onEvent
+      return Promise.resolve()
+    })
+
+    render(<GrillMePanel projectId={projectId} taskId={taskId} onFinalized={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Start GrillMe' }))
+
+    await user.type(screen.getByPlaceholderText('Reply...'), 'Run the tests please')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    act(() => deliver(event))
+    return user
+  }
+
+  it('renders Approve/Deny with the tool name and arguments on a permission_request event', async () => {
+    await sendAndReceivePermission({
+      permission_request: { id: 'req-1', name: 'Bash', arguments: '{"command":"go test ./..."}' },
+    })
+
+    expect(screen.getByText('Bash')).toBeInTheDocument()
+    expect(screen.getByText('{"command":"go test ./..."}')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeInTheDocument()
+  })
+
+  it('clicking Approve posts allow=true for the request id and clears the prompt', async () => {
+    vi.mocked(api.postStagePermissionDecision).mockResolvedValue()
+    const user = await sendAndReceivePermission({
+      permission_request: { id: 'req-2', name: 'Bash', arguments: '{"command":"ls"}' },
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() =>
+      expect(api.postStagePermissionDecision).toHaveBeenLastCalledWith(
+        projectId,
+        taskId,
+        'requirements',
+        'req-2',
+        true,
+      ),
+    )
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument())
+  })
+
+  it('clicking Deny posts allow=false for the request id', async () => {
+    vi.mocked(api.postStagePermissionDecision).mockResolvedValue()
+    const user = await sendAndReceivePermission({
+      permission_request: { id: 'req-3', name: 'Bash', arguments: '{"command":"rm -rf /"}' },
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Deny' }))
+
+    await waitFor(() =>
+      expect(api.postStagePermissionDecision).toHaveBeenLastCalledWith(
+        projectId,
+        taskId,
+        'requirements',
+        'req-3',
+        false,
+      ),
+    )
+  })
+
+  it('keeps the prompt and shows an error when the decision POST fails', async () => {
+    vi.mocked(api.postStagePermissionDecision).mockRejectedValue(new Error('decision endpoint down'))
+    const user = await sendAndReceivePermission({
+      permission_request: { id: 'req-4', name: 'Bash', arguments: '{"command":"ls"}' },
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+
+    expect(await screen.findByText('decision endpoint down')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
+  })
+})
