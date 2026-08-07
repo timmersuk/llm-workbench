@@ -1199,11 +1199,12 @@ func TestClaudeRunner_ClientFor_SetsToolsAlongsideAllowedTools(t *testing.T) {
 	assert.NotContains(t, captured.Tools, "Bash")
 }
 
-// TestClaudeRunner_ClientFor_EscalationWidensBashVisibleNotAllowed locks in
+// TestClaudeRunner_ClientFor_EscalationWidensToolsVisibleNotAllowed locks in
 // docs/adr/0024: a human-paced turn (OnPermissionRequest set, EnableBashTool
-// false) makes Bash visible via --tools while keeping it off --allowed-tools,
-// and wires the permission callback.
-func TestClaudeRunner_ClientFor_EscalationWidensBashVisibleNotAllowed(t *testing.T) {
+// false) makes every escalatedTools entry (Bash, Write, Edit, PowerShell)
+// visible via --tools while keeping all of them off --allowed-tools, and
+// wires the permission callback.
+func TestClaudeRunner_ClientFor_EscalationWidensToolsVisibleNotAllowed(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 
 	var captured claudecode.Options
@@ -1221,17 +1222,26 @@ func TestClaudeRunner_ClientFor_EscalationWidensBashVisibleNotAllowed(t *testing
 	_, err := r.clientFor(context.Background(), "task-a:planning", in)
 	require.NoError(t, err)
 
-	assert.Contains(t, captured.Tools, "Bash", "Bash must be visible for escalation")
-	assert.NotContains(t, captured.AllowedTools, "Bash", "Bash must NOT be auto-approved")
+	for _, name := range escalatedTools {
+		assert.Contains(t, captured.Tools, name, "%s must be visible for escalation", name)
+		assert.NotContains(t, captured.AllowedTools, name, "%s must NOT be auto-approved", name)
+	}
 	require.NotNil(t, captured.PermissionMode)
 	assert.Equal(t, claudecode.PermissionModeDefault, *captured.PermissionMode)
 	assert.NotNil(t, captured.CanUseTool, "escalation must wire the permission callback")
 }
 
-// TestClaudeRunner_ClientFor_ReviewBashTurnDoesNotEscalate confirms Review's
-// unattended automated-checks turn (EnableBashTool true) auto-approves Bash and
-// wires no human callback even if OnPermissionRequest happens to be set.
-func TestClaudeRunner_ClientFor_ReviewBashTurnDoesNotEscalate(t *testing.T) {
+// TestClaudeRunner_ClientFor_EnableBashToolAutoApprovesOnlyWithoutHuman locks
+// in docs/adr/0024's Review-unification Update: EnableBashTool (set stage-wide
+// for Review, resolveStageRun) only auto-approves Bash when no human hook is
+// present at all — the case that keeps ChatClientRunner/CodexRunner's Review
+// Bash access working, since they have no escalation concept and never set
+// OnPermissionRequest. Once a human hook IS present (every real
+// stage_conversation.go call site now sets one), it takes priority: Review
+// escalates the full escalatedTools bundle (Bash/Write/Edit/PowerShell)
+// through the human exactly like Requirements/Planning/free chat, even though
+// EnableBashTool is still true.
+func TestClaudeRunner_ClientFor_EnableBashToolAutoApprovesOnlyWithoutHuman(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 
 	var captured claudecode.Options
@@ -1240,18 +1250,33 @@ func TestClaudeRunner_ClientFor_ReviewBashTurnDoesNotEscalate(t *testing.T) {
 		return &fakeClaudeClient{}
 	}
 
-	in := RunInput{
+	// No human hook at all: EnableBashTool auto-approves, same as before.
+	_, err := r.clientFor(context.Background(), "task-a:review", RunInput{
+		Workspace:      t.TempDir(),
+		EnableBashTool: true,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, captured.AllowedTools, "Bash", "no human present -> EnableBashTool auto-approves Bash")
+	assert.Nil(t, captured.CanUseTool, "no human present -> no callback wired")
+	for _, name := range []string{"Write", "Edit", "PowerShell"} {
+		assert.NotContains(t, captured.Tools, name, "%s must stay invisible with no human and no explicit escalation", name)
+	}
+
+	// A human hook present (Review's real shape today) wins over
+	// EnableBashTool: escalate instead of auto-approve.
+	_, err = r.clientFor(context.Background(), "task-b:review", RunInput{
 		Workspace:      t.TempDir(),
 		EnableBashTool: true,
 		OnPermissionRequest: func(context.Context, string, string) (bool, error) {
 			return true, nil
 		},
-	}
-	_, err := r.clientFor(context.Background(), "task-a:review", in)
+	})
 	require.NoError(t, err)
-
-	assert.Contains(t, captured.AllowedTools, "Bash", "Review's automated checks auto-approve Bash")
-	assert.Nil(t, captured.CanUseTool, "Review's unattended turn wires no human callback")
+	assert.NotContains(t, captured.AllowedTools, "Bash", "a present human must not be bypassed by EnableBashTool auto-approval")
+	assert.NotNil(t, captured.CanUseTool, "a present human must wire the escalation callback")
+	for _, name := range escalatedTools {
+		assert.Contains(t, captured.Tools, name, "%s must be visible for escalation once a human is present", name)
+	}
 }
 
 // TestExecuteWriteGuard_BoundsWritesToWorkspace exercises the guard directly:
@@ -1302,7 +1327,7 @@ func TestWithinWorkspace(t *testing.T) {
 func TestPermissionEscalationCallback_AllowAndDeny(t *testing.T) {
 	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
 	key := "task-a:planning"
-	cb := r.permissionEscalationCallback(key)
+	cb := r.permissionEscalationCallback(key, t.TempDir())
 
 	res, err := cb(context.Background(), "Bash", map[string]any{"command": "ls"}, claudecode.ToolPermissionContext{})
 	require.NoError(t, err)
@@ -1327,6 +1352,70 @@ func TestPermissionEscalationCallback_AllowAndDeny(t *testing.T) {
 	require.NoError(t, err)
 	_, ok = res.(claudecode.PermissionResultDeny)
 	assert.True(t, ok, "human denied -> deny")
+}
+
+// TestPermissionEscalationCallback_BoundsWritesToWorkspace confirms Write/Edit
+// get the same automatic workspace-boundary backstop Execute's
+// executeWriteGuard has, ahead of (not instead of) the human decision: an
+// out-of-workspace file_path is denied without ever consulting the human hook,
+// an in-workspace one still requires an explicit approve, and Bash/PowerShell
+// (no file_path concept) are unaffected by the check either way.
+func TestPermissionEscalationCallback_BoundsWritesToWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	key := "task-a:planning"
+	cb := r.permissionEscalationCallback(key, ws)
+
+	// A human is present and would approve anything asked of them — proves
+	// an out-of-workspace denial below happens before that hook is ever hit.
+	asked := false
+	r.setPermissionRequester(key, func(context.Context, string, string) (bool, error) {
+		asked = true
+		return true, nil
+	})
+
+	outside := filepath.Join(filepath.Dir(ws), "escape.txt")
+	res, err := cb(context.Background(), "Write", map[string]any{"file_path": outside, "content": "x"}, claudecode.ToolPermissionContext{})
+	require.NoError(t, err)
+	_, ok := res.(claudecode.PermissionResultDeny)
+	assert.True(t, ok, "out-of-workspace Write must be denied")
+	assert.False(t, asked, "the human must never be asked about an out-of-workspace write")
+
+	inside := filepath.Join(ws, "sub", "a.txt")
+	res, err = cb(context.Background(), "Edit", map[string]any{"file_path": inside}, claudecode.ToolPermissionContext{})
+	require.NoError(t, err)
+	allow, ok := res.(claudecode.PermissionResultAllow)
+	require.True(t, ok, "in-workspace Edit must still reach the human and be approved")
+	assert.Equal(t, inside, allow.UpdatedInput["file_path"])
+	assert.True(t, asked, "an in-workspace write must still ask the human")
+
+	res, err = cb(context.Background(), "Write", map[string]any{"content": "x"}, claudecode.ToolPermissionContext{})
+	require.NoError(t, err)
+	_, ok = res.(claudecode.PermissionResultDeny)
+	assert.True(t, ok, "a Write with no file_path must be denied")
+
+	asked = false
+	res, err = cb(context.Background(), "Bash", map[string]any{"command": "ls"}, claudecode.ToolPermissionContext{})
+	require.NoError(t, err)
+	_, ok = res.(claudecode.PermissionResultAllow)
+	assert.True(t, ok, "Bash is unaffected by the workspace check")
+	assert.True(t, asked, "Bash still goes through the human")
+}
+
+// TestPermissionEscalationCallback_EmptyWorkspaceDeniesWrites confirms a
+// Requirements/Planning turn with no configured repository (empty workspace,
+// text-only turn) denies Write/Edit outright rather than treating "" as an
+// always-inside boundary.
+func TestPermissionEscalationCallback_EmptyWorkspaceDeniesWrites(t *testing.T) {
+	r := NewClaudeRunner(time.Minute, time.Minute, "", nil)
+	key := "task-a:requirements"
+	cb := r.permissionEscalationCallback(key, "")
+	r.setPermissionRequester(key, func(context.Context, string, string) (bool, error) { return true, nil })
+
+	res, err := cb(context.Background(), "Write", map[string]any{"file_path": "a.txt", "content": "x"}, claudecode.ToolPermissionContext{})
+	require.NoError(t, err)
+	_, ok := res.(claudecode.PermissionResultDeny)
+	assert.True(t, ok, "an empty workspace must deny Write/Edit rather than allow anywhere")
 }
 
 // TestClaudeRunner_ClientFor_ToolsExcludesMcpQualifiedNames locks in that
@@ -1388,7 +1477,7 @@ func TestClaudeRunner_Execute_SetsToolsAlongsideAllowedTools(t *testing.T) {
 	// Write/Edit are visible but off --allowed-tools so they route through
 	// executeWriteGuard under PermissionModeDefault (docs/adr/0024).
 	assert.Equal(t, executionTools, captured.Tools)
-	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash"}, captured.AllowedTools)
+	assert.Equal(t, []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash", "PowerShell"}, captured.AllowedTools)
 	require.NotNil(t, captured.PermissionMode)
 	assert.Equal(t, claudecode.PermissionModeDefault, *captured.PermissionMode)
 	assert.NotNil(t, captured.CanUseTool, "Execute must wire its worktree write guard")

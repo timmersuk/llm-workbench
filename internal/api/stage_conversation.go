@@ -498,18 +498,28 @@ func (s *Server) handleStartStageConversation() http.HandlerFunc {
 		} else {
 			var sessionID string
 			resumeSessionID := loadResumeSessionID(target.store, target.projectId, taskId, stage, target.executor)
+			sessionKey := taskId + ":" + stage
+			// A permission escalation fires from the runner's callback goroutine,
+			// concurrently with the message-stream drain — serialize both writers
+			// (see handlePostStageMessage's identical use of synchronizeWriteEvent).
+			// Needed here too, not just on ordinary replies: Review's opening
+			// turn is expected to reach for Bash immediately (reviewSystemPrompt),
+			// which requires OnPermissionRequest to be set from this very first
+			// turn, not just from the second message onward.
+			safeWrite := synchronizeWriteEvent(writeEvent)
 			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
-				SessionKey:      taskId + ":" + stage,
-				Workspace:       run.Workspace,
-				SystemPrompt:    run.SystemPrompt,
-				UserMessage:     kickoffUserMessageFor(stage),
-				Model:           target.selection.Model,
-				ReasoningEffort: target.selection.Effort,
-				Tools:           tools,
-				EnableBashTool:  run.EnableBash,
-				MaxTurns:        run.MaxTurns,
-				ResumeSessionID: resumeSessionID,
-			}, writeEvent)
+				SessionKey:          sessionKey,
+				Workspace:           run.Workspace,
+				SystemPrompt:        run.SystemPrompt,
+				UserMessage:         kickoffUserMessageFor(stage),
+				Model:               target.selection.Model,
+				ReasoningEffort:     target.selection.Effort,
+				Tools:               tools,
+				EnableBashTool:      run.EnableBash,
+				MaxTurns:            run.MaxTurns,
+				ResumeSessionID:     resumeSessionID,
+				OnPermissionRequest: s.stagePermissionRequestHook(sessionKey, safeWrite),
+			}, safeWrite)
 			persistSessionID(target.store, target.projectId, taskId, stage, target.executor, sessionID)
 		}
 		if streamErr != nil {
@@ -675,6 +685,10 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 			streamErr = runErr
 		} else {
 			var sessionID string
+			// See handleStartStageConversation's identical comment: a permission
+			// escalation fires from the runner's callback goroutine, concurrently
+			// with the message-stream drain.
+			safeWrite := synchronizeWriteEvent(writeEvent)
 			assistantContent, proposed, activity, segments, sessionID, streamErr = runStageTurn(r.Context(), target.runner, agentrunner.RunInput{
 				SessionKey:      sessionKey,
 				Workspace:       run.Workspace,
@@ -690,7 +704,8 @@ func (s *Server) handleRegenerateStageMessage() http.HandlerFunc {
 				// just cleared every executor's id above, so this turn always
 				// starts a fresh session/thread rather than resuming the one
 				// whose tail is being discarded/replaced.
-			}, writeEvent)
+				OnPermissionRequest: s.stagePermissionRequestHook(sessionKey, safeWrite),
+			}, safeWrite)
 			persistSessionID(target.store, target.projectId, taskId, stage, target.executor, sessionID)
 		}
 		if streamErr != nil {
@@ -1245,6 +1260,15 @@ func (s *Server) resolveStageRun(ctx context.Context, proj project.Project, stor
 	if err != nil {
 		return stageRun{}, err
 	}
+	// EnableBash stays true here — it's still what gives Review's Bash access
+	// to executors with no escalation concept at all (ChatClientRunner,
+	// CodexRunner: EnableBashTool is their only Bash toggle, auto-approved,
+	// no human involved either way). ClaudeRunner is the one runner that now
+	// treats a live OnPermissionRequest hook (docs/adr/0024's Review-
+	// unification Update) as taking priority over EnableBashTool: whenever a
+	// human is actually present, it escalates Bash/Write/Edit/PowerShell
+	// through them instead of auto-approving, even though EnableBash is set
+	// here unconditionally for every runner.
 	return stageRun{Workspace: workspace, SystemPrompt: systemPrompt + addendum, EnableBash: true, MaxTurns: reviewMaxTurns}, nil
 }
 

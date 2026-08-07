@@ -142,3 +142,107 @@ workspace is `s.ReposRoot` itself (see `handleChatCompletions`'s comment) —
 an approved Bash command can run anywhere under the whole sibling-repos
 directory, not just one repo. Accepted as the same "human clicks approve"
 trust model already extended to Bash generally, not a new mechanism.
+
+## Update: escalatedTools widened to Write, Edit, PowerShell
+
+Bash was the only tool ever admitted through the human-escalation path. It's
+now `escalatedTools = []string{"Bash", "Write", "Edit", "PowerShell"}`
+(`claude_runner.go`) — every entry is made visible (`WithTools`) without being
+auto-approved (`WithAllowedTools`) on a human-escalation turn, the same way
+Bash already was. No change was needed to `permissionEscalationCallback`
+itself: it was already tool-name-agnostic, forwarding whatever `toolName`/
+`input` the CLI proposes to the human requester and echoing the input back via
+`allowToolUse` on approval.
+
+Two notes on what this does and doesn't change:
+
+- **PowerShell** was previously excluded from the built-in tool surface
+  entirely (`readOnlyTools`'s doc comment called it "redundant with Bash").
+  It's now a second command-execution surface a human can approve — not
+  auto-run anywhere, same as Bash.
+- **Write/Edit get no worktree-boundary guard** the way Execute's
+  `executeWriteGuard` confines its own writes. `Run`'s workspace is the
+  shared checkout (`ResolveWorkspace`), not an isolated worktree, so an
+  approved write lands there directly, visible to any other stage's
+  read-only agent browsing the same checkout. This isn't a new gap: Bash
+  already had no path confinement on this turn type (an approved `rm` or
+  `git commit` was never bounded either) — the human reading the proposed
+  `file_path`/content before approving is the same check Bash's command
+  string already relied on, not a weaker one.
+
+  **Superseded below** — this gap is now closed for Write/Edit specifically.
+
+## Update: Write/Edit gain the same workspace-boundary backstop as Execute
+
+`permissionEscalationCallback` now takes `workspace string` and, for
+`guardedWriteTools` (`Write`/`Edit`), checks the proposed `file_path` against
+it via `withinWorkspace` — the same lexical check `executeWriteGuard` already
+used for Execute — *before* consulting the human. An out-of-workspace path is
+denied automatically, the human is never asked, and this is unconditional: an
+empty workspace (Requirements/Planning with no configured repository) denies
+every Write/Edit outright rather than treating `""` as "anywhere is fine."
+An in-workspace path still requires an explicit human Approve, unchanged.
+
+This doesn't touch Bash/PowerShell — there's no `file_path` to bound a shell
+command against, the same reasoning `executeWriteGuard` already applies (Bash
+stays auto-approved-but-cwd-confined in Execute, human-approved-but-unbounded
+in Run). The asymmetry called out in the previous Update — "Bash never had
+path confinement either, so Write/Edit having none wasn't a new gap" — is
+still true of Bash, but is no longer used to justify leaving Write/Edit
+unguarded: a structural backstop under the human step was cheap (the same
+`withinWorkspace` helper, already tested) and removes one class of mistake
+(an absolute path escaping the intended workspace) the human approving a
+`file_path` might not notice at a glance.
+
+## Update: Review unified into the human-escalation shape; Execute gains PowerShell
+
+Down from three practical access shapes to two:
+
+- **Shape A — unattended, auto, structurally bounded** (Execute only): Bash/
+  Write/Edit/PowerShell all auto-run; Write/Edit `executeWriteGuard`-bounded,
+  Bash/PowerShell cwd-bounded only. PowerShell added to `executionTools`
+  purely for parity with Review's own tool set below — same treatment as
+  Bash there (auto-approved, no path guard, gating a shell command's targets
+  by path being infeasible).
+- **Shape B — attended, human-gated, workspace-bounded** (Requirements/
+  Planning/Review/free chat, uniformly): Bash/Write/Edit/PowerShell all
+  visible-but-not-auto-approved, routed through the one
+  `permissionEscalationCallback`, Write/Edit workspace-bounded.
+
+Review previously auto-approved Bash unconditionally for the whole stage
+(`resolveStageRun` set `EnableBashTool: true` stage-wide — a leftover from an
+"unattended automated-checks turn" design the code never actually
+distinguished from the rest of Review) and never offered Write/Edit/
+PowerShell at all. `resolveStageRun` still sets `EnableBashTool: true` for
+Review — removing it outright broke Bash for `ChatClientRunner`/`CodexRunner`,
+which have no escalation concept whatsoever and treat `EnableBashTool` as
+their *only* Bash toggle. Instead, `buildAndConnectClient`'s priority changed:
+
+```go
+autoApproveBash := in.EnableBashTool && in.OnPermissionRequest == nil
+...
+escalate := in.OnPermissionRequest != nil
+```
+
+A live `OnPermissionRequest` hook now wins over `EnableBashTool`'s
+auto-approval whenever one is present — `EnableBashTool` only auto-approves
+Bash for a caller with no human to ask at all. Since every real
+stage-conversation entry point (`handleStartStageConversation`,
+`handlePostStageMessage`, `handleRegenerateStageMessage`) now sets the hook
+uniformly (previously only the ordinary-reply path did — Review's *opening*
+turn needs Bash immediately per `reviewSystemPrompt`, so the hook had to be
+wired into kickoff/regenerate too, not just replies), Review's ClaudeRunner
+turns escalate the full `escalatedTools` bundle exactly like Requirements/
+Planning/free chat, with Write/Edit bounded to the execution's isolated
+worktree (Review's own workspace) — tighter confinement than Requirements/
+Planning's shared checkout ever had. ChatClientRunner/CodexRunner-backed
+Review conversations are unaffected: they never set `OnPermissionRequest`, so
+`autoApproveBash` still fires for them exactly as before.
+
+Deliberately deferred, tracked as separate tasks rather than bundled in:
+session-persisted ("approve once for this session") escalation decisions via
+the SDK's `PermissionResultAllow.UpdatedPermissions`/`Destination: "session"`
+(mitigates Review's now-real per-call Bash approval cost during its
+automated-checks phase), and whether Execute should ever gain its own
+`OnPermissionRequest`-equivalent (a product-behavior decision about breaking
+Execute's "unattended run to completion" contract, not just plumbing).

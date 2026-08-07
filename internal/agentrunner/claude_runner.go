@@ -49,11 +49,18 @@ var lookPath = exec.LookPath
 // Edit, Skill, LSP, etc. — from being visible and callable). WebFetch/
 // WebSearch are both read-only (fetch/search, never write) and included
 // deliberately (see architecture/agentrunner-tool-surface-control knowledge
-// doc); Skill/Workflow/Monitor stay excluded (no supervision over what they
-// could trigger), as does LSP (documented broken per the user's global
-// lsp-first.md rule) and PowerShell (redundant with Bash, which Review/
-// Execute already grant). Task (subagent spawning) is deliberately NOT in
-// this list: it is admitted separately (see subagentToolName /
+// doc); Skill/Workflow/Monitor stay excluded entirely, from every Run turn
+// including a human-escalation one (no supervision over what they could
+// trigger — unlike escalatedTools' Bash/Write/Edit/PowerShell, a human
+// approving one of these can't inspect what it will actually do from its
+// call arguments alone), as does LSP (documented broken per the user's
+// global lsp-first.md rule). Write/Edit/Bash/PowerShell are absent from this
+// base set but not categorically excluded — see escalatedTools, which a
+// human-escalation turn (in.OnPermissionRequest != nil) adds to WithTools
+// without adding to WithAllowedTools, so a call still requires an explicit
+// per-call human approval rather than becoming auto-run. Task (subagent
+// spawning) is deliberately NOT in this list: it is admitted separately (see
+// subagentToolName /
 // withSubagentSupport and docs/adr/0022's Update) and confined to a single
 // custom, tool-limited AgentDefinition, so the calling stage's trust
 // boundary is preserved via the subagent's own Tools rather than by
@@ -64,9 +71,26 @@ var readOnlyTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 // the one place this trust boundary deliberately widens beyond
 // readOnlyTools, because Execute always runs against an isolated git
 // worktree (see ResolveExecutionWorkspace), never the shared checkout Run
-// uses, so Write/Edit/Bash here can't touch anything a human or another
-// stage's read-only agent has open.
-var executionTools = append(append([]string{}, readOnlyTools...), "Write", "Edit", "Bash")
+// uses, so Write/Edit/Bash/PowerShell here can't touch anything a human or
+// another stage's read-only agent has open. PowerShell is included for
+// parity with Review's own tool set (escalatedTools, both now Bash/Write/
+// Edit/PowerShell) — Execute confines it the same way it already confines
+// Bash: auto-approved, bounded only by cwd (the execution worktree), no
+// path-level guard the way Write/Edit get from executeWriteGuard, since
+// gating a shell command's targets by path is infeasible.
+var executionTools = append(append([]string{}, readOnlyTools...), "Write", "Edit", "Bash", "PowerShell")
+
+// escalatedTools are the CLI built-in tools a human-escalation Run turn makes
+// visible (WithTools) without auto-approving (WithAllowedTools) — each routes
+// through permissionEscalationCallback for an explicit human allow/deny
+// instead of staying invisible. Bash was the original member (docs/adr/0024);
+// Write/Edit (file mutation) and PowerShell (a second command-execution
+// surface, previously excluded entirely as redundant with Bash — see
+// readOnlyTools' doc comment) were added the same way, on the same reasoning:
+// the human reading the proposed command/file_path/content before approving
+// is the check, not a structural confinement (contrast Execute's
+// executeWriteGuard, which has no human in the loop at all).
+var escalatedTools = []string{"Bash", "Write", "Edit", "PowerShell"}
 
 // claudePermissionMode is the explicit permission mode set on every Run and
 // Execute connection, replacing the CLI's unset default. Only "default" routes
@@ -135,12 +159,39 @@ func withinWorkspace(workspace, rawPath string) bool {
 }
 
 // permissionEscalationCallback is Run's WithCanUseTool callback: it forwards a
-// visible-but-not-auto-approved tool (Bash on a human-paced turn) to the turn's
-// human decision hook. The hook is looked up lazily by key, not captured at
-// connect time, because a cached Run client outlives the turn that created it.
-// No hook installed -> deny (a visible-but-unapproved tool must not auto-run).
-func (r *ClaudeRunner) permissionEscalationCallback(key string) claudecode.CanUseToolCallback {
+// visible-but-not-auto-approved tool (escalatedTools, on a human-paced turn) to
+// the turn's human decision hook. The hook is looked up lazily by key, not
+// captured at connect time, because a cached Run client outlives the turn that
+// created it. No hook installed -> deny (a visible-but-unapproved tool must not
+// auto-run).
+//
+// A Write/Edit call is checked against workspace first, via the same
+// withinWorkspace lexical boundary executeWriteGuard uses for Execute — an
+// out-of-workspace file_path is denied automatically, before the human is ever
+// asked, the same automatic backstop Execute already has. This doesn't replace
+// the human step for an in-workspace write (that still requires an explicit
+// Approve, same as Bash/PowerShell); it only closes the gap where the CLI's own
+// lack of cwd confinement on Write (live-verified — see executeWriteGuard's doc
+// comment) let an approved absolute path escape the turn's own workspace
+// (the shared checkout for Requirements/Planning, ReposRoot for free chat).
+// workspace == "" (Requirements/Planning with no configured repository) denies
+// outright — there is no boundary to check a write against. See docs/adr/0024.
+func (r *ClaudeRunner) permissionEscalationCallback(key, workspace string) claudecode.CanUseToolCallback {
 	return func(ctx context.Context, toolName string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
+		if guardedWriteTools[toolName] {
+			rawPath, _ := input["file_path"].(string)
+			if rawPath == "" {
+				return claudecode.NewPermissionResultDeny(fmt.Sprintf(
+					"%s denied: no file_path supplied to check against this turn's workspace", toolName)), nil
+			}
+			if workspace == "" || !withinWorkspace(workspace, rawPath) {
+				slog.Warn("run escalation denied out-of-workspace write",
+					"tool", toolName, "file_path", rawPath, "workspace", workspace)
+				return claudecode.NewPermissionResultDeny(fmt.Sprintf(
+					"%s denied: %s is outside this turn's workspace (%s); only files within the workspace may be modified",
+					toolName, rawPath, workspace)), nil
+			}
+		}
 		requester := r.permissionRequesterFor(key)
 		if requester == nil {
 			return claudecode.NewPermissionResultDeny(fmt.Sprintf(
@@ -618,7 +669,7 @@ func (r *ClaudeRunner) Execute(ctx context.Context, in ExecuteInput, onEvent fun
 	executeTools := append([]string{}, executionTools...)
 	// Write/Edit stay visible (WithTools) but off --allowed-tools so every call
 	// routes through executeWriteGuard for a worktree-boundary check; everything
-	// else (incl. Bash) stays auto-approved. See docs/adr/0024.
+	// else (incl. Bash and PowerShell) stays auto-approved. See docs/adr/0024.
 	executeAllowed := make([]string, 0, len(executeTools))
 	for _, t := range executeTools {
 		if !guardedWriteTools[t] {
@@ -886,12 +937,21 @@ func (r *ClaudeRunner) buildAndConnectClient(_ context.Context, in RunInput, res
 	}
 
 	allowedTools := append([]string{}, readOnlyTools...)
-	// The Review stage (Milestone 6) widens the read-only boundary with Bash
-	// so the reviewing agent can run the project's tests over the executed
-	// change — confined to the execution worktree (in.Workspace), never the
-	// shared checkout. Requirements/Planning leave EnableBashTool false and
-	// stay strictly read-only.
-	if in.EnableBashTool {
+	// escalate takes priority over EnableBashTool's auto-approval whenever a
+	// human is actually reachable: EnableBashTool is set stage-wide for Review
+	// (resolveStageRun, internal/api/stage_conversation.go) purely so
+	// ChatClientRunner/CodexRunner — which have no escalation concept at all,
+	// EnableBashTool is their only Bash toggle — still get Bash there. But for
+	// ClaudeRunner specifically, once a live OnPermissionRequest hook is
+	// present, blindly auto-approving Bash would silently skip the human even
+	// though one is available to ask — so EnableBashTool only auto-approves
+	// when nobody's there to escalate to (OnPermissionRequest nil): a caller
+	// that offers a genuinely unattended Bash turn with no human hook at all,
+	// which no current stage_conversation.go call site produces (every one of
+	// Start/Post/Regenerate sets the hook now — docs/adr/0024's Review-
+	// unification Update — but a future unattended-batch caller could).
+	autoApproveBash := in.EnableBashTool && in.OnPermissionRequest == nil
+	if autoApproveBash {
 		allowedTools = append(allowedTools, "Bash")
 	}
 	// builtinTools snapshots allowedTools before the MCP-qualified names
@@ -900,16 +960,25 @@ func (r *ClaudeRunner) buildAndConnectClient(_ context.Context, in RunInput, res
 	// mcp__<server>__<tool> names, unlike WithAllowedTools/--allowed-tools
 	// which is MCP-qualified-name-aware (see mcpServerName's doc comment).
 	builtinTools := append([]string{}, allowedTools...)
-	// Human-escalation turn: make Bash visible (WithTools) without auto-approving
-	// it (allowedTools unchanged), so a Bash call reaches the human via
-	// permissionEscalationCallback instead of being invisible. Excludes Review's
-	// unattended EnableBashTool turn and any caller that leaves OnPermissionRequest
-	// nil (e.g. rehydration, or a caller that doesn't offer escalation at all) —
-	// free chat opts in the same way a stage conversation does, by supplying the
-	// hook (internal/api/chat.go). See docs/adr/0024.
-	escalate := !in.EnableBashTool && in.OnPermissionRequest != nil
+	// Human-escalation turn: make escalatedTools visible (WithTools) without
+	// auto-approving them (allowedTools unchanged), so a call to any of them
+	// reaches the human via permissionEscalationCallback instead of being
+	// invisible or auto-run. permissionEscalationCallback is already
+	// tool-name-agnostic — it forwards whatever toolName/input the CLI
+	// proposes to the human requester and echoes the input back via
+	// allowToolUse on approval — so widening this list needed no callback
+	// change, only more visibility. Excludes any caller that leaves
+	// OnPermissionRequest nil (e.g. rehydration, or a caller that doesn't
+	// offer escalation at all) — free chat opts in the same way a stage
+	// conversation does, by supplying the hook (internal/api/chat.go). Write/
+	// Edit here get a workspace-boundary check (permissionEscalationCallback's
+	// own guard, mirroring Execute's executeWriteGuard) ahead of the human
+	// decision; Bash/PowerShell have no file_path to bound, so the human
+	// reading the proposed command before approving is the only check there,
+	// same as Execute's own Bash. See docs/adr/0024.
+	escalate := in.OnPermissionRequest != nil
 	if escalate {
-		builtinTools = append(builtinTools, "Bash")
+		builtinTools = append(builtinTools, escalatedTools...)
 	}
 	// in.Tools is optional — free-chat callers (no Draft concept) leave it
 	// empty, in which case no MCP tool/server is registered at all rather
@@ -965,7 +1034,7 @@ func (r *ClaudeRunner) buildAndConnectClient(_ context.Context, in RunInput, res
 	// required for the escalation callback to be consulted at all.
 	opts = append(opts, claudecode.WithPermissionMode(claudePermissionMode))
 	if escalate {
-		opts = append(opts, claudecode.WithCanUseTool(r.permissionEscalationCallback(in.SessionKey)))
+		opts = append(opts, claudecode.WithCanUseTool(r.permissionEscalationCallback(in.SessionKey, in.Workspace)))
 	}
 
 	client := r.newClient(opts...)
