@@ -29,11 +29,6 @@ for (const lang of [go, typescript, tsx, jsx, json, yaml, markdown, bash]) {
   }
 }
 
-// Files with more changed lines than this render collapsed by default — a
-// 2000-line generated-file diff shouldn't push every other file in the same
-// patch off screen. Smaller, more reviewable files stay expanded.
-const COLLAPSE_LINE_THRESHOLD = 300
-
 const EXTENSION_LANGUAGE: Record<string, string> = {
   go: 'go',
   ts: 'typescript',
@@ -89,7 +84,9 @@ interface FileDiffProps {
 function FileDiff({ file, viewType }: FileDiffProps) {
   const path = displayPath(file)
   const lineCount = useMemo(() => changedLineCount(file), [file])
-  const [open, setOpen] = useState(lineCount <= COLLAPSE_LINE_THRESHOLD)
+  // Collapsed by default — an all-expanded patch summary can run to
+  // multiple screens even for a modest-sized task, burying the file list.
+  const [open, setOpen] = useState(false)
   const tokens = useMemo(() => tokensFor(file, languageFor(path)), [file, path])
 
   return (

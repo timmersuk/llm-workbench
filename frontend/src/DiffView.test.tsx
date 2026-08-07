@@ -14,20 +14,6 @@ index 1234567..89abcde 100644
  func main() {}
 `
 
-// A second, unrelated file whose hunk carries 301 added lines — over the
-// 300-changed-line collapse threshold.
-function bigPatch(): string {
-  const added = Array.from({ length: 301 }, (_, i) => `+line ${i}`).join('\n')
-  return `diff --git a/big.go b/big.go
-new file mode 100644
-index 0000000..1111111
---- /dev/null
-+++ b/big.go
-@@ -0,0 +1,301 @@
-${added}
-`
-}
-
 describe('DiffView', () => {
   it('renders nothing for a null or empty patch', () => {
     const { container: nullContainer } = render(<DiffView patch={null} />)
@@ -58,14 +44,11 @@ describe('DiffView', () => {
     expect(document.querySelector('.diff-unified')).not.toBeInTheDocument()
   })
 
-  it('a file under the 300-changed-line threshold is expanded by default; one over it starts collapsed', () => {
-    render(<DiffView patch={SMALL_PATCH + bigPatch()} />)
+  it('renders every file collapsed by default', () => {
+    render(<DiffView patch={SMALL_PATCH} />)
 
-    const smallDetails = screen.getByText('feature.go').closest('details')
-    const bigDetails = screen.getByText('big.go').closest('details')
-
-    expect(smallDetails).toHaveAttribute('open')
-    expect(bigDetails).not.toHaveAttribute('open')
+    const details = screen.getByText('feature.go').closest('details')
+    expect(details).not.toHaveAttribute('open')
   })
 
   it('applies refractor syntax highlighting to a changed Go line', () => {
