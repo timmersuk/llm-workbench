@@ -903,7 +903,10 @@ func (r *ClaudeRunner) buildAndConnectClient(_ context.Context, in RunInput, res
 	// Human-escalation turn: make Bash visible (WithTools) without auto-approving
 	// it (allowedTools unchanged), so a Bash call reaches the human via
 	// permissionEscalationCallback instead of being invisible. Excludes Review's
-	// unattended EnableBashTool turn and free-chat/rehydration callers. See docs/adr/0024.
+	// unattended EnableBashTool turn and any caller that leaves OnPermissionRequest
+	// nil (e.g. rehydration, or a caller that doesn't offer escalation at all) —
+	// free chat opts in the same way a stage conversation does, by supplying the
+	// hook (internal/api/chat.go). See docs/adr/0024.
 	escalate := !in.EnableBashTool && in.OnPermissionRequest != nil
 	if escalate {
 		builtinTools = append(builtinTools, "Bash")

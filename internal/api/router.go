@@ -244,6 +244,7 @@ func newRouter(projects ProjectStore, tasks TaskStore, knowledgeStore KnowledgeS
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/{taskId}/cleanup", s.handleTaskCleanup())
 
 	mux.HandleFunc("POST /api/v1/chat/completions", s.handleChatCompletions())
+	mux.HandleFunc("POST /api/v1/chat/permission", s.handleChatPermissionDecision())
 	mux.HandleFunc("POST /api/v1/chat/sessions/close", s.handleCloseChatSession())
 	mux.HandleFunc("GET /api/v1/agent-executors", s.handleListAgentExecutors())
 

@@ -377,6 +377,21 @@ export async function closeChatSession(sessionKey: string): Promise<void> {
   }
 }
 
+// postChatPermissionDecision answers a pending tool escalation (a
+// permission_request event — docs/adr/0024) for a free-chat session. Unlike
+// postStagePermissionDecision, there is no task/stage route to derive the
+// owning session from, so sessionKey travels in the request body instead.
+export async function postChatPermissionDecision(sessionKey: string, requestId: string, allow: boolean): Promise<void> {
+  const res = await fetch('/api/v1/chat/permission', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_key: sessionKey, request_id: requestId, allow }),
+  })
+  if (!res.ok) {
+    throw new Error(await parseAPIError(res, `submitting permission decision returned ${res.status}`))
+  }
+}
+
 // postStageMessage posts a user message to a task's GrillMe (stage:
 // "requirements") or Planning Mode (stage: "planning") Conversation and
 // streams the assistant's reply the same way streamChatCompletion does —

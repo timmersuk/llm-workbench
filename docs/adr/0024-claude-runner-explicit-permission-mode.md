@@ -121,3 +121,24 @@ An earlier evaluation deferred the Run human-escalation path as "not built"
 reverses that: the escalation path is built as a deliberate new capability so a
 human-paced turn can run a bounded, in-the-loop command, rather than the tool
 being permanently invisible.
+
+## Update: free chat wired into the same escalation path
+
+The "free-chat/rehydration callers keep today's strictly read-only,
+Bash-invisible surface" line above is now only true for rehydration. Free chat
+(`handleChatCompletions`, `internal/api/chat.go`) now supplies
+`RunInput.OnPermissionRequest` via the same `stagePermissionRequestHook` stage
+conversations use — `buildAndConnectClient`'s `escalate` check
+(`in.OnPermissionRequest != nil`) already generalized over the caller, so no
+`claude_runner.go` change was needed, just wiring the hook up on the free-chat
+call site plus a session-keyed `/api/v1/chat/permission` decision endpoint
+(free chat has no `taskId`/`stage` route to derive the owning session from,
+unlike `handleStagePermissionDecision`, so the session key travels in the
+decision request body instead) and an Approve/Deny control in `ChatPanel`.
+
+This does widen free chat's blast radius versus a stage conversation: a stage
+escalation is bounded to one task's resolved workspace, but free chat's
+workspace is `s.ReposRoot` itself (see `handleChatCompletions`'s comment) —
+an approved Bash command can run anywhere under the whole sibling-repos
+directory, not just one repo. Accepted as the same "human clicks approve"
+trust model already extended to Bash generally, not a new mechanism.

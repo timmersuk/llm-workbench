@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { CopyIcon, DeleteIcon, EditIcon, RegenerateIcon } from './ActionIcons'
-import { closeChatSession, isAbortError, listAgentExecutors, listModels, streamChatCompletion } from './api'
+import { closeChatSession, isAbortError, listAgentExecutors, listModels, postChatPermissionDecision, streamChatCompletion } from './api'
 import { ChatInputArea } from './ChatInputArea'
 import { formatMessageTimestamp } from './formatTimestamp'
 import { MarkdownMessage } from './MarkdownMessage'
@@ -58,6 +58,12 @@ export function ChatPanel() {
   const [streamedChars, setStreamedChars] = useState(0)
   const [finalTokens, setFinalTokens] = useState<number | undefined>(undefined)
   const liveTurnStatus = useLiveTurnStatus(sending, streamedChars, finalTokens)
+  // pendingPermission/permissionDeciding/permissionError mirror
+  // StageConversationPanel's identical trio (docs/adr/0024): a tool
+  // escalation blocks the turn server-side until Approve/Deny is clicked.
+  const [pendingPermission, setPendingPermission] = useState<{ id: string; name: string; arguments?: string } | null>(null)
+  const [permissionDeciding, setPermissionDeciding] = useState(false)
+  const [permissionError, setPermissionError] = useState<string | null>(null)
 
   useEffect(() => {
     listAgentExecutors()
@@ -143,6 +149,13 @@ export function ChatPanel() {
       updateLastMessage((msg) => ({ ...msg, error: event.error! }))
       return
     }
+    if (event.permission_request) {
+      // The turn is blocked server-side awaiting this decision; surface the
+      // Approve/Deny control (a new prompt replaces any stale one).
+      setPermissionError(null)
+      setPendingPermission(event.permission_request)
+      return
+    }
     if (event.usage) {
       setFinalTokens(event.usage.total_tokens)
     }
@@ -153,6 +166,26 @@ export function ChatPanel() {
     if (event.content) {
       updateLastMessage((msg) => ({ ...msg, content: msg.content + event.content, thinkingCollapsed: true }))
       setStreamedChars((n) => n + event.content!.length)
+    }
+  }
+
+  // decidePermission answers the pending tool escalation. On success the
+  // prompt clears and the blocked turn resumes (allow) or the model sees a
+  // denial and adapts (deny); on failure the prompt stays so the human can
+  // retry. Guarded against a double-click posting twice.
+  async function decidePermission(allow: boolean) {
+    if (!pendingPermission || permissionDeciding) {
+      return
+    }
+    setPermissionDeciding(true)
+    setPermissionError(null)
+    try {
+      await postChatPermissionDecision(sessionKey, pendingPermission.id, allow)
+      setPendingPermission(null)
+    } catch (err) {
+      setPermissionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPermissionDeciding(false)
     }
   }
 
@@ -444,6 +477,37 @@ export function ChatPanel() {
           </div>
         ))}
       </div>
+      {pendingPermission && (
+        // Rendered outside the composer below because it fires mid-turn
+        // (sending is true); the model can see and adapt to a denial. See docs/adr/0024.
+        <div className="permission-request" role="group" aria-label="Tool permission request">
+          <p className="permission-request-prompt">
+            The agent wants to run <strong>{pendingPermission.name}</strong> and needs your approval.
+          </p>
+          {pendingPermission.arguments && (
+            <pre className="permission-request-args">{pendingPermission.arguments}</pre>
+          )}
+          <div className="permission-request-actions">
+            <button
+              type="button"
+              className="permission-request-approve"
+              onClick={() => decidePermission(true)}
+              disabled={permissionDeciding}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="permission-request-deny"
+              onClick={() => decidePermission(false)}
+              disabled={permissionDeciding}
+            >
+              Deny
+            </button>
+          </div>
+          {permissionError && <p className="error">{permissionError}</p>}
+        </div>
+      )}
       <ChatInputArea
         draft={draft}
         onDraftChange={setDraft}

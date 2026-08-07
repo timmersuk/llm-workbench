@@ -168,15 +168,21 @@ func (s *Server) handleChatCompletions() http.HandlerFunc {
 		// workspace — read access rooted at the whole sibling-repos
 		// directory rather than one specific repo. ChatClientRunner
 		// ignores this field entirely.
+		// A permission escalation fires from the runner's callback goroutine,
+		// concurrently with the message-stream drain — serialize both writers
+		// (see stage_conversation.go's identical use of synchronizeWriteEvent).
+		safeWrite := synchronizeWriteEvent(writeEvent)
+
 		_, err := runner.Run(r.Context(), agentrunner.RunInput{
-			SessionKey:      req.SessionKey,
-			Workspace:       s.ReposRoot,
-			UserMessage:     req.Content,
-			Model:           req.Model,
-			History:         req.History,
-			ReasoningEffort: agentrunner.ReasoningEffort(req.Effort),
+			SessionKey:          req.SessionKey,
+			Workspace:           s.ReposRoot,
+			UserMessage:         req.Content,
+			Model:               req.Model,
+			History:             req.History,
+			ReasoningEffort:     agentrunner.ReasoningEffort(req.Effort),
+			OnPermissionRequest: s.stagePermissionRequestHook(req.SessionKey, safeWrite),
 		}, func(d chat.Delta) error {
-			writeEvent(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent, Usage: usageEvent(d.Usage)})
+			safeWrite(chatStreamEvent{Content: d.Content, ReasoningContent: d.ReasoningContent, Usage: usageEvent(d.Usage)})
 			return nil
 		})
 		if err != nil {
@@ -184,8 +190,43 @@ func (s *Server) handleChatCompletions() http.HandlerFunc {
 			// failed stream can't surface as an HTTP error status — the
 			// error is relayed as a final SSE event instead, alongside
 			// whatever content/reasoning_content already streamed.
-			writeEvent(chatStreamEvent{Error: err.Error()})
+			safeWrite(chatStreamEvent{Error: err.Error()})
 		}
+	}
+}
+
+// chatPermissionDecisionRequest is the request body for
+// handleChatPermissionDecision. Unlike stagePermissionDecisionRequest (whose
+// owning session is derived from the URL's taskId/stage path segments), free
+// chat has no such route — SessionKey must be supplied in the body instead,
+// the same session_key the client sent alongside every chatCompletionRequest.
+type chatPermissionDecisionRequest struct {
+	SessionKey string `json:"session_key"`
+	RequestID  string `json:"request_id"`
+	Allow      bool   `json:"allow"`
+}
+
+// handleChatPermissionDecision resolves a pending free-chat tool escalation
+// (docs/adr/0024) — the free-chat counterpart to handleStagePermissionDecision.
+// The request ID is validated against the request's own SessionKey inside
+// resolve, so one chat session can't answer another's; an unknown or foreign
+// ID is a 404.
+func (s *Server) handleChatPermissionDecision() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req chatPermissionDecisionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.SessionKey == "" || req.RequestID == "" {
+			writeAPIError(w, http.StatusBadRequest, "session_key and request_id are required")
+			return
+		}
+		if s.escalations == nil || !s.escalations.resolve(req.SessionKey, req.RequestID, req.Allow) {
+			writeAPIError(w, http.StatusNotFound, "no pending permission request for this session")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
